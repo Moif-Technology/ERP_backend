@@ -1,0 +1,19 @@
+node_modules/
+scripts/
+package-lock.json
+.env.example
+nodemon.json
+.playwright-mcp/
+src/shared/assets/icons/
+src/shared/assets/*.svg
+skills-lock.json
+
+# Screenshots & images (no semantic value)
+responsive-screenshots/
+*.png
+electron/image.png
+
+# Docs (optional - add if your .md files don't change often)
+# API_INTEGRATION_PLAN.md
+# PRODUCT_FIELD_MAP.md
+# README.md

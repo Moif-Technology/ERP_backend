@@ -1,0 +1,28 @@
+{
+  "name": "moifone-erp-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "migrate:entitlements": "node scripts/run-entitlement-migration.mjs",
+    "migrate:platform": "node scripts/run-platform-migration.mjs",
+    "seed:platform-admin": "node scripts/seed-platform-admin.mjs",
+    "seed:test-tenants": "node scripts/seed-test-tenants.mjs",
+    "test:accounts-schema": "node scripts/verify-accounts-schema.mjs",
+    "test:entitlements": "node scripts/verify-entitlements.mjs",
+    "test": "node --test test/entitlement.service.test.mjs test/platformAuth.middleware.test.mjs"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.1"
+  }
+}
