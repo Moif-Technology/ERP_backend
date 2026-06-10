@@ -3,9 +3,38 @@ import { config } from '../config.js';
 
 const { Pool } = pg;
 
+const basePoolOptions = {
+  max: config.pgPoolMax,
+  min: config.pgPoolMin,
+  idleTimeoutMillis: 30_000, // drop idle clients
+  connectionTimeoutMillis: 5_000, // fail fast when pool exhausted
+  // NOTE: remove the two timeouts below when running behind PgBouncer/RDS Proxy
+  // in transaction-pooling mode (set them on the DB/pooler instead).
+  statement_timeout: 15_000, // kill runaway query server-side
+  query_timeout: 15_000, // kill runaway query client-side
+  keepAlive: true,
+};
+
 export const pool = new Pool({
   connectionString: config.databaseUrl,
+  ...basePoolOptions,
 });
+
+// Read replica pool. Falls back to primary when DATABASE_REPLICA_URL unset.
+// Route heavy/list/dashboard reads here; keep writes + read-after-write on `pool`.
+export const readPool = config.replicaUrl
+  ? new Pool({ connectionString: config.replicaUrl, ...basePoolOptions })
+  : pool;
+
+// Surface idle-client crashes instead of taking the process down silently.
+pool.on('error', (err) => {
+  console.error('[pg pool] idle client error:', err.message);
+});
+if (readPool !== pool) {
+  readPool.on('error', (err) => {
+    console.error('[pg readPool] idle client error:', err.message);
+  });
+}
 
 /** Host:port/database for logs (no password). */
 export function databaseSummaryForLog() {
@@ -26,6 +55,14 @@ export async function verifyDatabaseConnection() {
     await client.query('SELECT 1 AS ok');
   } finally {
     client.release();
+  }
+}
+
+/** End every pool (graceful shutdown). Safe when readPool === pool. */
+export async function closeAllPools() {
+  await pool.end().catch(() => {});
+  if (readPool !== pool) {
+    await readPool.end().catch(() => {});
   }
 }
 

@@ -9,7 +9,7 @@ import {
   resolveSubscriptionState,
   applyOverrides,
   defaultPermissionsFromFeatures,
-} from '../src/services/entitlement.service.js';
+} from '../src/core/services/entitlement.service.js';
 
 test('resolveSubscriptionState: missing row -> default usable (legacy fallback)', () => {
   const s = resolveSubscriptionState(null);

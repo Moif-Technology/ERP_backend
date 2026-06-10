@@ -16,7 +16,22 @@ function parseOrigins(raw) {
 
 export const config = {
   port,
+  nodeEnv: process.env.NODE_ENV || 'development',
+  logLevel: process.env.LOG_LEVEL || 'info',
   databaseUrl: process.env.DATABASE_URL || '',
+  // Optional read replica; falls back to primary when unset.
+  replicaUrl: process.env.DATABASE_REPLICA_URL || '',
+  // Connection pool sizing (per process). Tune with PgBouncer/RDS Proxy in prod.
+  pgPoolMax: Number(process.env.PG_POOL_MAX) || 20,
+  pgPoolMin: Number(process.env.PG_POOL_MIN) || 2,
+  // Optional Redis (session cache + rate limit). App degrades gracefully when unset.
+  redisUrl: process.env.REDIS_URL || '',
+  // Trust N proxy hops (LB/Nginx) so client IP + rate limiting work. 0 = off.
+  trustProxy: Number(process.env.TRUST_PROXY) || 0,
+  // Rate limits (requests per minute per client). Generous so real offices
+  // behind one NAT IP aren't blocked; tighten only if abuse appears.
+  rateLimitApi: Number(process.env.RATE_LIMIT_API_PER_MIN) || 2000,
+  rateLimitAuth: Number(process.env.RATE_LIMIT_AUTH_PER_MIN) || 30,
   jwtAccessSecret: process.env.JWT_ACCESS_SECRET || '',
   jwtRefreshSecret: process.env.JWT_REFRESH_SECRET || '',
   jwtAccessExpires: process.env.JWT_ACCESS_EXPIRES || '15m',
