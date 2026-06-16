@@ -18,7 +18,9 @@ export async function searchCustomers(authStaff, q, limit = 30) {
     paymentMode:   c.paymentMode ?? 'CASH',
     creditLimit:   c.creditLimit,
     creditBalance: c.creditBalance,
-    osAmount:      c.creditBalance,
+    // Tally-style outstanding: SUM(debit) - SUM(credit) from accounts.voucher_detail.
+    // Falls back to the static credit_balance field if no voucher rows exist.
+    osAmount:      c.osBalance != null ? c.osBalance : (c.creditBalance ?? 0),
     loyaltyStatus: c.loyaltyStatus ?? null,
     customerType:  c.customerType  ?? null,
   }));

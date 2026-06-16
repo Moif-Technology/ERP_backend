@@ -33,6 +33,22 @@ function mapRow(row) {
   };
 }
 
+export async function findSupplierById(db, companyId, supplierId) {
+  const { rows } = await db.query(
+    `SELECT supplier_id, supplier_code, supplier_name
+     FROM biz.supplier_master
+     WHERE company_id = $1 AND supplier_id = $2
+     LIMIT 1`,
+    [companyId, supplierId],
+  );
+  if (!rows[0]) return null;
+  return {
+    supplierId: Number(rows[0].supplier_id),
+    supplierCode: rows[0].supplier_code,
+    supplierName: rows[0].supplier_name,
+  };
+}
+
 export async function supplierExists(pool, companyId, supplierId) {
   const { rows } = await pool.query(
     `SELECT 1 FROM biz.supplier_master
@@ -56,8 +72,8 @@ export async function listSuppliers(pool, companyId, limit = 500) {
   return rows.map(mapRow);
 }
 
-export async function updateSupplier(pool, companyId, supplierId, params) {
-  const { rows } = await pool.query(
+export async function updateSupplier(db, companyId, supplierId, params) {
+  const { rows } = await db.query(
     `UPDATE biz.supplier_master SET
         supplier_code = $3, supplier_name = $4, mobile_no = $5, email = $6,
         modified_by = $7, modified_on = NOW()

@@ -66,6 +66,26 @@ export async function staffWiseReport(req, res) {
   }
 }
 
+/** GET /api/counter-pos/sales/viewer */
+export async function salesViewerList(req, res) {
+  try {
+    const data = await salesService.listSalesViewer(req.authStaff, req.query);
+    return res.json({ bills: data });
+  } catch (err) {
+    return handleError(res, err, 'Failed to load sales viewer');
+  }
+}
+
+/** GET /api/counter-pos/sales/viewer/:salesId */
+export async function salesViewerBill(req, res) {
+  try {
+    const data = await salesService.getSalesViewerBill(req.authStaff, req.params.salesId);
+    return res.json(data);
+  } catch (err) {
+    return handleError(res, err, 'Failed to load bill detail');
+  }
+}
+
 /** POST /api/counter-pos/sales/save */
 export async function saveBill(req, res) {
   try {

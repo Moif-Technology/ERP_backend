@@ -12,6 +12,22 @@ export async function nextCustomerId(client, companyId) {
   return Number(rows[0].next_id);
 }
 
+export async function findCustomerById(db, companyId, customerId) {
+  const { rows } = await db.query(
+    `SELECT customer_id, customer_code, customer_name
+     FROM biz.customer_master
+     WHERE company_id = $1 AND customer_id = $2
+     LIMIT 1`,
+    [companyId, customerId],
+  );
+  if (!rows[0]) return null;
+  return {
+    customerId: Number(rows[0].customer_id),
+    customerCode: rows[0].customer_code,
+    customerName: rows[0].customer_name,
+  };
+}
+
 export async function countActiveCustomers(db, companyId) {
   const { rows } = await db.query(
     `SELECT COUNT(*)::int AS n

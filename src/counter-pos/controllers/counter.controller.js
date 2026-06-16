@@ -46,11 +46,21 @@ export async function getCashInOutList(req, res) {
   }
 }
 
+/** GET /api/counter-pos/counter/cash-in-out/report */
+export async function getCashInOutReport(req, res) {
+  try {
+    const data = await counterService.getCashInOutReport(req.authStaff, req.query);
+    return res.json(data);
+  } catch (err) {
+    return handleError(res, err, 'Failed to load cash in/out report');
+  }
+}
+
 /** GET /api/counter-pos/counter/history?counterNo=1&limit=30 */
 export async function getHistory(req, res) {
   try {
-    const list = await counterService.getHistory(req.authStaff, req.query);
-    return res.json(list);
+    const closes = await counterService.getHistory(req.authStaff, req.query);
+    return res.json({ closes });
   } catch (err) {
     return handleError(res, err, 'Failed to get counter close history');
   }

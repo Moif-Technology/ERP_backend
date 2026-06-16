@@ -31,6 +31,10 @@ export async function nextVoucherDetailId(client, companyId, branchId) {
 }
 
 export async function insertVoucherMaster(client, row) {
+  const manualNo = row.manualVoucherNo != null && row.manualVoucherNo !== ''
+    ? String(row.manualVoucherNo)
+    : String(row.autoVoucherNo);
+
   await client.query(
     `INSERT INTO accounts.voucher_master (
        company_id, branch_id, voucher_master_id, voucher_type_id,
@@ -41,7 +45,7 @@ export async function insertVoucherMaster(client, row) {
      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW(),$17,NOW(),$17)`,
     [
       row.companyId, row.branchId, row.voucherMasterId, row.voucherTypeId,
-      row.autoVoucherNo, row.autoVoucherNo, row.voucherPrefix,
+      row.autoVoucherNo, manualNo, row.voucherPrefix,
       row.voucherDate || new Date(), row.referenceNo, row.voucherAmount,
       row.remarks, row.postStatus, row.creationMode, row.voucherPostedId,
       row.counterCloseNo, row.recordStatus, row.createdBy,
