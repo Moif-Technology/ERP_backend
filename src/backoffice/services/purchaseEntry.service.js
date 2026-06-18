@@ -1,9 +1,19 @@
 import { withTransaction } from '../../config/db.js';
+import * as accountHeadRepo from '../../accounts/repositories/accountHead.repository.js';
+import * as accountsParameterRepo from '../../accounts/repositories/accountsParameter.repository.js';
+import * as voucherRepo from '../../accounts/repositories/voucher.repository.js';
 import * as branchRepo from '../../shared/repositories/branch.repository.js';
+import * as stockRepo from '../../shared/repositories/stock.repository.js';
 import * as lpoRepo from '../repositories/lpo.repository.js';
 import * as grnRepo from '../repositories/grn.repository.js';
 import * as supplierRepo from '../repositories/supplier.repository.js';
 import * as purchaseEntryRepo from '../repositories/purchaseEntry.repository.js';
+
+// Seeded chart-of-accounts fallbacks (accountsSeed.repository.js)
+const ACCOUNTS_PAYABLE_ID = 2001;
+const PURCHASES_EXPENSE_ID = 5001;
+const CASH_IN_HAND_ID = 1001;
+const BANK_ACCOUNT_ID = 1002;
 
 function num(v, d = 0) {
   if (v == null || v === '') return d;
@@ -340,6 +350,134 @@ export async function createPurchase(pool, body, authStaff) {
       });
     }
 
+    const warnings = [];
+
+    // ───── Stock-in: cost roll-up + product_log_entry + qty_on_hand ─────
+    try {
+      await client.query('SAVEPOINT stock_update');
+      for (const L of normalized) {
+        const inQty = L.qty + L.focQty;
+        // Costs first — weighted average uses the pre-purchase on-hand qty.
+        await stockRepo.updateCostsOnPurchase(client, companyId, branchId, L.productId, inQty, L.unitCost);
+        await stockRepo.applyStockMovement(client, {
+          companyId, branchId,
+          productId: L.productId,
+          transactionType: 'PURCHASE',
+          transactionId: purchaseId,
+          qty: inQty,
+          unitCost: L.unitCost,
+          unitPrice: 0,
+          // product_log_entry.created_by is bigint (staff id), not a name
+          createdBy: Number(authStaff.staff_id) || null,
+        });
+      }
+      await client.query('RELEASE SAVEPOINT stock_update');
+    } catch (stockErr) {
+      await client.query('ROLLBACK TO SAVEPOINT stock_update');
+      if (stockErr.code === '42P01' || stockErr.code === '42703') {
+        console.warn('product_log_entry/product_inventory schema mismatch — purchase stock-in skipped');
+        warnings.push('Stock update skipped (schema mismatch)');
+      } else {
+        throw stockErr;
+      }
+    }
+
+    // ───── Accounts: DR Purchases / CR supplier (credit) or cash-card ledger ─────
+    try {
+      await client.query('SAVEPOINT voucher_save');
+
+      const purchasesHead = await accountHeadRepo.findAccountHead(client, companyId, PURCHASES_EXPENSE_ID);
+
+      // Credit side: supplier's own ledger → Accounts Payable → branch cash/card default.
+      let crAccountId = null;
+      let outstanding = 0;
+      if (paymentMode === 'CREDIT' && !paymentNow) {
+        const supHead = await accountHeadRepo.findAccountHead(client, companyId, supplierId);
+        if (supHead) crAccountId = supplierId;
+        else {
+          const apHead = await accountHeadRepo.findAccountHead(client, companyId, ACCOUNTS_PAYABLE_ID);
+          if (apHead) crAccountId = ACCOUNTS_PAYABLE_ID;
+        }
+        outstanding = invoiceAmount;
+      } else {
+        const paramName = paymentMode === 'CARD'
+          ? accountsParameterRepo.PARAM_DEFAULT_CARD_LEDGER
+          : accountsParameterRepo.PARAM_DEFAULT_CASH_LEDGER;
+        crAccountId = await accountsParameterRepo.getParameterAccountId(client, companyId, branchId, paramName);
+        if (crAccountId == null) {
+          const fallbackId = paymentMode === 'CARD' ? BANK_ACCOUNT_ID : CASH_IN_HAND_ID;
+          const head = await accountHeadRepo.findAccountHead(client, companyId, fallbackId);
+          if (head) crAccountId = fallbackId;
+        }
+      }
+
+      if (!purchasesHead || crAccountId == null) {
+        warnings.push('Purchase not posted to accounts — purchases/payable ledger missing');
+      } else {
+        const voucherTypeId = await voucherRepo.getVoucherTypeIdByCode(client, companyId, 'PUR') || 6;
+        const voucherPrefix = await voucherRepo.getVoucherPrefix(client, companyId, voucherTypeId) || 'PUR-';
+        const vMasterId = await voucherRepo.nextVoucherMasterId(client, companyId, branchId);
+        const autoNo = await voucherRepo.nextAutoVoucherNo(client, companyId, branchId, voucherTypeId);
+
+        await voucherRepo.insertVoucherMaster(client, {
+          companyId, branchId,
+          voucherMasterId: vMasterId,
+          voucherTypeId,
+          autoVoucherNo: autoNo,
+          voucherPrefix,
+          voucherDate: purchaseDate,
+          referenceNo: String(purchaseNo),
+          voucherAmount: invoiceAmount,
+          remarks: `PUR: ${purchaseNo}`,
+          postStatus: 'PENDING',
+          creationMode: 'INVENTORYACCOUNTS',
+          voucherPostedId: purchaseId,
+          counterCloseNo: 'PENDING',
+          recordStatus: 'ACTIVE',
+          createdBy: userLabel,
+        });
+
+        let detailSeq = await voucherRepo.nextVoucherDetailId(client, companyId, branchId);
+        // DR Purchases (expense)
+        await voucherRepo.insertVoucherDetail(client, {
+          companyId, branchId,
+          voucherDetailId: detailSeq++,
+          voucherMasterId: vMasterId,
+          accountId: PURCHASES_EXPENSE_ID,
+          creditAmount: 0,
+          debitAmount: invoiceAmount,
+          outstandingBalance: 0,
+          narration: `PUR: ${purchaseNo}`,
+          postStatus: 'PENDING',
+          recordStatus: 'ACTIVE',
+          createdBy: userLabel,
+        });
+        // CR supplier / payable / cash / bank
+        await voucherRepo.insertVoucherDetail(client, {
+          companyId, branchId,
+          voucherDetailId: detailSeq++,
+          voucherMasterId: vMasterId,
+          accountId: crAccountId,
+          creditAmount: invoiceAmount,
+          debitAmount: 0,
+          outstandingBalance: outstanding,
+          narration: `PUR: ${purchaseNo}`,
+          postStatus: 'PENDING',
+          recordStatus: 'ACTIVE',
+          createdBy: userLabel,
+        });
+      }
+      await client.query('RELEASE SAVEPOINT voucher_save');
+    } catch (voucherErr) {
+      await client.query('ROLLBACK TO SAVEPOINT voucher_save');
+      if (voucherErr.code === '42P01' || voucherErr.code === '42703') {
+        console.warn('Voucher tables missing — purchase accounting skipped');
+        warnings.push('Purchase accounting skipped (schema mismatch)');
+      } else {
+        throw voucherErr;
+      }
+    }
+
     return {
       purchaseId,
       branchId,
@@ -347,6 +485,7 @@ export async function createPurchase(pool, body, authStaff) {
       invoiceAmount: invoiceAmount.toFixed(2),
       netAmount: netClient.toFixed(2),
       lineCount: normalized.length,
+      warnings: warnings.length ? warnings : undefined,
     };
   });
 }

@@ -85,6 +85,7 @@ export async function loginWithCredentials(username, password) {
 
 const RESTAURANT_POS_ALLOWED_TYPES = new Set(['RESTAURANT-POS', 'ERP', '', null, undefined]);
 const COUNTER_POS_ALLOWED_TYPES    = new Set(['COUNTER-POS',    'ERP', '', null, undefined]);
+const VAN_ALLOWED_TYPES            = new Set(['VAN',            'ERP', '', null, undefined]);
 
 function assertRoleAllowed(row, allowedSet, posName) {
   const roleType = String(row.role_software_type || '').toUpperCase().trim();
@@ -118,13 +119,16 @@ export async function loginWithCredentialsForPOS(username, password, posType) {
     throw err;
   }
 
-  const allowedSet = posType === 'RESTAURANT-POS' ? RESTAURANT_POS_ALLOWED_TYPES : COUNTER_POS_ALLOWED_TYPES;
+  const allowedSet =
+    posType === 'RESTAURANT-POS' ? RESTAURANT_POS_ALLOWED_TYPES :
+    posType === 'VAN'            ? VAN_ALLOWED_TYPES :
+                                   COUNTER_POS_ALLOWED_TYPES;
   assertRoleAllowed(row, allowedSet, posType);
 
   return await tokensForStaffRowWithWelcome(pool, row);
 }
 
-export async function loginWithPinForRestaurant({ pin, companyId }) {
+export async function loginWithPinForRestaurant({ pin, companyId, staffId }) {
   const pinStr = String(pin || '').trim();
   const cid    = Number(companyId);
 
@@ -143,7 +147,13 @@ export async function loginWithPinForRestaurant({ pin, companyId }) {
     const err = new Error('No staff found'); err.status = 401; throw err;
   }
 
-  for (const row of staffList) {
+  // If staffId provided, check only that staff member first (faster + better UX)
+  const sid = staffId != null ? Number(staffId) : null;
+  const ordered = (sid != null && Number.isFinite(sid))
+    ? [...staffList.filter(r => Number(r.id) === sid), ...staffList.filter(r => Number(r.id) !== sid)]
+    : staffList;
+
+  for (const row of ordered) {
     const ok = await bcrypt.compare(pinStr, row.staff_pin);
     if (!ok) continue;
     assertRoleAllowed(row, RESTAURANT_POS_ALLOWED_TYPES, 'Restaurant POS');

@@ -1,6 +1,6 @@
 import pg from 'pg';
 
-const url = process.env.SCAN_DB_URL || 'postgresql://postgres:admin@localhost:5432/MOiFOnE';
+const url = process.env.SCAN_DB_URL || 'postgresql://postgres:admin@localhost:5432/moifone_uae';
 const pool = new pg.Pool({ connectionString: url });
 
 const big = (n) => Number(n).toLocaleString();

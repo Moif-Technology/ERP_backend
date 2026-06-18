@@ -1,9 +1,27 @@
 import { withTransaction } from '../../config/db.js';
 import * as branchRepo from '../../shared/repositories/branch.repository.js';
 import * as productRepo from '../repositories/product.repository.js';
+import * as substituteRepo from '../repositories/substitute.repository.js';
 import * as subGroupRepo from '../repositories/subGroup.repository.js';
 import { generateScopedAutoCode } from '../../utils/autoCode.js';
 import { assertLimitAvailable } from '../../core/services/entitlement.service.js';
+
+function parsePackLines(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((l) => ({
+    barcode:          String(l.barcode ?? '').trim().slice(0, 50) || null,
+    shortDescription: String(l.shortDescription ?? '').trim().slice(0, 150) || null,
+    unit:             String(l.unit ?? '').trim().slice(0, 50) || null,
+    packQty:          Math.max(Number(l.packQty) || 1, 0.0001),
+    pktDetails:       String(l.pktDetails ?? l.packetDetails ?? '').trim().slice(0, 100) || null,
+    discPct:          Number(l.discPct) || 0,
+    unitCost:         Number(l.unitCost) || 0,
+    avgCost:          Number(l.avgCost) || 0,
+    lastCost:         Number(l.lastCost) || 0,
+    marginPct:        Number(l.marginPct) || 0,
+    unitPrice:        Number(l.unitPrice) || 0,
+  }));
+}
 
 function trimOrEmpty(v) {
   if (v == null) return '';
@@ -338,10 +356,19 @@ export async function createProduct(pool, body, authStaff) {
       modifiedBy: userLabel,
     });
 
-    return { masterRow, invRow, branchId };
-  }).then(({ masterRow, invRow, branchId: bid }) =>
-    formatCreatedProduct(masterRow, invRow, bid)
-  );
+    const packLines = parsePackLines(body.packLines);
+    if (packLines.length > 0) {
+      await productRepo.savePackLines(client, companyId, productId, branchId, packLines);
+    }
+    const substituteIds = Array.isArray(body.substituteProductIds)
+      ? body.substituteProductIds.map(Number).filter((n) => Number.isFinite(n) && n > 0)
+      : [];
+    await substituteRepo.saveSubstitutes(client, companyId, productId, substituteIds);
+    return { masterRow, invRow, branchId, packLines };
+  }).then(({ masterRow, invRow, branchId: bid, packLines }) => ({
+    ...formatCreatedProduct(masterRow, invRow, bid),
+    packLines,
+  }));
 }
 
 function formatCreatedProduct(masterRow, invRow, branchId) {
@@ -448,7 +475,11 @@ export async function getProduct(pool, authStaff, productId, query) {
     err.status = 404;
     throw err;
   }
-  return product;
+  const [packLines, substitutes] = await Promise.all([
+    productRepo.getPackLines(pool, companyId, pid, bid),
+    substituteRepo.listSubstitutes(pool, companyId, pid, bid),
+  ]);
+  return { ...product, packLines, substitutes };
 }
  
 /**
@@ -639,6 +670,17 @@ export async function updateProduct(pool, productId, body, authStaff) {
       throw err;
     }
 
-    return formatCreatedProduct(masterRow, invRow, branchId);
-  });
+    const packLines = parsePackLines(body.packLines);
+    await productRepo.savePackLines(client, companyId, pid, branchId, packLines);
+
+    const substituteIds = Array.isArray(body.substituteProductIds)
+      ? body.substituteProductIds.map(Number).filter((n) => Number.isFinite(n) && n > 0)
+      : [];
+    await substituteRepo.saveSubstitutes(client, companyId, pid, substituteIds);
+
+    return { masterRow, invRow, branchId, packLines };
+  }).then(({ masterRow, invRow, branchId: bid, packLines }) => ({
+    ...formatCreatedProduct(masterRow, invRow, bid),
+    packLines,
+  }));
 }

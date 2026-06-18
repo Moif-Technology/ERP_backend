@@ -428,6 +428,14 @@ export async function createSale(pool, body, authStaff) {
         await client.query('SAVEPOINT stock_update');
         const currentQty = await stockRepo.getStockQty(client, companyId, branchId, L.productId);
         const newQty = round2(currentQty - L.qty);
+        if (newQty < 0) {
+          const label = L.shortDescription || `Product #${L.productId}`;
+          const err = new Error(
+            `Insufficient stock for "${label}": available ${currentQty}, requested ${L.qty}`,
+          );
+          err.status = 400;
+          throw err;
+        }
         const logId = await stockRepo.nextProductLogId(client, companyId);
         await stockRepo.insertProductLogEntry(client, {
           companyId,
@@ -442,6 +450,9 @@ export async function createSale(pool, body, authStaff) {
           unitPrice: L.unitPrice,
           createdBy: auditBy,
         });
+        // Keep product_inventory.qty_on_hand in step with the log so stock
+        // reports (closing qty) and movement history agree.
+        await stockRepo.adjustQtyOnHand(client, companyId, branchId, L.productId, -L.qty);
         await client.query('RELEASE SAVEPOINT stock_update');
       } catch (stockErr) {
         await client.query('ROLLBACK TO SAVEPOINT stock_update');

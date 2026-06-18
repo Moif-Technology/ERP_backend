@@ -2,11 +2,20 @@ import { pool } from '../../config/db.js';
 
 export async function listFeatures() {
   const { rows } = await pool.query(
-    `SELECT feature_code, feature_name, pack_code, parent_feature_code, feature_type,
-            description, is_active, sort_order
-       FROM core.feature_master
-      WHERE is_active = TRUE
-      ORDER BY pack_code, sort_order, feature_code`
+    `SELECT f.feature_code, f.feature_name, f.pack_code, f.parent_feature_code, f.feature_type,
+            f.description, f.is_active, f.sort_order,
+            COALESCE(
+              ARRAY_AGG(stm.software_code ORDER BY stm.software_type_id)
+                FILTER (WHERE stm.software_code IS NOT NULL),
+              '{}'
+            ) AS software_types
+       FROM core.feature_master f
+       LEFT JOIN core.software_type_feature stf ON stf.feature_code = f.feature_code
+       LEFT JOIN core.software_type_master stm ON stm.software_type_id = stf.software_type_id
+      WHERE f.is_active = TRUE
+      GROUP BY f.feature_code, f.feature_name, f.pack_code, f.parent_feature_code,
+               f.feature_type, f.description, f.is_active, f.sort_order
+      ORDER BY f.pack_code, f.sort_order, f.feature_code`
   );
   return rows;
 }

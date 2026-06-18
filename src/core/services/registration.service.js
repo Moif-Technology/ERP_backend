@@ -7,11 +7,14 @@ import * as roleRepo from '../repositories/role.repository.js';
 import { seedDefaultTenantAccounts } from '../../accounts/repositories/accountsSeed.repository.js';
 
 // Maps registration softwareTypeCode → software_type_master.software_type_id
-// 'ERP' (or missing) → null means no POS module, pure ERP backoffice
+// Unknown/missing codes → null (legacy: no software-type feature scoping)
 const SOFTWARE_TYPE_ID_MAP = {
   RESTAURANT: 1,
   POS: 2,
   GARAGE: 3,
+  HR: 4,
+  CRM: 5,
+  ERP: 6,
 };
 
 function resolveSoftwareTypeId(code) {
@@ -176,6 +179,13 @@ export async function registerCompanyInTransaction(client, input) {
     now,
     trialEndsAt: trialEnds.toISOString(),
     onboardingJson,
+  });
+
+  await onboardingRepo.insertTrialSubscription(client, {
+    companyId,
+    planCode: selectedPlan,
+    now,
+    trialEndsAt: trialEnds.toISOString(),
   });
 
   return staffRepo.selectStaffSessionRow(client, companyId, staffId);

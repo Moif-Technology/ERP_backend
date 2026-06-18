@@ -169,6 +169,37 @@ export async function getMonthlySalesTrend(pool, { companyId, branchId, months =
   return rows;
 }
 
+export async function getWeeklySalesTrend(pool, { companyId, branchId }) {
+  const branchFilter = Number.isFinite(branchId) && branchId > 0;
+  const params = branchFilter ? [companyId, branchId] : [companyId];
+  const branchSql = branchFilter ? 'AND sm.branch_id = $2' : '';
+
+  const { rows } = await pool.query(`
+    WITH day_series AS (
+      SELECT generate_series(
+        CURRENT_DATE - interval '6 day',
+        CURRENT_DATE,
+        interval '1 day'
+      )::date AS day
+    )
+    SELECT
+      to_char(ds.day, 'Dy') AS label,
+      ds.day,
+      COALESCE(COUNT(sm.sales_id), 0)::int AS bills,
+      COALESCE(SUM(sm.amount), 0)::numeric AS sales
+    FROM day_series ds
+    LEFT JOIN ops.sales_master sm
+      ON sm.company_id = $1
+     ${branchSql}
+     AND sm.post_status = 'POSTED'
+     AND COALESCE(sm.hold_status, '') NOT IN ('HOLD', 'CANCELLED')
+     AND sm.bill_date::date = ds.day
+    GROUP BY ds.day
+    ORDER BY ds.day
+  `, params);
+  return rows;
+}
+
 export async function getTopProducts(pool, { companyId, branchId, limit = 5 }) {
   const branchFilter = Number.isFinite(branchId) && branchId > 0;
   const params = branchFilter ? [companyId, branchId, limit] : [companyId, limit];

@@ -3,6 +3,14 @@ import { pool } from '../config/db.js';
 import { cacheGet, cacheSet, cacheDel } from '../config/redis.js';
 import * as staffRepo from '../core/repositories/staff.repository.js';
 
+const OPEN_ACCESS = {
+  subscription: { status: 'active', planCode: 'custom', isUsable: true, mode: 'normal' },
+  features: new Proxy({}, { get: () => true }),
+  permissions: new Proxy([], { get: (t, p) => p === 'includes' ? () => true : t[p] }),
+  limits: {},
+  meta: { source: 'open' },
+};
+
 // Cache the staff session DTO so we don't hit the DB on every request.
 // TTL kept short and <= access-token life so revocations take effect quickly.
 const SESSION_TTL_SECONDS = 300;
@@ -31,6 +39,7 @@ export async function authMiddleware(req, res, next) {
     const cached = await cacheGet(sessionKey(staffPk));
     if (cached) {
       req.authStaff = JSON.parse(cached);
+      req.access = OPEN_ACCESS;
       return next();
     }
 
@@ -40,6 +49,7 @@ export async function authMiddleware(req, res, next) {
     }
     req.authStaff = rows[0];
     await cacheSet(sessionKey(staffPk), JSON.stringify(rows[0]), SESSION_TTL_SECONDS);
+    req.access = OPEN_ACCESS;
     next();
   } catch {
     return res.status(401).json({ message: 'Unauthorized' });

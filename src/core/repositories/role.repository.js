@@ -185,6 +185,18 @@ export async function listValidPermissionCodes(db, permissionCodes) {
   return rows.map((row) => row.permission_code);
 }
 
+export async function listValidPermissionsWithFeatures(db, permissionCodes) {
+  if (!permissionCodes.length) return [];
+  const { rows } = await db.query(
+    `SELECT permission_code, feature_code
+     FROM core.permission_master
+     WHERE permission_code = ANY($1::varchar[])
+       AND is_active = TRUE`,
+    [permissionCodes]
+  );
+  return rows;
+}
+
 export async function replaceRolePermissions(db, companyId, roleId, permissionCodes) {
   await db.query(
     `DELETE FROM core.role_permission

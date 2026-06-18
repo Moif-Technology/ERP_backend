@@ -14,6 +14,7 @@ import { dealsOffersRouter } from './backoffice/routes/dealsOffers.routes.js';
 import { deliveryOrderRouter } from './backoffice/routes/deliveryOrder.routes.js';
 import { grnRouter } from './backoffice/routes/grn.routes.js';
 import { groupRouter } from './backoffice/routes/group.routes.js';
+import { locationRouter } from './backoffice/routes/location.routes.js';
 import { lpoRouter } from './backoffice/routes/lpo.routes.js';
 import { productRouter } from './backoffice/routes/product.routes.js';
 import { purchaseEntryRouter } from './backoffice/routes/purchaseEntry.routes.js';
@@ -38,8 +39,13 @@ import { exchangeRouter } from './core/routes/exchange.routes.js';
 import { planRouter } from './core/routes/plan.routes.js';
 import { posDeviceRouter } from './core/routes/posDevice.routes.js';
 import { roleRouter } from './core/routes/role.routes.js';
+import { ensureTable as ensureRolePageTable } from './core/repositories/roleAccess.repository.js';
+import { ensureFeatureCatalog } from './core/repositories/featureCatalogSeed.js';
+import { ensureTenantTables } from './core/repositories/ensureTenantTables.js';
+import { branchRouter } from './core/routes/branch.routes.js';
 import { staffRouter } from './core/routes/staff.routes.js';
 import { systemParameterRouter } from './core/routes/systemParameter.routes.js';
+import { unitRouter } from './core/routes/unit.routes.js';
 import { crmDashboardRouter } from './crm/routes/crmDashboard.routes.js';
 import { crmFollowupRouter } from './crm/routes/crmFollowup.routes.js';
 import { crmInteractionRouter } from './crm/routes/crmInteraction.routes.js';
@@ -72,6 +78,8 @@ import { hrRouter } from './hr/routes/hr.routes.js';
 import { buildLimiters } from './middleware/rateLimit.js';
 import { counterPosRouter } from './pos/counter-pos/counter-pos.routes.js';
 import { posRouter } from './pos/restaurant-pos/pos.routes.js';
+import { vanRouter } from './van/van.routes.js';
+import { featureAdminRouter } from './core/routes/featureAdmin.routes.js';
 
 try {
   assertConfig();
@@ -154,12 +162,14 @@ app.use('/api/dashboard', backofficeDashboardRouter);
 app.use('/api/plans', planRouter);
 app.use('/api/pos-devices', posDeviceRouter);
 app.use('/api/roles', roleRouter);
+app.use('/api/branches', branchRouter);
 app.use('/api/staff', staffRouter);
 app.use('/api/groups', groupRouter);
 app.use('/api/areas', areaRouter);
 app.use('/api/customers', customerRouter);
 app.use('/api/sub-groups', subGroupRouter);
 app.use('/api/products', productRouter);
+app.use('/api/locations', locationRouter);
 app.use('/api/tables', tableRouter);
 app.use('/api/quotations', quotationRouter);
 app.use('/api/delivery-orders', deliveryOrderRouter);
@@ -186,7 +196,9 @@ app.use('/api/crm/notes', crmNoteRouter);
 app.use('/api/crm/dashboard', crmDashboardRouter);
 app.use('/api/pos',         posRouter);
 app.use('/api/counter-pos', counterPosRouter);
+app.use('/api/van',         vanRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/feature-admin', featureAdminRouter);
 app.use('/api/garage/colors',           colorMasterRouter);
 app.use('/api/garage/car-groups',       carGroupRouter);
 app.use('/api/garage/car-sub-groups',   carSubGroupRouter);
@@ -209,6 +221,7 @@ app.use('/api/garage/dashboard',        garageDashboardRouter);
 app.use('/api/exchange', exchangeRouter);
 app.use('/api/company', companyRouter);
 app.use('/api/parameters', systemParameterRouter);
+app.use('/api/units', unitRouter);
 
 // Map common Postgres error codes to HTTP status + a safe client message.
 // Controllers that simply `next(err)` get consistent responses for free.
@@ -299,6 +312,9 @@ function printBanner() {
 async function start() {
   try {
     await verifyDatabaseConnection();
+    await ensureTenantTables();
+    await ensureRolePageTable();
+    await ensureFeatureCatalog();
   } catch (err) {
     console.error('');
     console.error('  [DB] FAILED — could not connect');

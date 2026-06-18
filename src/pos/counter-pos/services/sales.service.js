@@ -1,5 +1,12 @@
 import { pool } from '../../../config/db.js';
+import * as accountHeadRepo from '../../../accounts/repositories/accountHead.repository.js';
+import * as voucherRepo from '../../../accounts/repositories/voucher.repository.js';
+import * as stockRepo from '../../../shared/repositories/stock.repository.js';
 import * as repo from '../repositories/sales.repository.js';
+
+// Seeded chart-of-accounts fallbacks (accountsSeed.repository.js)
+const ACCOUNTS_RECEIVABLE_ID = 1003;
+const SALES_REVENUE_ID = 4001;
 
 /**
  * Save current cart as a held bill.
@@ -189,6 +196,120 @@ export async function saveBill(authStaff, body) {
       paymentMode, netAmount, staffId, billDate: now,
     });
 
+    const warnings = [];
+
+    // ───── Stock: product_log_entry (outward) + qty_on_hand sync ─────
+    try {
+      await client.query('SAVEPOINT stock_update');
+      for (const it of cartItems) {
+        await stockRepo.applyStockMovement(client, {
+          companyId, branchId,
+          productId: Number(it.productId),
+          transactionType: 'SALES',
+          transactionId: salesId,
+          qty: -Number(it.qty),
+          unitCost: Number(it.unitCost ?? it.unitPrice ?? 0),
+          unitPrice: Number(it.unitPrice ?? 0),
+          createdBy: staffId,
+        });
+      }
+      await client.query('RELEASE SAVEPOINT stock_update');
+    } catch (stockErr) {
+      await client.query('ROLLBACK TO SAVEPOINT stock_update');
+      if (stockErr.code === '42P01' || stockErr.code === '42703') {
+        console.warn('product_log_entry/product_inventory schema mismatch — stock update skipped');
+        warnings.push('Stock update skipped (schema mismatch)');
+      } else {
+        throw stockErr;
+      }
+    }
+
+    // ───── Accounts: CREDIT bills go to the books (DR debtor / CR sales) ─────
+    // Cash/card counter sales are reconciled at counter close, not per bill.
+    if (paymentMode === 'CREDIT') {
+      try {
+        await client.query('SAVEPOINT voucher_save');
+
+        // Debtor ledger: customer's own head if it exists, else Accounts Receivable.
+        let debtorAccountId = null;
+        if (customerId != null) {
+          const custHead = await accountHeadRepo.findAccountHead(client, companyId, Number(customerId));
+          if (custHead) debtorAccountId = Number(customerId);
+        }
+        if (debtorAccountId == null) {
+          const arHead = await accountHeadRepo.findAccountHead(client, companyId, ACCOUNTS_RECEIVABLE_ID);
+          if (arHead) debtorAccountId = ACCOUNTS_RECEIVABLE_ID;
+        }
+        const salesHead = await accountHeadRepo.findAccountHead(client, companyId, SALES_REVENUE_ID);
+
+        if (debtorAccountId == null || !salesHead) {
+          warnings.push('Credit sale not posted to accounts — debtor/sales ledger missing');
+        } else {
+          const voucherTypeId = await voucherRepo.getVoucherTypeId(client, companyId, 'SalesEntryVoucherName', branchId) || 1;
+          const voucherPrefix = await voucherRepo.getVoucherPrefix(client, companyId, voucherTypeId) || 'SV-';
+          const vMasterId = await voucherRepo.nextVoucherMasterId(client, companyId, branchId);
+          const autoNo = await voucherRepo.nextAutoVoucherNo(client, companyId, branchId, voucherTypeId);
+
+          await voucherRepo.insertVoucherMaster(client, {
+            companyId, branchId,
+            voucherMasterId: vMasterId,
+            voucherTypeId,
+            autoVoucherNo: autoNo,
+            voucherPrefix,
+            voucherDate: now,
+            referenceNo: String(salesId),
+            voucherAmount: netAmount,
+            remarks: `POS CREDIT B-${salesId}`,
+            postStatus: 'PENDING',
+            creationMode: 'COUNTERPOS',
+            voucherPostedId: salesId,
+            counterCloseNo: 'PENDING',
+            recordStatus: 'ACTIVE',
+            createdBy: String(staffId),
+          });
+
+          let detailSeq = await voucherRepo.nextVoucherDetailId(client, companyId, branchId);
+          // DR debtor — full bill value stays outstanding until receipt
+          await voucherRepo.insertVoucherDetail(client, {
+            companyId, branchId,
+            voucherDetailId: detailSeq++,
+            voucherMasterId: vMasterId,
+            accountId: debtorAccountId,
+            creditAmount: 0,
+            debitAmount: netAmount,
+            outstandingBalance: netAmount,
+            narration: `POS CREDIT B-${salesId}`,
+            postStatus: 'PENDING',
+            recordStatus: 'ACTIVE',
+            createdBy: String(staffId),
+          });
+          // CR sales revenue
+          await voucherRepo.insertVoucherDetail(client, {
+            companyId, branchId,
+            voucherDetailId: detailSeq++,
+            voucherMasterId: vMasterId,
+            accountId: SALES_REVENUE_ID,
+            creditAmount: netAmount,
+            debitAmount: 0,
+            outstandingBalance: 0,
+            narration: `POS CREDIT B-${salesId}`,
+            postStatus: 'PENDING',
+            recordStatus: 'ACTIVE',
+            createdBy: String(staffId),
+          });
+        }
+        await client.query('RELEASE SAVEPOINT voucher_save');
+      } catch (voucherErr) {
+        await client.query('ROLLBACK TO SAVEPOINT voucher_save');
+        if (voucherErr.code === '42P01' || voucherErr.code === '42703') {
+          console.warn('Voucher tables missing — credit sale accounting skipped');
+          warnings.push('Credit sale accounting skipped (schema mismatch)');
+        } else {
+          throw voucherErr;
+        }
+      }
+    }
+
     // If this bill was recalled from hold, remove the held record
     if (recalledHoldSalesId) {
       await repo.deleteHoldBill(client, companyId, Number(recalledHoldSalesId));
@@ -196,7 +317,10 @@ export async function saveBill(authStaff, body) {
 
     await client.query('COMMIT');
 
-    return { salesId, billNo: salesId, billNoDisplay: `B-${salesId}` };
+    return {
+      salesId, billNo: salesId, billNoDisplay: `B-${salesId}`,
+      warnings: warnings.length ? warnings : undefined,
+    };
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;

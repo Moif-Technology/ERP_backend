@@ -37,6 +37,28 @@ export async function listPlanFeatures(pool, planCode) {
   return rows;
 }
 
+export async function findCompanySoftwareTypeId(pool, companyId) {
+  const { rows } = await pool.query(
+    `SELECT software_type_id
+     FROM core.company_master
+     WHERE company_id = $1
+     LIMIT 1`,
+    [companyId]
+  );
+  return rows[0]?.software_type_id ?? null;
+}
+
+export async function listSoftwareTypeFeatures(pool, softwareTypeId) {
+  if (softwareTypeId == null) return [];
+  const { rows } = await pool.query(
+    `SELECT feature_code, is_granted
+     FROM core.software_type_feature
+     WHERE software_type_id = $1`,
+    [softwareTypeId]
+  );
+  return rows;
+}
+
 export async function listTenantFeatureOverrides(pool, companyId) {
   const { rows } = await pool.query(
     `SELECT feature_code, is_enabled
@@ -72,7 +94,7 @@ export async function listTenantLimitOverrides(pool, companyId) {
 export async function listRolePermissions(pool, companyId, roleId) {
   if (roleId == null) return [];
   const { rows } = await pool.query(
-    `SELECT rp.permission_code, rp.is_allowed
+    `SELECT rp.permission_code, rp.is_allowed, pm.feature_code
      FROM core.role_permission rp
      JOIN core.permission_master pm
        ON pm.permission_code = rp.permission_code

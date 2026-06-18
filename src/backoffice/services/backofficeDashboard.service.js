@@ -15,11 +15,12 @@ export async function getBackofficeDashboard(pool, authStaff) {
     throw err;
   }
 
-  const [summary, recentRows, monthlyRows, topProductRows] = await Promise.all([
+  const [summary, recentRows, monthlyRows, topProductRows, weeklyRows] = await Promise.all([
     repo.getSummary(pool, { companyId, branchId }),
     repo.getRecentSales(pool, { companyId, branchId, limit: 5 }),
     repo.getMonthlySalesTrend(pool, { companyId, branchId, months: 6 }),
     repo.getTopProducts(pool, { companyId, branchId, limit: 5 }),
+    repo.getWeeklySalesTrend(pool, { companyId, branchId }),
   ]);
 
   return {
@@ -68,6 +69,11 @@ export async function getBackofficeDashboard(pool, authStaff) {
       product: row.product,
       qty: num(row.qty),
       amount: money(row.amount),
+    })),
+    weeklySales: weeklyRows.map((row) => ({
+      label: row.label,
+      bills: num(row.bills),
+      sales: money(row.sales),
     })),
   };
 }

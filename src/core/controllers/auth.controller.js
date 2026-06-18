@@ -81,9 +81,9 @@ export async function accessRefresh(req, res) {
   }
 }
 
-export function refresh(req, res) {
+export async function refresh(req, res) {
   try {
-    const { accessToken } = authService.refreshAccessToken(req.body?.refreshToken);
+    const { accessToken } = await authService.refreshAccessToken(req.body?.refreshToken);
     return res.json({ accessToken });
   } catch (err) {
     return handleAuthError(res, err, 'Refresh failed');

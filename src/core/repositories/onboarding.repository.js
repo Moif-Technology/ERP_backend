@@ -37,3 +37,22 @@ export async function insertTrialOnboarding(client, params) {
     [companyId, planCode, now, trialEndsAt, onboardingJson]
   );
 }
+
+// core.tenant_subscription is what the super-admin tenant screens and the
+// entitlement resolve read first; company_onboarding is only a fallback.
+// Registration must create both or new tenants show "Plan: None" in admin.
+export async function insertTrialSubscription(client, params) {
+  const { companyId, planCode, now, trialEndsAt } = params;
+  await client.query(
+    `INSERT INTO core.tenant_subscription (
+      company_id, plan_code, status, trial_started_at, trial_ends_at, created_at, updated_at
+    ) VALUES ($1, $2, 'trial', $3, $4, $3, $3)
+    ON CONFLICT (company_id) DO UPDATE SET
+      plan_code = EXCLUDED.plan_code,
+      status = EXCLUDED.status,
+      trial_started_at = EXCLUDED.trial_started_at,
+      trial_ends_at = EXCLUDED.trial_ends_at,
+      updated_at = EXCLUDED.updated_at`,
+    [companyId, planCode, now, trialEndsAt]
+  );
+}

@@ -13,3 +13,6 @@ roleRouter.put('/:roleId', requirePermission('core.roles.edit'), roleController.
 roleRouter.delete('/:roleId', requirePermission('core.roles.delete'), roleController.deactivateRole);
 roleRouter.get('/:roleId/permissions', requirePermission('core.roles.view'), roleController.getRolePermissions);
 roleRouter.put('/:roleId/permissions', requirePermission('core.roles.edit'), roleController.updateRolePermissions);
+roleRouter.get('/my-access', roleController.getMyAccess);
+roleRouter.get('/:roleId/pages', roleController.getRolePages);
+roleRouter.put('/:roleId/pages', roleController.setRolePages);

@@ -132,6 +132,42 @@ export function applyOverrides(base, overrides, keyName, valueName) {
   return out;
 }
 
+/**
+ * Software-type ("module") scope for a company. Returns null when the company
+ * has no software type or the mapping is absent — callers then keep the
+ * legacy plan-only behaviour. Errors from a missing software_type_feature
+ * table are swallowed here so one unapplied migration cannot collapse the
+ * whole entitlement resolve into the legacy fallback.
+ */
+async function resolveSoftwareTypeScope(db, companyId) {
+  try {
+    const softwareTypeId = await entitlementRepo.findCompanySoftwareTypeId(db, companyId);
+    if (softwareTypeId == null) return null;
+    const rows = await entitlementRepo.listSoftwareTypeFeatures(db, softwareTypeId);
+    if (rows.length === 0) return null;
+    const allowed = new Set();
+    const granted = [];
+    for (const row of rows) {
+      allowed.add(row.feature_code);
+      if (row.is_granted) granted.push(row.feature_code);
+    }
+    return { softwareTypeId: Number(softwareTypeId), allowed, granted };
+  } catch (err) {
+    if (isMissingEntitlementSchema(err)) return null;
+    throw err;
+  }
+}
+
+function applySoftwareTypeScope(features, scope) {
+  if (!scope) return features;
+  const scoped = {};
+  for (const [code, enabled] of Object.entries(features)) {
+    if (scope.allowed.has(code)) scoped[code] = enabled;
+  }
+  for (const code of scope.granted) scoped[code] = true;
+  return scoped;
+}
+
 function buildLegacyFallback(companyId, roleId) {
   return {
     subscription: DEFAULT_SUBSCRIPTION,
@@ -160,17 +196,24 @@ export async function resolveEntitlementsForStaff(staffRow, db = pool) {
     const subscription = resolveSubscriptionState(subscriptionRow);
     const planCode = subscription.planCode;
 
-    const [planFeatures, featureOverrides, planLimits, limitOverrides, rolePermissions] =
+    const [planFeatures, featureOverrides, planLimits, limitOverrides, rolePermissions, softwareTypeScope] =
       await Promise.all([
         entitlementRepo.listPlanFeatures(db, planCode),
         entitlementRepo.listTenantFeatureOverrides(db, companyId),
         entitlementRepo.listPlanLimits(db, planCode),
         entitlementRepo.listTenantLimitOverrides(db, companyId),
         entitlementRepo.listRolePermissions(db, companyId, roleId),
+        resolveSoftwareTypeScope(db, companyId),
       ]);
 
+    // Plan decides the tier; the company's software type (module bundle)
+    // decides which features that tier can ever reach. Granted features are
+    // included with the module regardless of plan. Tenant overrides win last.
     const features = applyOverrides(
-      objectFromRows(planFeatures, 'feature_code', 'is_enabled'),
+      applySoftwareTypeScope(
+        objectFromRows(planFeatures, 'feature_code', 'is_enabled'),
+        softwareTypeScope
+      ),
       featureOverrides,
       'feature_code',
       'is_enabled'
@@ -189,8 +232,12 @@ export async function resolveEntitlementsForStaff(staffRow, db = pool) {
       'limit_code',
       'limit_value'
     );
+    // Permissions only count when their feature is enabled for this company
+    // (plan ∩ software type). Stale role_permission rows for features the
+    // company doesn't have (e.g. admin seeded with everything) are dropped.
     const explicitPermissions = rolePermissions
       .filter((row) => row.is_allowed)
+      .filter((row) => !row.feature_code || features[row.feature_code] === true)
       .map((row) => row.permission_code);
     const permissions = roleId == null ? [] : explicitPermissions;
 
@@ -202,6 +249,7 @@ export async function resolveEntitlementsForStaff(staffRow, db = pool) {
       meta: {
         companyId,
         roleId,
+        softwareTypeId: softwareTypeScope?.softwareTypeId ?? null,
         source: 'entitlement-tables',
         version: subscriptionRow?.updated_at
           ? new Date(subscriptionRow.updated_at).getTime()

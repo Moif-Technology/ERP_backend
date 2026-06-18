@@ -5,23 +5,44 @@ const REGISTRATION_SOFTWARE_TYPES = [
   {
     code: 'RESTAURANT',
     typeId: 1,
-    name: 'Restaurant / HMS',
+    name: 'Backoffice + Restaurant POS',
     description: 'Restaurant POS + ERP Backoffice. For restaurants, cafes, hotels, and bakeries.',
     includes: ['Restaurant POS (table management, KOT, billing)', 'Kitchen display & order flow', 'Full ERP Backoffice'],
   },
   {
     code: 'POS',
     typeId: 2,
-    name: 'Counter POS / Retail',
+    name: 'Backoffice + Counter POS',
     description: 'Counter POS + ERP Backoffice. For supermarkets, retail shops, and pharmacies.',
     includes: ['Counter POS (barcode, fast checkout)', 'Inventory & purchase management', 'Full ERP Backoffice'],
   },
   {
     code: 'ERP',
-    typeId: null,
+    typeId: 6,
     name: 'ERP Backoffice Only',
     description: 'Full ERP without POS. For service businesses, wholesale, and trading companies.',
     includes: ['Sales & purchase management', 'Accounts & vouchers', 'Reports & dashboard'],
+  },
+  {
+    code: 'GARAGE',
+    typeId: 3,
+    name: 'Garage ERP',
+    description: 'Garage workshop management + ERP Backoffice. For garages and service centers.',
+    includes: ['Job cards, estimates & gate pass', 'Technicians & parts usage', 'ERP Backoffice'],
+  },
+  {
+    code: 'HR',
+    typeId: 4,
+    name: 'HR & Payroll',
+    description: 'Human resources management. For teams that only need people operations.',
+    includes: ['Employees & documents', 'Attendance & shifts', 'Leave management'],
+  },
+  {
+    code: 'CRM',
+    typeId: 5,
+    name: 'CRM',
+    description: 'Customer relationship management. For sales-driven teams.',
+    includes: ['Leads & opportunities', 'Follow-ups & interactions', 'CRM reports'],
   },
 ];
 

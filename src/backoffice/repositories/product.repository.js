@@ -636,3 +636,64 @@ export async function updateProductInventory(client, companyId, productId, branc
   );
   return rows[0] ?? null;
 }
+
+// ─── Product Pack Lines ────────────────────────────────────────────────────────
+
+export async function getPackLines(pool, companyId, productId, branchId) {
+  const { rows } = await pool.query(
+    `SELECT line_seq, barcode, short_description, unit, pack_qty, pkt_details,
+            disc_pct, unit_cost, avg_cost, last_cost, margin_pct, unit_price
+     FROM core.product_pack_line
+     WHERE company_id = $1 AND product_id = $2 AND branch_id = $3
+       AND record_status = 'ACTIVE'
+     ORDER BY line_seq ASC`,
+    [companyId, productId, branchId]
+  );
+  return rows.map((r) => ({
+    lineSeq:          Number(r.line_seq),
+    barcode:          r.barcode ?? '',
+    shortDescription: r.short_description ?? '',
+    unit:             r.unit ?? '',
+    packQty:          Number(r.pack_qty) || 1,
+    pktDetails:       r.pkt_details ?? '',
+    discPct:          Number(r.disc_pct) || 0,
+    unitCost:         Number(r.unit_cost) || 0,
+    avgCost:          Number(r.avg_cost) || 0,
+    lastCost:         Number(r.last_cost) || 0,
+    marginPct:        Number(r.margin_pct) || 0,
+    unitPrice:        Number(r.unit_price) || 0,
+  }));
+}
+
+export async function savePackLines(client, companyId, productId, branchId, lines) {
+  await client.query(
+    `DELETE FROM core.product_pack_line
+     WHERE company_id = $1 AND product_id = $2 AND branch_id = $3`,
+    [companyId, productId, branchId]
+  );
+  if (!Array.isArray(lines) || lines.length === 0) return;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    await client.query(
+      `INSERT INTO core.product_pack_line
+         (company_id, product_id, branch_id, line_seq, barcode, short_description,
+          unit, pack_qty, pkt_details, disc_pct, unit_cost, avg_cost, last_cost,
+          margin_pct, unit_price, record_status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'ACTIVE',NOW(),NOW())`,
+      [
+        companyId, productId, branchId, i + 1,
+        emptyToNull(l.barcode),
+        emptyToNull(l.shortDescription),
+        emptyToNull(l.unit),
+        Number(l.packQty) || 1,
+        emptyToNull(l.pktDetails),
+        Number(l.discPct) || 0,
+        Number(l.unitCost) || 0,
+        Number(l.avgCost) || 0,
+        Number(l.lastCost) || 0,
+        Number(l.marginPct) || 0,
+        Number(l.unitPrice) || 0,
+      ]
+    );
+  }
+}

@@ -75,6 +75,16 @@ export async function getVoucherTypeId(client, companyId, parameterName, branchI
   return rows[0]?.type_id ? Number(rows[0].type_id) : null;
 }
 
+export async function getVoucherTypeIdByCode(client, companyId, voucherTypeCode) {
+  const { rows } = await client.query(
+    `SELECT voucher_type_id FROM accounts.voucher_type_master
+     WHERE company_id = $1 AND voucher_type_code = $2 AND record_status = 'ACTIVE'
+     LIMIT 1`,
+    [companyId, voucherTypeCode],
+  );
+  return rows[0]?.voucher_type_id ? Number(rows[0].voucher_type_id) : null;
+}
+
 export async function getVoucherPrefix(client, companyId, voucherTypeId) {
   const { rows } = await client.query(
     `SELECT voucher_prefix FROM accounts.voucher_type_master

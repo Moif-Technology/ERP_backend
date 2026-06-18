@@ -1,4 +1,6 @@
 import * as authService from '../../../core/services/auth.service.js';
+import * as staffRepo from '../../../core/repositories/staff.repository.js';
+import { pool } from '../../../config/db.js';
 import * as posParameterService from '../services/posParameter.service.js';
 import { resolvePosPrivilegesForStaff } from '../../../core/services/entitlement.service.js';
 
@@ -34,10 +36,12 @@ export async function login(req, res) {
       'RESTAURANT-POS'
     );
     const u = session.user;
+    const c = session.company;
     return res.json({
       stationId: u.stationId != null ? String(u.stationId) : '',
       staffName: u.staffName ?? '',
       staffID: u.staffId != null ? String(u.staffId) : '',
+      companyId: c?.companyId != null ? String(c.companyId) : '',
       accessToken,
       refreshToken,
       subscription: session.subscription ?? null,
@@ -59,10 +63,12 @@ export async function pinLogin(req, res) {
   try {
     const { accessToken, refreshToken, session } = await authService.loginWithPinForRestaurant(req.body);
     const u = session.user;
+    const c = session.company;
     return res.json({
       stationId: u.stationId != null ? String(u.stationId) : '',
       staffName: u.staffName ?? '',
       staffID: u.staffId != null ? String(u.staffId) : '',
+      companyId: c?.companyId != null ? String(c.companyId) : '',
       accessToken,
       refreshToken,
       subscription: session.subscription ?? null,
@@ -72,6 +78,29 @@ export async function pinLogin(req, res) {
     });
   } catch (err) {
     return handlePosError(res, err, 'PIN login failed');
+  }
+}
+
+/**
+ * POST /api/pos/staff-list
+ * Public — returns staff with PINs set for this company (for staff picker UI).
+ * Body: { companyId }
+ */
+export async function staffList(req, res) {
+  try {
+    const companyId = Number(req.body?.companyId);
+    if (!Number.isFinite(companyId) || companyId < 1) {
+      return res.status(400).json({ message: 'companyId is required' });
+    }
+    const rows = await staffRepo.findAllActiveStaffWithPinForCompany(pool, companyId);
+    const staff = rows.map((r) => ({
+      staffPk:  r.id,
+      staffName: r.staff_name,
+      roleName:  r.role_name || null,
+    }));
+    return res.json({ staff, companyId });
+  } catch (err) {
+    return handlePosError(res, err, 'Could not load staff list');
   }
 }
 

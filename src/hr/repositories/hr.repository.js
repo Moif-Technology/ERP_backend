@@ -413,9 +413,50 @@ export async function hrSummary(pool, companyId, branchId) {
       [companyId, branchId],
     ),
   ]);
+  const [recentLeaves, todayAttendance] = await Promise.all([
+    pool.query(
+      `SELECT lr.leave_request_id, em.employee_name, lt.leave_name,
+              lr.from_date, lr.to_date, lr.total_days, lr.request_status
+         FROM hr.leave_request lr
+         LEFT JOIN hr.employee_master em
+           ON em.company_id = lr.company_id AND em.branch_id = lr.branch_id AND em.employee_id = lr.employee_id
+         LEFT JOIN hr.leave_type_master lt
+           ON lt.company_id = lr.company_id AND lt.branch_id = lr.branch_id AND lt.leave_type_id = lr.leave_type_id
+        WHERE lr.company_id=$1 AND lr.branch_id=$2
+        ORDER BY lr.created_at DESC
+        LIMIT 5`,
+      [companyId, branchId],
+    ),
+    pool.query(
+      `SELECT em.employee_name, em.department, ad.first_in, ad.attendance_status
+         FROM hr.attendance_daily ad
+         LEFT JOIN hr.employee_master em
+           ON em.company_id = ad.company_id AND em.branch_id = ad.branch_id AND em.employee_id = ad.employee_id
+        WHERE ad.company_id=$1 AND ad.branch_id=$2 AND ad.work_date = CURRENT_DATE
+        ORDER BY ad.first_in ASC NULLS LAST
+        LIMIT 8`,
+      [companyId, branchId],
+    ),
+  ]);
+
   return {
     totalEmployees: employees.rows[0]?.total ?? 0, activeEmployees: employees.rows[0]?.active ?? 0,
     pendingLeaves: leaveQueue.rows[0]?.pending ?? 0, expiringDocuments: docs.rows[0]?.expiring_docs ?? 0,
     attendanceIssues: attendanceIssues.rows[0]?.issues ?? 0,
+    recentLeaveRequests: recentLeaves.rows.map((r) => ({
+      id: r.leave_request_id,
+      employeeName: r.employee_name,
+      leaveType: r.leave_name,
+      fromDate: r.from_date,
+      toDate: r.to_date,
+      totalDays: Number(r.total_days || 0),
+      status: r.request_status,
+    })),
+    todayAttendance: todayAttendance.rows.map((r) => ({
+      employeeName: r.employee_name,
+      department: r.department,
+      firstIn: r.first_in,
+      status: r.attendance_status,
+    })),
   };
 }

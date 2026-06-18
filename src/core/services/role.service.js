@@ -1,5 +1,6 @@
 import { withTransaction } from '../../config/db.js';
 import * as roleRepo from '../repositories/role.repository.js';
+import { resolveEntitlementsForStaff } from './entitlement.service.js';
 
 const PROTECTED_ROLE_IDS = new Set(Object.values(roleRepo.DEFAULT_ROLE_IDS));
 
@@ -182,9 +183,37 @@ export async function deactivateRole(db, authStaff, roleIdRaw) {
   return mapRole(row);
 }
 
-export async function listPermissionCatalog(db) {
+/**
+ * Set of feature codes enabled for the company (plan ∩ software type, plus
+ * grants/overrides). Returns null when the entitlement schema is absent
+ * (legacy install) — callers then skip feature filtering entirely.
+ */
+async function getEnabledFeatureSet(db, companyId) {
+  const access = await resolveEntitlementsForStaff({ company_id: companyId }, db);
+  if (access?.meta?.source === 'legacy-fallback') return null;
+  const set = new Set();
+  for (const [code, enabled] of Object.entries(access.features || {})) {
+    if (enabled) set.add(code);
+  }
+  return set;
+}
+
+function permissionFeatureEnabled(featureCode, enabledSet) {
+  if (enabledSet === null) return true;
+  if (!featureCode) return true; // generic permission not tied to a feature
+  return enabledSet.has(featureCode);
+}
+
+export async function listPermissionCatalog(db, authStaff) {
   const rows = await roleRepo.listPermissionCatalog(db);
-  return rows.map(mapPermission);
+  // Tenant admins only see permissions for features their company actually
+  // has (software type + plan). Without auth context (legacy callers), show all.
+  if (!authStaff) return rows.map(mapPermission);
+  const companyId = parseCompanyId(authStaff);
+  const enabledSet = await getEnabledFeatureSet(db, companyId);
+  return rows
+    .filter((row) => permissionFeatureEnabled(row.feature_code, enabledSet))
+    .map(mapPermission);
 }
 
 export async function getRolePermissions(db, authStaff, roleIdRaw) {
@@ -222,10 +251,17 @@ export async function updateRolePermissions(_db, authStaff, roleIdRaw, body) {
       throw err;
     }
 
-    const validCodes = await roleRepo.listValidPermissionCodes(client, permissionCodes);
+    const validRows = await roleRepo.listValidPermissionsWithFeatures(client, permissionCodes);
     // Silently drop any codes that are inactive or don't exist in permission_master.
     // This prevents stale role_permission rows (from features deactivated via migration)
     // from causing a 400 when an admin saves the role.
+    // Also drop permissions for features the company doesn't have (software
+    // type + plan) — the catalog never shows them, but reject direct API
+    // attempts too.
+    const enabledSet = await getEnabledFeatureSet(client, companyId);
+    const validCodes = validRows
+      .filter((row) => permissionFeatureEnabled(row.feature_code, enabledSet))
+      .map((row) => row.permission_code);
     await roleRepo.replaceRolePermissions(client, companyId, roleId, validCodes);
     const rows = await roleRepo.listRolePermissions(client, companyId, roleId);
     return {

@@ -10,6 +10,8 @@
     "migrate:platform": "node scripts/run-platform-migration.mjs",
     "migrate:roles": "node scripts/run-072-migration.mjs",
     "migrate:fix-permissions": "node scripts/run-073-migration.mjs",
+    "migrate:allow-negative-stock": "node scripts/run-084-migration.mjs",
+    "migrate:restore-stock-constraint": "node scripts/run-085-migration.mjs",
     "seed:platform-admin": "node scripts/seed-platform-admin.mjs",
     "seed:test-tenants": "node scripts/seed-test-tenants.mjs",
     "test:accounts-schema": "node scripts/verify-accounts-schema.mjs",

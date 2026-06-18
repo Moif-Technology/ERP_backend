@@ -13,8 +13,9 @@ export const posRouter = Router();
 
 
 
-posRouter.post('/login',     posController.login);
-posRouter.post('/pin-login', posController.pinLogin);
+posRouter.post('/login',      posController.login);
+posRouter.post('/pin-login',  posController.pinLogin);
+posRouter.post('/staff-list', posController.staffList);
 
 
 

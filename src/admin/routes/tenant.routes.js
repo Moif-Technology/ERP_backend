@@ -11,6 +11,7 @@ tenantAdminRouter.use(requirePlatformAuth);
 
 tenantAdminRouter.get('/', requireCapability('tenant.read'), ctrl.list);
 tenantAdminRouter.get('/:companyId', requireCapability('tenant.read'), ctrl.detail);
+tenantAdminRouter.get('/:companyId/features', requireCapability('tenant.read'), ctrl.getFeatures);
 tenantAdminRouter.get('/:companyId/audit', requireCapability('audit.read'), ctrl.audit);
 
 tenantAdminRouter.patch(
