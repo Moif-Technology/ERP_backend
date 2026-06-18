@@ -5,26 +5,32 @@ export async function listTenants({ status, search, limit = 100, offset = 0 } = 
   const where = [];
   if (status) {
     params.push(status);
-    where.push(`COALESCE(ts.status, 'trial') = $${params.length}`);
+    where.push(`COALESCE(ts.status, LOWER(ob.status), 'trial') = $${params.length}`);
   }
   if (search) {
     params.push(`%${search}%`);
     where.push(`(c.company_name ILIKE $${params.length} OR c.company_id::text ILIKE $${params.length})`);
   }
   params.push(limit, offset);
+  // company_onboarding is the registration-time fallback for tenants that
+  // predate the tenant_subscription insert in registration.
   const { rows } = await pool.query(
     `SELECT c.company_id,
             c.company_name,
             NULL::text AS email,
             NULL::text AS phone,
-            ts.plan_code,
-            ts.status,
-            ts.trial_ends_at,
+            stm.software_code AS software_type_code,
+            stm.software_name AS software_type_name,
+            COALESCE(ts.plan_code, ob.plan_code) AS plan_code,
+            COALESCE(ts.status, LOWER(ob.status)) AS status,
+            COALESCE(ts.trial_ends_at, ob.trial_ends_at) AS trial_ends_at,
             ts.current_period_ends_at,
             ts.suspended_at,
             ts.cancelled_at
        FROM core.company_master c
        LEFT JOIN core.tenant_subscription ts ON ts.company_id = c.company_id
+       LEFT JOIN core.company_onboarding ob ON ob.company_id = c.company_id
+       LEFT JOIN core.software_type_master stm ON stm.software_type_id = c.software_type_id
       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
       ORDER BY c.company_id DESC
       LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -36,13 +42,20 @@ export async function listTenants({ status, search, limit = 100, offset = 0 } = 
 export async function getTenant(companyId) {
   const { rows } = await pool.query(
     `SELECT c.company_id, c.company_name, NULL::text AS email, NULL::text AS phone, c.company_address,
-            ts.subscription_id, ts.plan_code, ts.status,
-            ts.trial_started_at, ts.trial_ends_at,
+            stm.software_code AS software_type_code,
+            stm.software_name AS software_type_name,
+            ts.subscription_id,
+            COALESCE(ts.plan_code, ob.plan_code) AS plan_code,
+            COALESCE(ts.status, LOWER(ob.status)) AS status,
+            COALESCE(ts.trial_started_at, ob.started_at) AS trial_started_at,
+            COALESCE(ts.trial_ends_at, ob.trial_ends_at) AS trial_ends_at,
             ts.subscription_started_at, ts.current_period_starts_at,
             ts.current_period_ends_at, ts.grace_ends_at,
             ts.suspended_at, ts.cancelled_at, ts.suspension_reason
        FROM core.company_master c
        LEFT JOIN core.tenant_subscription ts ON ts.company_id = c.company_id
+       LEFT JOIN core.company_onboarding ob ON ob.company_id = c.company_id
+       LEFT JOIN core.software_type_master stm ON stm.software_type_id = c.software_type_id
       WHERE c.company_id = $1`,
     [companyId]
   );

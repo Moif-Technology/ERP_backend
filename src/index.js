@@ -1,67 +1,86 @@
-import express from 'express';
+import compression from 'compression';
 import cors from 'cors';
-import { config, assertConfig } from './config.js';
+import express from 'express';
+import helmet from 'helmet';
+import pinoHttp from 'pino-http';
+import { accountHeadRouter } from './accounts/routes/accountHead.routes.js';
+import { accountsParameterRouter } from './accounts/routes/accountsParameter.routes.js';
+import { voucherRouter } from './accounts/routes/voucher.routes.js';
+import { adminRouter } from './admin/routes/index.js';
+import { areaRouter } from './backoffice/routes/area.routes.js';
+import { backofficeDashboardRouter } from './backoffice/routes/backofficeDashboard.routes.js';
+import { customerRouter } from './backoffice/routes/customer.routes.js';
+import { dealsOffersRouter } from './backoffice/routes/dealsOffers.routes.js';
+import { deliveryOrderRouter } from './backoffice/routes/deliveryOrder.routes.js';
+import { grnRouter } from './backoffice/routes/grn.routes.js';
+import { groupRouter } from './backoffice/routes/group.routes.js';
+import { locationRouter } from './backoffice/routes/location.routes.js';
+import { lpoRouter } from './backoffice/routes/lpo.routes.js';
+import { productRouter } from './backoffice/routes/product.routes.js';
+import { purchaseEntryRouter } from './backoffice/routes/purchaseEntry.routes.js';
+import { quotationRouter } from './backoffice/routes/quotation.routes.js';
+import { reportRouter } from './backoffice/routes/report.routes.js';
+import { saleEntryRouter } from './backoffice/routes/saleEntry.routes.js';
+import { stockEntryRouter } from './backoffice/routes/stockEntry.routes.js';
+import { subGroupRouter } from './backoffice/routes/subGroup.routes.js';
+import { supplierRouter } from './backoffice/routes/supplier.routes.js';
+import { tableRouter } from './backoffice/routes/table.routes.js';
+import { assertConfig, config } from './config.js';
 import {
+  closeAllPools,
+  databaseSummaryForLog,
   pool,
   verifyDatabaseConnection,
-  databaseSummaryForLog,
 } from './config/db.js';
-import { authRouter } from './routes/auth.routes.js';
-import { planRouter } from './routes/plan.routes.js';
-import { roleRouter } from './routes/role.routes.js';
-import { staffRouter } from './routes/staff.routes.js';
-import { groupRouter } from './routes/group.routes.js';
-import { areaRouter } from './routes/area.routes.js';
-import { customerRouter } from './routes/customer.routes.js';
-import { subGroupRouter } from './routes/subGroup.routes.js';
-import { productRouter } from './routes/product.routes.js';
-import { tableRouter } from './routes/table.routes.js';
-import { quotationRouter } from './routes/quotation.routes.js';
-import { deliveryOrderRouter } from './routes/deliveryOrder.routes.js';
-import { saleEntryRouter } from './routes/saleEntry.routes.js';
-import { supplierRouter } from './routes/supplier.routes.js';
-import { purchaseEntryRouter } from './routes/purchaseEntry.routes.js';
-import { lpoRouter } from './routes/lpo.routes.js';
-import { grnRouter } from './routes/grn.routes.js';
-import { accountHeadRouter } from './routes/accountHead.routes.js';
-import { accountsParameterRouter } from './routes/accountsParameter.routes.js';
-import { appParameterRouter } from './routes/appParameter.routes.js';
-import { voucherRouter } from './routes/voucher.routes.js';
-import { stockEntryRouter } from './routes/stockEntry.routes.js';
-import { dealsOffersRouter } from './routes/dealsOffers.routes.js';
-import { posRouter } from './pos/pos.routes.js';
-import { hrRouter } from './routes/hr.routes.js';
-import { crmLeadSourceRouter } from './routes/crmLeadSource.routes.js';
-import { crmLeadStatusRouter } from './routes/crmLeadStatus.routes.js';
-import { crmOpportunityStageRouter } from './routes/crmOpportunityStage.routes.js';
-import { crmLeadRouter } from './routes/crmLead.routes.js';
-import { crmOpportunityRouter } from './routes/crmOpportunity.routes.js';
-import { crmFollowupRouter } from './routes/crmFollowup.routes.js';
-import { crmInteractionRouter } from './routes/crmInteraction.routes.js';
-import { crmNoteRouter } from './routes/crmNote.routes.js';
-import { crmDashboardRouter } from './routes/crmDashboard.routes.js';
-import { adminRouter } from './admin/routes/index.js';
-import { colorMasterRouter }      from './routes/garage/colorMaster.routes.js';
-import { carGroupRouter }          from './routes/garage/carGroup.routes.js';
-import { carSubGroupRouter }       from './routes/garage/carSubGroup.routes.js';
-import { vehicleMasterRouter }     from './routes/garage/vehicleMaster.routes.js';
-import { preJobCardRouter }        from './routes/garage/preJobCard.routes.js';
-import { jobCardRouter }           from './routes/garage/jobCard.routes.js';
-import { estimationRouter }        from './routes/garage/estimation.routes.js';
-import { partRequestRouter }       from './routes/garage/partRequest.routes.js';
-import { technicianRouter }        from './routes/garage/technician.routes.js';
-import { jobDescriptionRouter }    from './routes/garage/jobDescription.routes.js';
-import { punchingRouter }          from './routes/garage/punching.routes.js';
-import { subletJobRouter }         from './routes/garage/subletJob.routes.js';
-import { subletLpoRouter }         from './routes/garage/subletLpo.routes.js';
-import { consumableRouter }        from './routes/garage/consumable.routes.js';
-import { lubricantRouter }         from './routes/garage/lubricant.routes.js';
-import { gatePassRouter }          from './routes/garage/gatePass.routes.js';
-import { invoiceRouter }           from './routes/garage/invoice.routes.js';
-import { garageDashboardRouter }   from './routes/garage/garageDashboard.routes.js';
-import { workshopMonitorRouter }   from './routes/garage/workshopMonitor.routes.js';
-import { exchangeRouter }     from './routes/exchange.routes.js';
-import { counterPosRouter }   from './counter-pos/counter-pos.routes.js';
+import { closeRedis, initRedis } from './config/redis.js';
+import { appParameterRouter } from './backoffice/routes/appParameter.routes.js';
+import { authRouter } from './core/routes/auth.routes.js';
+import { companyRouter } from './core/routes/company.routes.js';
+import { exchangeRouter } from './core/routes/exchange.routes.js';
+import { planRouter } from './core/routes/plan.routes.js';
+import { posDeviceRouter } from './core/routes/posDevice.routes.js';
+import { roleRouter } from './core/routes/role.routes.js';
+import { ensureTable as ensureRolePageTable } from './core/repositories/roleAccess.repository.js';
+import { ensureFeatureCatalog } from './core/repositories/featureCatalogSeed.js';
+import { ensureTenantTables } from './core/repositories/ensureTenantTables.js';
+import { branchRouter } from './core/routes/branch.routes.js';
+import { staffRouter } from './core/routes/staff.routes.js';
+import { systemParameterRouter } from './core/routes/systemParameter.routes.js';
+import { unitRouter } from './core/routes/unit.routes.js';
+import { crmDashboardRouter } from './crm/routes/crmDashboard.routes.js';
+import { crmFollowupRouter } from './crm/routes/crmFollowup.routes.js';
+import { crmInteractionRouter } from './crm/routes/crmInteraction.routes.js';
+import { crmLeadRouter } from './crm/routes/crmLead.routes.js';
+import { crmLeadSourceRouter } from './crm/routes/crmLeadSource.routes.js';
+import { crmLeadStatusRouter } from './crm/routes/crmLeadStatus.routes.js';
+import { crmNoteRouter } from './crm/routes/crmNote.routes.js';
+import { crmOpportunityRouter } from './crm/routes/crmOpportunity.routes.js';
+import { crmOpportunityStageRouter } from './crm/routes/crmOpportunityStage.routes.js';
+import { carGroupRouter } from './garage/routes/carGroup.routes.js';
+import { carSubGroupRouter } from './garage/routes/carSubGroup.routes.js';
+import { colorMasterRouter } from './garage/routes/colorMaster.routes.js';
+import { consumableRouter } from './garage/routes/consumable.routes.js';
+import { estimationRouter } from './garage/routes/estimation.routes.js';
+import { garageDashboardRouter } from './garage/routes/garageDashboard.routes.js';
+import { gatePassRouter } from './garage/routes/gatePass.routes.js';
+import { invoiceRouter } from './garage/routes/invoice.routes.js';
+import { jobCardRouter } from './garage/routes/jobCard.routes.js';
+import { jobDescriptionRouter } from './garage/routes/jobDescription.routes.js';
+import { lubricantRouter } from './garage/routes/lubricant.routes.js';
+import { partRequestRouter } from './garage/routes/partRequest.routes.js';
+import { preJobCardRouter } from './garage/routes/preJobCard.routes.js';
+import { punchingRouter } from './garage/routes/punching.routes.js';
+import { subletJobRouter } from './garage/routes/subletJob.routes.js';
+import { subletLpoRouter } from './garage/routes/subletLpo.routes.js';
+import { technicianRouter } from './garage/routes/technician.routes.js';
+import { vehicleMasterRouter } from './garage/routes/vehicleMaster.routes.js';
+import { workshopMonitorRouter } from './garage/routes/workshopMonitor.routes.js';
+import { hrRouter } from './hr/routes/hr.routes.js';
+import { buildLimiters } from './middleware/rateLimit.js';
+import { counterPosRouter } from './pos/counter-pos/counter-pos.routes.js';
+import { posRouter } from './pos/restaurant-pos/pos.routes.js';
+import { vanRouter } from './van/van.routes.js';
+import { featureAdminRouter } from './core/routes/featureAdmin.routes.js';
 
 try {
   assertConfig();
@@ -70,45 +89,88 @@ try {
   process.exit(1);
 }
 
+// Connect Redis before building middleware so rate limiters use the shared
+// store. Non-fatal: app still boots (memory store + DB-only auth) if Redis off.
+await initRedis();
+const { apiLimiter, authLimiter } = buildLimiters();
+
 const app = express();
+
+// Honour X-Forwarded-* from LB/Nginx so client IP + rate limiting are correct.
+if (config.trustProxy > 0) {
+  app.set('trust proxy', config.trustProxy);
+}
+
+app.use(helmet());
+app.use(compression());
 
 app.use(
   cors({
     origin: config.corsOrigins,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'OPTIONS','DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization'],
+
   })
 );
-app.use(express.json({ limit: '256kb' }));
+app.use(express.json({ limit: '4mb' }));
 
-/** Log any JSON response with status >= 400 (validation, conflicts, DB errors mapped in controllers). */
-app.use((req, res, next) => {
-  const origJson = res.json.bind(res);
-  res.json = function logJsonOnError(body) {
-    if (res.statusCode >= 400) {
-      console.warn(
-        `[API ${res.statusCode}] ${req.method} ${req.originalUrl}`,
-        typeof body === 'object' && body !== null ? body : String(body)
-      );
-    }
-    return origJson(body);
-  };
-  next();
+// Async structured logging (replaces the synchronous res.json wrapper).
+// Dev: pretty one-line colored logs. Prod: raw JSON (for log aggregators).
+const httpLogger = pinoHttp({
+  level: config.logLevel,
+  redact: ['req.headers.authorization', 'req.headers.cookie'],
+  autoLogging: { ignore: (req) => req.url === '/health' },
+  // Quieter per-request line: method, url, status, time — full object only on errors.
+  customSuccessMessage: (req, res, time) =>
+    `${req.method} ${req.url} ${res.statusCode} ${Math.round(time)}ms`,
+  customErrorMessage: (req, res, err) =>
+    `${req.method} ${req.url} ${res.statusCode} — ${err?.message || 'error'}`,
+  ...(config.nodeEnv !== 'production'
+    ? {
+        transport: {
+          target: 'pino-pretty',
+          options: {
+            colorize: true,
+            singleLine: true,
+            translateTime: 'HH:MM:ss',
+            ignore: 'pid,hostname,req,res,responseTime',
+          },
+        },
+      }
+    : {}),
 });
+app.use(httpLogger);
 
-app.get('/health', (_req, res) => {
-  res.json({ ok: true });
+// Throttle: tight on credentials, general ceiling on the rest of the API.
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/register', authLimiter);
+app.use('/api/auth/forgot-password', authLimiter);
+app.use('/api/auth/reset-password', authLimiter);
+app.use('/api', apiLimiter);
+
+// Liveness + DB readiness in one probe so the LB pulls a node with a dead DB.
+app.get('/health', async (_req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ ok: true });
+  } catch {
+    res.status(503).json({ ok: false });
+  }
 });
 
 app.use('/api/auth', authRouter);
+app.use('/api/dashboard', backofficeDashboardRouter);
 app.use('/api/plans', planRouter);
+app.use('/api/pos-devices', posDeviceRouter);
 app.use('/api/roles', roleRouter);
+app.use('/api/branches', branchRouter);
 app.use('/api/staff', staffRouter);
 app.use('/api/groups', groupRouter);
 app.use('/api/areas', areaRouter);
 app.use('/api/customers', customerRouter);
 app.use('/api/sub-groups', subGroupRouter);
 app.use('/api/products', productRouter);
+app.use('/api/locations', locationRouter);
 app.use('/api/tables', tableRouter);
 app.use('/api/quotations', quotationRouter);
 app.use('/api/delivery-orders', deliveryOrderRouter);
@@ -122,6 +184,7 @@ app.use('/api/account-parameters', accountsParameterRouter);
 app.use('/api/app-parameters', appParameterRouter);
 app.use('/api/vouchers', voucherRouter);
 app.use('/api/stock-entries', stockEntryRouter);
+app.use('/api/reports', reportRouter);
 app.use('/api/deals-offers', dealsOffersRouter);
 app.use('/api/hr', hrRouter);
 app.use('/api/crm/lead-sources', crmLeadSourceRouter);
@@ -135,7 +198,9 @@ app.use('/api/crm/notes', crmNoteRouter);
 app.use('/api/crm/dashboard', crmDashboardRouter);
 app.use('/api/pos',         posRouter);
 app.use('/api/counter-pos', counterPosRouter);
+app.use('/api/van',         vanRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/feature-admin', featureAdminRouter);
 app.use('/api/garage/colors',           colorMasterRouter);
 app.use('/api/garage/car-groups',       carGroupRouter);
 app.use('/api/garage/car-sub-groups',   carSubGroupRouter);
@@ -156,15 +221,42 @@ app.use('/api/garage/invoices',         invoiceRouter);
 app.use('/api/garage/workshop-monitor', workshopMonitorRouter);
 app.use('/api/garage/dashboard',        garageDashboardRouter);
 app.use('/api/exchange', exchangeRouter);
+app.use('/api/company', companyRouter);
+app.use('/api/parameters', systemParameterRouter);
+app.use('/api/units', unitRouter);
+
+// Map common Postgres error codes to HTTP status + a safe client message.
+// Controllers that simply `next(err)` get consistent responses for free.
+function mapPgError(err) {
+  switch (err.code) {
+    case '23505': return { status: 409, message: 'Duplicate value violates a unique constraint' };
+    case '23503': return { status: 409, message: 'Operation violates a related-record constraint' };
+    case '23502': return { status: 400, message: 'A required field is missing' };
+    case '22P02': return { status: 400, message: 'Invalid input value' };
+    case '42P01': return { status: 503, message: 'A required table is not installed. Run database migrations.' };
+    case '42703': return { status: 503, message: 'A required column is missing. Run database migrations.' };
+    default: return null;
+  }
+}
 
 app.use((err, req, res, _next) => {
-  const status = Number(err.status || err.statusCode) || 500;
-  console.error(`[API ${status}] ${req.method} ${req.originalUrl} — ${err.message}`);
-  if (err.code) console.error('  pg/code:', err.code, err.detail || '');
-  if (status >= 500 || !err.status) console.error(err.stack || err);
-  res.status(status >= 400 && status < 600 ? status : 500).json({
-    message: err.message || 'Server error',
-  });
+  const pg = !err.status ? mapPgError(err) : null;
+  const status = Number(err.status || err.statusCode) || pg?.status || 500;
+  const log = req.log || console;
+  log.error(
+    { code: err.code, detail: err.detail, stack: status >= 500 ? err.stack : undefined },
+    `[API ${status}] ${req.method} ${req.originalUrl} — ${err.message}`
+  );
+
+  // Never leak internal/DB error text to clients on 500s in production.
+  let clientMessage;
+  if (status >= 500) {
+    clientMessage = config.nodeEnv === 'production' ? 'Server error' : (err.message || 'Server error');
+  } else {
+    clientMessage = pg?.message || err.message || 'Request failed';
+  }
+
+  res.status(status >= 400 && status < 600 ? status : 500).json({ message: clientMessage });
 });
 
 function printBanner() {
@@ -222,6 +314,9 @@ function printBanner() {
 async function start() {
   try {
     await verifyDatabaseConnection();
+    await ensureTenantTables();
+    await ensureRolePageTable();
+    await ensureFeatureCatalog();
   } catch (err) {
     console.error('');
     console.error('  [DB] FAILED — could not connect');
@@ -232,9 +327,36 @@ async function start() {
     process.exit(1);
   }
 
-  app.listen(config.port, () => {
+  const server = app.listen(config.port, () => {
     printBanner();
   });
+
+  // Request/connection timeouts so a slow client/query can't hold a socket open.
+  server.requestTimeout = 20_000;
+  server.headersTimeout = 22_000;
+  server.keepAliveTimeout = 65_000; // keep > LB idle timeout
+
+  // Graceful shutdown: stop accepting, drain in-flight, close pools + Redis.
+  let shuttingDown = false;
+  async function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[shutdown] ${signal} received — draining connections`);
+    const force = setTimeout(() => {
+      console.error('[shutdown] drain timed out — forcing exit');
+      process.exit(1);
+    }, 10_000);
+    force.unref();
+    server.close(async () => {
+      await closeAllPools();
+      await closeRedis();
+      clearTimeout(force);
+      console.log('[shutdown] clean exit');
+      process.exit(0);
+    });
+  }
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 start();

@@ -1,0 +1,76 @@
+import { pool } from '../../config/db.js';
+import * as voucherService from '../services/voucher.service.js';
+
+function handleError(res, err, fallbackMsg) {
+  if (err.status) return res.status(err.status).json({ message: err.message });
+  if (err.code === '42P01') return res.status(503).json({ message: 'Voucher tables missing. Run migration 035.' });
+  console.error(err);
+  return res.status(500).json({ message: fallbackMsg });
+}
+
+export async function listVouchers(req, res) {
+  try {
+    return res.json(await voucherService.listVouchers(pool, req.authStaff, req.query));
+  } catch (err) { return handleError(res, err, 'Could not load vouchers'); }
+}
+
+export async function getVoucher(req, res) {
+  try {
+    return res.json(await voucherService.getVoucher(pool, req.authStaff, Number(req.params.id)));
+  } catch (err) { return handleError(res, err, 'Could not load voucher'); }
+}
+
+export async function createVoucher(req, res) {
+  try {
+    const data = await voucherService.createVoucher(pool, req.authStaff, req.body);
+    return res.status(201).json(data);
+  } catch (err) { return handleError(res, err, 'Could not create voucher'); }
+}
+
+export async function updateVoucher(req, res) {
+  try {
+    return res.json(await voucherService.updateVoucher(pool, req.authStaff, Number(req.params.id), req.body));
+  } catch (err) { return handleError(res, err, 'Could not update voucher'); }
+}
+
+export async function postVoucher(req, res) {
+  try {
+    return res.json(await voucherService.postVoucher(pool, req.authStaff, Number(req.params.id)));
+  } catch (err) { return handleError(res, err, 'Could not post voucher'); }
+}
+
+export async function unpostVoucher(req, res) {
+  try {
+    return res.json(await voucherService.unpostVoucher(pool, req.authStaff, Number(req.params.id)));
+  } catch (err) { return handleError(res, err, 'Could not unpost voucher'); }
+}
+
+export async function deleteVoucher(req, res) {
+  try {
+    return res.json(await voucherService.deleteVoucher(pool, req.authStaff, Number(req.params.id)));
+  } catch (err) { return handleError(res, err, 'Could not delete voucher'); }
+}
+
+export async function listVoucherTypes(req, res) {
+  try {
+    return res.json(await voucherService.listVoucherTypes(pool, req.authStaff));
+  } catch (err) { return handleError(res, err, 'Could not load voucher types'); }
+}
+
+export async function getLedgerTransactions(req, res) {
+  try {
+    return res.json(await voucherService.getLedgerTransactions(pool, req.authStaff, Number(req.params.accountId), req.query));
+  } catch (err) { return handleError(res, err, 'Could not load ledger'); }
+}
+
+export async function getAgingSummary(req, res) {
+  try {
+    return res.json(await voucherService.getAgingSummary(pool, req.authStaff, req.query));
+  } catch (err) { return handleError(res, err, 'Could not load aging summary'); }
+}
+
+export async function getTrialBalance(req, res) {
+  try {
+    return res.json(await voucherService.getTrialBalance(pool, req.authStaff, req.query));
+  } catch (err) { return handleError(res, err, 'Could not load trial balance'); }
+}
