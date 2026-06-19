@@ -50,10 +50,10 @@ function mapPosProduct(p, fallbackBarcode = '') {
   };
 }
 
-export async function lookupProducts(authStaff, { q, maxPrice }) {
+export async function lookupProducts(authStaff, { q, maxPrice, groupId }) {
   const companyId = Number(authStaff.company_id);
   const branchId  = Number(authStaff.branch_id);
-  const products  = await productRepo.lookupProducts(pool, companyId, branchId, { q, maxPrice });
+  const products  = await productRepo.lookupProducts(pool, companyId, branchId, { q, maxPrice, groupId });
   return products.map(p => mapPosProduct(p));
 }
 

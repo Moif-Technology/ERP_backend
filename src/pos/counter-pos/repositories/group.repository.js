@@ -9,14 +9,24 @@ function mapGroup(row) {
 }
 
 export async function listGroups(pool, companyId, branchId) {
+  const params = [companyId];
+  let branchSql = '';
+  const bid = Number(branchId);
+  if (Number.isFinite(bid) && bid > 0) {
+    params.push(bid);
+    branchSql = `AND (branch_id = $${params.length} OR branch_id IS NULL)`;
+  } else {
+    branchSql = 'AND branch_id IS NULL';
+  }
+
   const { rows } = await pool.query(
     `SELECT group_id, group_code, group_description, group_description_arabic, key_shift
      FROM biz.group_master
      WHERE company_id = $1
-       AND (branch_id = $2 OR branch_id IS NULL)
-       AND (r_status IS NULL OR r_status = 'ACTIVE')
+       ${branchSql}
+       AND (r_status IS NULL OR UPPER(TRIM(r_status)) = 'ACTIVE')
      ORDER BY group_description`,
-    [companyId, branchId],
+    params,
   );
   return rows.map(mapGroup);
 }

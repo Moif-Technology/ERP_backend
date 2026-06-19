@@ -31,6 +31,10 @@ export async function nextVoucherDetailId(client, companyId, branchId) {
 }
 
 export async function insertVoucherMaster(client, row) {
+  const manualNo = row.manualVoucherNo != null && row.manualVoucherNo !== ''
+    ? String(row.manualVoucherNo)
+    : String(row.autoVoucherNo);
+
   await client.query(
     `INSERT INTO accounts.voucher_master (
        company_id, branch_id, voucher_master_id, voucher_type_id,
@@ -41,7 +45,7 @@ export async function insertVoucherMaster(client, row) {
      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW(),$17,NOW(),$17)`,
     [
       row.companyId, row.branchId, row.voucherMasterId, row.voucherTypeId,
-      row.autoVoucherNo, row.autoVoucherNo, row.voucherPrefix,
+      row.autoVoucherNo, manualNo, row.voucherPrefix,
       row.voucherDate || new Date(), row.referenceNo, row.voucherAmount,
       row.remarks, row.postStatus, row.creationMode, row.voucherPostedId,
       row.counterCloseNo, row.recordStatus, row.createdBy,
@@ -103,7 +107,7 @@ export async function listVouchers(pool, companyId, { branchId, voucherTypeId, p
   if (voucherTypeId) { params.push(voucherTypeId); where += ` AND vm.voucher_type_id = $${params.length}`; }
   if (postStatus) { params.push(postStatus); where += ` AND vm.post_status = $${params.length}`; }
   if (dateFrom) { params.push(dateFrom); where += ` AND vm.voucher_date >= $${params.length}::date`; }
-  if (dateTo) { params.push(dateTo); where += ` AND vm.voucher_date <= ($${params.length}::date + interval '1 day')`; params.push(dateTo); }
+  if (dateTo) { params.push(dateTo); where += ` AND vm.voucher_date <= ($${params.length}::date + interval '1 day')`; }
 
   const countSql = `SELECT COUNT(*)::int AS total FROM accounts.voucher_master vm WHERE ${where}`;
   const { rows: cRows } = await pool.query(countSql, params);
@@ -138,6 +142,26 @@ export async function getVoucherWithDetails(pool, companyId, branchId, voucherMa
     [companyId, branchId, voucherMasterId],
   );
   if (!mRows[0]) return null;
+  return loadVoucherDetails(pool, companyId, branchId, mRows[0]);
+}
+
+export async function getVoucherWithDetailsById(pool, companyId, voucherMasterId) {
+  const { rows: mRows } = await pool.query(
+    `SELECT vm.*, vt.voucher_name, vt.voucher_type_code
+     FROM accounts.voucher_master vm
+     LEFT JOIN accounts.voucher_type_master vt
+       ON vt.company_id = vm.company_id AND vt.voucher_type_id = vm.voucher_type_id
+     WHERE vm.company_id = $1 AND vm.voucher_master_id = $2
+       AND vm.record_status = 'ACTIVE'
+     LIMIT 1`,
+    [companyId, voucherMasterId],
+  );
+  if (!mRows[0]) return null;
+  return loadVoucherDetails(pool, companyId, Number(mRows[0].branch_id), mRows[0]);
+}
+
+async function loadVoucherDetails(pool, companyId, branchId, masterRow) {
+  const voucherMasterId = masterRow.voucher_master_id;
   const { rows: dRows } = await pool.query(
     `SELECT vd.voucher_detail_id, vd.account_id, vd.debit_amount, vd.credit_amount,
             vd.outstanding_balance, vd.narration, vd.post_status,
@@ -150,7 +174,7 @@ export async function getVoucherWithDetails(pool, companyId, branchId, voucherMa
      ORDER BY vd.voucher_detail_id ASC`,
     [companyId, branchId, voucherMasterId],
   );
-  return { master: mRows[0], details: dRows };
+  return { master: masterRow, details: dRows };
 }
 
 export async function updateVoucherPostStatus(client, companyId, branchId, voucherMasterId, postStatus) {
@@ -295,13 +319,40 @@ export async function getTrialBalance(pool, companyId, { branchId, dateTo } = {}
 
 /* ──────────── aging summary (payable / receivable) ──────────── */
 
-export async function getAgingSummary(pool, companyId, { branchId, summaryType, postStatus } = {}) {
+export async function getAgingSummary(pool, companyId, { branchId, summaryType, postStatus, dateFrom, dateTo } = {}) {
   const params = [companyId];
   let where = 'vd.company_id = $1 AND vd.record_status = \'ACTIVE\' AND vm.record_status = \'ACTIVE\'';
   if (branchId) { params.push(branchId); where += ` AND vd.branch_id = $${params.length}`; }
   if (postStatus) { params.push(postStatus); where += ` AND vm.post_status = $${params.length}`; }
+  if (dateFrom) { params.push(dateFrom); where += ` AND vm.voucher_date >= $${params.length}::date`; }
+  if (dateTo) { params.push(dateTo); where += ` AND vm.voucher_date < ($${params.length}::date + interval '1 day')`; }
 
-  // summaryType: 'receivable' => net debit > 0 (asset), 'payable' => net credit > 0 (liability)
+  // Receivable = party ledgers under Sundry Debtors; Payable = under Sundry Creditors
+  if (summaryType === 'payable') {
+    where += ` AND (
+      ah.parent_acc_id = (
+        SELECT account_id FROM accounts.account_head_master
+        WHERE company_id = $1 AND account_no = '04-01'
+          AND (record_status IS NULL OR TRIM(UPPER(record_status)) = 'ACTIVE')
+        LIMIT 1
+      )
+      OR ah.account_no = '04-01'
+    )`;
+  } else {
+    where += ` AND (
+      ah.parent_acc_id = (
+        SELECT account_id FROM accounts.account_head_master
+        WHERE company_id = $1 AND account_no = '03-04'
+          AND (record_status IS NULL OR TRIM(UPPER(record_status)) = 'ACTIVE')
+        LIMIT 1
+      )
+      OR ah.account_no IN (
+        SELECT customer_code FROM biz.customer_master
+        WHERE company_id = $1 AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+      )
+    )`;
+  }
+
   const havingClause = summaryType === 'payable'
     ? 'HAVING SUM(vd.credit_amount) - SUM(vd.debit_amount) > 0.01'
     : 'HAVING SUM(vd.debit_amount) - SUM(vd.credit_amount) > 0.01';

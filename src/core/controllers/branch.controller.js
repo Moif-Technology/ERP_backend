@@ -1,5 +1,6 @@
 import { pool } from '../../config/db.js';
 import * as branchRepo from '../../shared/repositories/branch.repository.js';
+import { ensureBranchIntegrationDefaults } from '../../accounts/repositories/accountsParameter.repository.js';
 
 const VALID_TYPES = new Set(['GENERAL', 'COUNTER_POS', 'RESTAURANT_POS', 'GARAGE', 'WAREHOUSE', 'HEAD_OFFICE']);
 
@@ -40,6 +41,7 @@ export async function createBranch(req, res) {
       phone: phone ? String(phone).trim() : null,
       actor: req.authStaff.staff_id,
     });
+    await ensureBranchIntegrationDefaults(pool, companyId, branchId);
     return res.status(201).json({ branch });
   } catch (err) {
     if (err.code === '23505') {

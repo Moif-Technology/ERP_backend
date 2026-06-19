@@ -33,6 +33,7 @@ import {
   verifyDatabaseConnection,
 } from './config/db.js';
 import { closeRedis, initRedis } from './config/redis.js';
+import { appParameterRouter } from './backoffice/routes/appParameter.routes.js';
 import { authRouter } from './core/routes/auth.routes.js';
 import { companyRouter } from './core/routes/company.routes.js';
 import { exchangeRouter } from './core/routes/exchange.routes.js';
@@ -180,6 +181,7 @@ app.use('/api/grns', grnRouter);
 app.use('/api/purchases', purchaseEntryRouter);
 app.use('/api/account-heads', accountHeadRouter);
 app.use('/api/account-parameters', accountsParameterRouter);
+app.use('/api/app-parameters', appParameterRouter);
 app.use('/api/vouchers', voucherRouter);
 app.use('/api/stock-entries', stockEntryRouter);
 app.use('/api/reports', reportRouter);

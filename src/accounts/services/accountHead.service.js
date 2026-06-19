@@ -1,5 +1,7 @@
 import * as branchRepo from '../../shared/repositories/branch.repository.js';
 import * as accountHeadRepo from '../repositories/accountHead.repository.js';
+import * as accountsParameterRepo from '../repositories/accountsParameter.repository.js';
+import { replaceStandardChart } from '../repositories/accountsSeed.repository.js';
 import { withTransaction } from '../../config/db.js';
 
 function resolveCompanyId(authStaff) {
@@ -25,11 +27,8 @@ function mapRow(r) {
 
 export async function listAccountHeads(pool, authStaff, query) {
   const companyId = resolveCompanyId(authStaff);
-  let branchId = query.branchId != null && String(query.branchId).trim() !== '' ? Number(query.branchId) : null;
-  if (branchId == null && authStaff.branch_id != null) {
-    branchId = Number(authStaff.branch_id);
-  }
-  if (branchId != null && Number.isFinite(branchId) && branchId >= 1) {
+  const branchId = parseOptionalBranchId(query.branchId);
+  if (branchId != null) {
     const ok = await branchRepo.branchBelongsToCompany(pool, companyId, branchId);
     if (!ok) {
       const err = new Error('Invalid branch for this company');
@@ -85,47 +84,131 @@ export async function getAccountHead(pool, authStaff, accountId) {
   return mapRow(row);
 }
 
-export async function createAccountHead(pool, authStaff, body) {
+export async function suggestAccountNumber(pool, authStaff, query) {
   const companyId = resolveCompanyId(authStaff);
-  const { accountNo, accountHead, accountType, parentAccId, postingAllowed } = body;
-  if (!accountNo || !accountHead) {
-    const err = new Error('accountNo and accountHead are required');
+  const parentAccId = Number(query.parentAccId);
+  if (!Number.isFinite(parentAccId) || parentAccId < 1) {
+    const err = new Error('parentAccId is required');
     err.status = 400;
     throw err;
   }
+  const accountNo = await accountHeadRepo.suggestNextAccountNo(pool, companyId, parentAccId);
+  return { accountNo, parentAccId };
+}
+
+export async function createAccountHead(pool, authStaff, body) {
+  const companyId = resolveCompanyId(authStaff);
+  const { accountHead, accountType, parentAccId, postingAllowed } = body;
+  let accountNo = body.accountNo != null ? String(body.accountNo).trim() : '';
+
+  if (!accountHead || !String(accountHead).trim()) {
+    const err = new Error('accountHead is required');
+    err.status = 400;
+    throw err;
+  }
+
+  const pid = parentAccId != null && parentAccId !== '' ? Number(parentAccId) : null;
+
   return withTransaction(async (client) => {
-    if (parentAccId) {
-      const parent = await accountHeadRepo.findAccountHead(pool, companyId, parentAccId);
+    if (!accountNo) {
+      if (!pid) {
+        const err = new Error('Select a parent group to auto-generate account number');
+        err.status = 400;
+        throw err;
+      }
+      accountNo = await accountHeadRepo.suggestNextAccountNo(client, companyId, pid);
+    }
+
+    if (pid) {
+      const parent = await accountHeadRepo.findAccountHead(client, companyId, pid);
       if (!parent) {
         const err = new Error('Parent account not found');
         err.status = 400;
         throw err;
       }
     }
+
     const accountId = await accountHeadRepo.nextAccountId(client, companyId);
     await accountHeadRepo.createAccountHead(client, {
       companyId,
       accountId,
-      parentAccId: parentAccId || null,
+      parentAccId: pid,
       accountNo,
-      accountHead,
+      accountHead: String(accountHead).trim(),
       accountType: accountType || null,
       postingAllowed: postingAllowed !== false,
     });
-    return { accountId, accountNo, accountHead, accountType, parentAccId, postingAllowed: postingAllowed !== false };
+    return {
+      accountId,
+      accountNo,
+      accountHead: String(accountHead).trim(),
+      accountType,
+      parentAccId: pid,
+      postingAllowed: postingAllowed !== false,
+    };
   });
 }
 
 export async function updateAccountHead(pool, authStaff, accountId, body) {
   const companyId = resolveCompanyId(authStaff);
+  const id = Number(accountId);
+  if (!Number.isFinite(id) || id < 1) {
+    const err = new Error('Invalid accountId');
+    err.status = 400;
+    throw err;
+  }
+
+  const existing = await accountHeadRepo.findAccountHead(pool, companyId, id);
+  if (!existing) {
+    const err = new Error('Account not found');
+    err.status = 404;
+    throw err;
+  }
+
+  if (body.parentAccId !== undefined && body.parentAccId != null && body.parentAccId !== '') {
+    const parentId = Number(body.parentAccId);
+    if (parentId === id) {
+      const err = new Error('Account cannot be its own parent');
+      err.status = 400;
+      throw err;
+    }
+    const parent = await accountHeadRepo.findAccountHead(pool, companyId, parentId);
+    if (!parent) {
+      const err = new Error('Parent account not found');
+      err.status = 400;
+      throw err;
+    }
+  }
+
+  const patch = {};
+  if (body.accountNo !== undefined) patch.accountNo = String(body.accountNo).trim();
+  if (body.accountHead !== undefined) patch.accountHead = String(body.accountHead).trim();
+  if (body.accountType !== undefined) patch.accountType = body.accountType || null;
+  if (body.parentAccId !== undefined) {
+    patch.parentAccId = body.parentAccId != null && body.parentAccId !== '' ? Number(body.parentAccId) : null;
+  }
+  if (body.postingAllowed !== undefined) patch.postingAllowed = body.postingAllowed !== false;
+
+  if (patch.accountNo === '') {
+    const err = new Error('accountNo cannot be empty');
+    err.status = 400;
+    throw err;
+  }
+  if (patch.accountHead === '') {
+    const err = new Error('accountHead cannot be empty');
+    err.status = 400;
+    throw err;
+  }
+
   return withTransaction(async (client) => {
-    const updated = await accountHeadRepo.updateAccountHead(client, companyId, accountId, body);
+    const updated = await accountHeadRepo.updateAccountHead(client, companyId, id, patch);
     if (!updated) {
       const err = new Error('Account not found or nothing to update');
       err.status = 404;
       throw err;
     }
-    return { accountId, ...body };
+    const row = await accountHeadRepo.findAccountHead(client, companyId, id);
+    return mapRow(row);
   });
 }
 
@@ -154,5 +237,52 @@ export async function deleteAccountHead(pool, authStaff, accountId) {
       throw err;
     }
     return { deleted: true };
+  });
+}
+
+function parseBranchId(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return null;
+  return n;
+}
+
+function parseOptionalBranchId(raw) {
+  if (raw == null || String(raw).trim() === '') return null;
+  return parseBranchId(raw);
+}
+
+/**
+ * Idempotent bootstrap: default chart of accounts, voucher types, and branch ledger defaults.
+ */
+export async function seedStandardChart(pool, authStaff, body) {
+  const companyId = resolveCompanyId(authStaff);
+  const branchId = parseBranchId(body?.branchId ?? authStaff.branch_id);
+  if (branchId == null) {
+    const err = new Error('branchId is required');
+    err.status = 400;
+    throw err;
+  }
+  const ok = await branchRepo.branchBelongsToCompany(pool, companyId, branchId);
+  if (!ok) {
+    const err = new Error('Invalid branch for this company');
+    err.status = 400;
+    throw err;
+  }
+
+  const actor = authStaff.staff_id != null ? `staff:${authStaff.staff_id}` : 'erp-bootstrap';
+
+  return withTransaction(async (client) => {
+    await replaceStandardChart(client, { companyId, branchId, actor });
+    const rows = await accountHeadRepo.listAccountHeads(client, companyId, {});
+    const settings = await accountsParameterRepo.getBranchIntegrationSettings(client, companyId, branchId);
+    const missingRequired = accountsParameterRepo.getMissingRequiredIntegrationFields(settings);
+    return {
+      ok: true,
+      branchId,
+      accountCount: rows.length,
+      ...settings,
+      integrationComplete: missingRequired.length === 0,
+      missingRequired,
+    };
   });
 }

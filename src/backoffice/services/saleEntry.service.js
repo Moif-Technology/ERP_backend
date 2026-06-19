@@ -544,14 +544,15 @@ export async function createSale(pool, body, authStaff) {
       const voucherPrefix = await voucherRepo.getVoucherPrefix(client, companyId, salesVoucherTypeId) || 'SVT';
 
       const vMasterId = await voucherRepo.nextVoucherMasterId(client, companyId, branchId);
-      const autoNo = await voucherRepo.nextAutoVoucherNo(client, companyId, branchId, salesVoucherTypeId);
+      const voucherBillNo = Number(billNo);
 
       await voucherRepo.insertVoucherMaster(client, {
         companyId,
         branchId,
         voucherMasterId: vMasterId,
         voucherTypeId: salesVoucherTypeId,
-        autoVoucherNo: autoNo,
+        autoVoucherNo: voucherBillNo,
+        manualVoucherNo: String(billNo),
         voucherPrefix,
         referenceNo: String(billNo),
         voucherAmount: netClient,
@@ -664,14 +665,14 @@ export async function createSale(pool, body, authStaff) {
         const recPrefix = await voucherRepo.getVoucherPrefix(client, companyId, recVoucherTypeId) || 'RCV';
 
         const recMasterId = await voucherRepo.nextVoucherMasterId(client, companyId, branchId);
-        const recAutoNo = await voucherRepo.nextAutoVoucherNo(client, companyId, branchId, recVoucherTypeId);
 
         await voucherRepo.insertVoucherMaster(client, {
           companyId,
           branchId,
           voucherMasterId: recMasterId,
           voucherTypeId: recVoucherTypeId,
-          autoVoucherNo: recAutoNo,
+          autoVoucherNo: voucherBillNo,
+          manualVoucherNo: String(billNo),
           voucherPrefix: recPrefix,
           referenceNo: String(billNo),
           voucherAmount: paid,

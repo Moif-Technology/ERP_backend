@@ -3,6 +3,7 @@ import * as customerRepo from '../repositories/customer.repository.js';
 import { actorStaffPk } from '../../utils/actorStaff.js';
 import { generateScopedAutoCode } from '../../utils/autoCode.js';
 import { assertLimitAvailable } from '../../core/services/entitlement.service.js';
+import * as partyLedger from './partyLedger.service.js';
 
 function trimOrEmpty(v) {
   if (v == null) return '';
@@ -111,7 +112,10 @@ export async function createCustomer(pool, body, authStaff) {
       throw err;
     }
     const customerId = await customerRepo.nextCustomerId(client, companyId);
-    return customerRepo.insertCustomer(client, {
+    const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
+    const parentAccId = body.parentAccId ?? body.customerParentAccId ?? null;
+
+    const created = await customerRepo.insertCustomer(client, {
       companyId,
       customerId,
       customerCode: code,
@@ -143,6 +147,32 @@ export async function createCustomer(pool, body, authStaff) {
       modifiedBy: userLabel,
       createdByStaffId: actorStaffPk(authStaff),
     });
+
+    let ledger = null;
+    try {
+      await client.query('SAVEPOINT customer_ledger');
+      ledger = await partyLedger.syncCustomerLedger(client, {
+        companyId,
+        branchId,
+        customerCode: code,
+        customerName: name.slice(0, 200),
+        parentAccId,
+      });
+      await client.query('RELEASE SAVEPOINT customer_ledger');
+    } catch (ledgerErr) {
+      await client.query('ROLLBACK TO SAVEPOINT customer_ledger').catch(() => {});
+      if (ledgerErr.code === '42P01' || ledgerErr.code === '42703') {
+        console.warn('[customer] Account head tables missing — ledger not created');
+      } else {
+        throw ledgerErr;
+      }
+    }
+
+    return {
+      ...created,
+      ledgerAccountId: ledger?.accountId ?? null,
+      ledgerParentAccId: ledger?.parentAccId ?? null,
+    };
   });
 }
 
@@ -161,6 +191,11 @@ export async function updateCustomer(pool, customerId, body, authStaff) {
   if (!name) { const err = new Error('customerName is required'); err.status = 400; throw err; }
   const userLabel = (authStaff.staff_name || '').slice(0, 50) || 'system';
   return withTransaction(async (client) => {
+    const existing = await customerRepo.findCustomerById(client, companyId, id);
+    if (!existing) {
+      const err = new Error('Customer not found'); err.status = 404; throw err;
+    }
+
     if (!code && Boolean(body.newBarcode || body.autoCode)) {
       code = await generateScopedAutoCode(client, {
         tableName: 'biz.customer_master',
@@ -172,6 +207,10 @@ export async function updateCustomer(pool, customerId, body, authStaff) {
       });
     }
     if (!code) { const err = new Error('customerCode is required'); err.status = 400; throw err; }
+
+    const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
+    const parentAccId = body.parentAccId ?? body.customerParentAccId ?? null;
+
     const updated = await customerRepo.updateCustomer(client, companyId, id, {
       customerCode: code,
       customerName: name.slice(0, 200),
@@ -202,7 +241,33 @@ export async function updateCustomer(pool, customerId, body, authStaff) {
     if (!updated) {
       const err = new Error('Customer not found'); err.status = 404; throw err;
     }
-    return updated;
+
+    let ledger = null;
+    try {
+      await client.query('SAVEPOINT customer_ledger');
+      ledger = await partyLedger.syncCustomerLedger(client, {
+        companyId,
+        branchId,
+        customerCode: code,
+        customerName: name.slice(0, 200),
+        previousCode: existing.customerCode,
+        parentAccId,
+      });
+      await client.query('RELEASE SAVEPOINT customer_ledger');
+    } catch (ledgerErr) {
+      await client.query('ROLLBACK TO SAVEPOINT customer_ledger').catch(() => {});
+      if (ledgerErr.code === '42P01' || ledgerErr.code === '42703') {
+        console.warn('[customer] Account head tables missing — ledger not updated');
+      } else {
+        throw ledgerErr;
+      }
+    }
+
+    return {
+      ...updated,
+      ledgerAccountId: ledger?.accountId ?? null,
+      ledgerParentAccId: ledger?.parentAccId ?? null,
+    };
   });
 }
 
@@ -215,4 +280,51 @@ export async function listCustomers(pool, authStaff, limitQuery, searchQuery = '
   }
   const limit = limitQuery != null ? Number(limitQuery) : 200;
   return customerRepo.listCustomersByCompany(pool, companyId, limit, searchQuery);
+}
+
+/** Create or refresh customer sub-ledger in chart of accounts. */
+export async function postCustomerLedger(pool, customerId, authStaff, body = {}) {
+  const companyId = Number(authStaff.company_id);
+  if (!Number.isFinite(companyId) || companyId < 1) {
+    const err = new Error('Invalid company on session');
+    err.status = 400;
+    throw err;
+  }
+  const id = Number(customerId);
+  if (!Number.isFinite(id) || id < 1) {
+    const err = new Error('Invalid customerId');
+    err.status = 400;
+    throw err;
+  }
+
+  return withTransaction(async (client) => {
+    const customer = await customerRepo.findCustomerById(client, companyId, id);
+    if (!customer) {
+      const err = new Error('Customer not found');
+      err.status = 404;
+      throw err;
+    }
+
+    const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
+    const parentAccId = body.parentAccId ?? body.customerParentAccId ?? null;
+
+    const ledger = await partyLedger.syncCustomerLedger(client, {
+      companyId,
+      branchId,
+      customerCode: customer.customerCode,
+      customerName: customer.customerName,
+      parentAccId,
+    });
+
+    return {
+      customerId: id,
+      customerCode: customer.customerCode,
+      ledgerAccountId: ledger.accountId,
+      ledgerParentAccId: ledger.parentAccId,
+      created: ledger.created,
+      message: ledger.created
+        ? 'Customer ledger created in chart of accounts'
+        : 'Customer ledger already exists — updated',
+    };
+  });
 }

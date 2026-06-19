@@ -9,3 +9,5 @@ accountsParameterRouter.use(authMiddleware);
 accountsParameterRouter.use(requireFeature('backoffice.accounts'));
 accountsParameterRouter.get('/branch-defaults', accountsParameterController.getBranchDefaults);
 accountsParameterRouter.patch('/branch-defaults', accountsParameterController.patchBranchDefaults);
+accountsParameterRouter.get('/integration', accountsParameterController.getBranchIntegration);
+accountsParameterRouter.patch('/integration', accountsParameterController.patchBranchIntegration);

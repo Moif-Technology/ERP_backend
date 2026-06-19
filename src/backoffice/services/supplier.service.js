@@ -1,6 +1,7 @@
 import { withTransaction } from '../../config/db.js';
 import * as supplierRepo from '../repositories/supplier.repository.js';
 import { assertLimitAvailable } from '../../core/services/entitlement.service.js';
+import * as partyLedger from './partyLedger.service.js';
 
 function trimOrEmpty(v) {
   if (v == null) return '';
@@ -28,17 +29,53 @@ export async function updateSupplier(pool, supplierId, body, authStaff) {
   const name = trimOrEmpty(body.supplierName);
   if (!name) { const err = new Error('supplierName is required'); err.status = 400; throw err; }
   const userLabel = (authStaff.staff_name || '').slice(0, 50) || 'system';
-  const updated = await supplierRepo.updateSupplier(pool, companyId, id, {
-    supplierCode: code,
-    supplierName: name.slice(0, 200),
-    mobileNo: sliceOrNull(body.mobileNo, 25),
-    email: sliceOrNull(body.email, 75),
-    modifiedBy: userLabel,
+  const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
+  const parentAccId = body.parentAccId ?? body.supplierParentAccId ?? null;
+
+  return withTransaction(async (client) => {
+    const existing = await supplierRepo.findSupplierById(client, companyId, id);
+    if (!existing) {
+      const err = new Error('Supplier not found'); err.status = 404; throw err;
+    }
+
+    const updated = await supplierRepo.updateSupplier(client, companyId, id, {
+      supplierCode: code,
+      supplierName: name.slice(0, 200),
+      mobileNo: sliceOrNull(body.mobileNo, 25),
+      email: sliceOrNull(body.email, 75),
+      modifiedBy: userLabel,
+    });
+    if (!updated) {
+      const err = new Error('Supplier not found'); err.status = 404; throw err;
+    }
+
+    let ledger = null;
+    try {
+      await client.query('SAVEPOINT supplier_ledger');
+      ledger = await partyLedger.syncSupplierLedger(client, {
+        companyId,
+        branchId,
+        supplierCode: code,
+        supplierName: name.slice(0, 200),
+        previousCode: existing.supplierCode,
+        parentAccId,
+      });
+      await client.query('RELEASE SAVEPOINT supplier_ledger');
+    } catch (ledgerErr) {
+      await client.query('ROLLBACK TO SAVEPOINT supplier_ledger').catch(() => {});
+      if (ledgerErr.code === '42P01' || ledgerErr.code === '42703') {
+        console.warn('[supplier] Account head tables missing — ledger not updated');
+      } else {
+        throw ledgerErr;
+      }
+    }
+
+    return {
+      ...updated,
+      ledgerAccountId: ledger?.accountId ?? null,
+      ledgerParentAccId: ledger?.parentAccId ?? null,
+    };
   });
-  if (!updated) {
-    const err = new Error('Supplier not found'); err.status = 404; throw err;
-  }
-  return updated;
 }
 
 export async function listSuppliers(pool, authStaff, query) {
@@ -50,6 +87,53 @@ export async function listSuppliers(pool, authStaff, query) {
   }
   const limit = query?.limit != null ? Number(query.limit) : 500;
   return supplierRepo.listSuppliers(pool, companyId, limit);
+}
+
+/** Create or refresh supplier sub-ledger in chart of accounts. */
+export async function postSupplierLedger(pool, supplierId, authStaff, body = {}) {
+  const companyId = Number(authStaff.company_id);
+  if (!Number.isFinite(companyId) || companyId < 1) {
+    const err = new Error('Invalid company on session');
+    err.status = 400;
+    throw err;
+  }
+  const id = Number(supplierId);
+  if (!Number.isFinite(id) || id < 1) {
+    const err = new Error('Invalid supplierId');
+    err.status = 400;
+    throw err;
+  }
+
+  return withTransaction(async (client) => {
+    const supplier = await supplierRepo.findSupplierById(client, companyId, id);
+    if (!supplier) {
+      const err = new Error('Supplier not found');
+      err.status = 404;
+      throw err;
+    }
+
+    const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
+    const parentAccId = body.parentAccId ?? body.supplierParentAccId ?? null;
+
+    const ledger = await partyLedger.syncSupplierLedger(client, {
+      companyId,
+      branchId,
+      supplierCode: supplier.supplierCode,
+      supplierName: supplier.supplierName,
+      parentAccId,
+    });
+
+    return {
+      supplierId: id,
+      supplierCode: supplier.supplierCode,
+      ledgerAccountId: ledger.accountId,
+      ledgerParentAccId: ledger.parentAccId,
+      created: ledger.created,
+      message: ledger.created
+        ? 'Supplier ledger created in chart of accounts'
+        : 'Supplier ledger already exists — updated',
+    };
+  });
 }
 
 export async function createSupplier(pool, body, authStaff) {
@@ -97,6 +181,9 @@ export async function createSupplier(pool, body, authStaff) {
       db: client,
     });
     const supplierId = await supplierRepo.nextSupplierId(client, companyId);
+    const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
+    const parentAccId = body.parentAccId ?? body.supplierParentAccId ?? null;
+
     await supplierRepo.insertSupplier(client, {
       companyId,
       supplierId,
@@ -108,10 +195,33 @@ export async function createSupplier(pool, body, authStaff) {
       createdBy: userLabel,
       modifiedBy: userLabel,
     });
+
+    let ledger = null;
+    try {
+      await client.query('SAVEPOINT supplier_ledger');
+      ledger = await partyLedger.syncSupplierLedger(client, {
+        companyId,
+        branchId,
+        supplierCode: code,
+        supplierName: name.slice(0, 200),
+        parentAccId,
+      });
+      await client.query('RELEASE SAVEPOINT supplier_ledger');
+    } catch (ledgerErr) {
+      await client.query('ROLLBACK TO SAVEPOINT supplier_ledger').catch(() => {});
+      if (ledgerErr.code === '42P01' || ledgerErr.code === '42703') {
+        console.warn('[supplier] Account head tables missing — ledger not created');
+      } else {
+        throw ledgerErr;
+      }
+    }
+
     return {
       supplierId,
       supplierCode: code,
       supplierName: name.slice(0, 200),
+      ledgerAccountId: ledger?.accountId ?? null,
+      ledgerParentAccId: ledger?.parentAccId ?? null,
     };
   });
 }
