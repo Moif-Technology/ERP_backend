@@ -197,6 +197,15 @@ export async function ensureFeatureCatalog() {
       ('pos.kot.reprint',          'KOT reprint',             'pos', 'pos',  'feature', 217),
       ('pos.kot.comments',         'KOT comments',            'pos', 'pos',  'feature', 218),
 
+      -- Accounts pack (standalone financial module)
+      ('accounts',               'Accounts',             'accounts', NULL,       'pack',   600),
+      ('accounts.dashboard',     'Accounts dashboard',   'accounts', 'accounts', 'feature',601),
+      ('accounts.vouchers',      'Vouchers',             'accounts', 'accounts', 'feature',602),
+      ('accounts.receivables',   'Receivables',          'accounts', 'accounts', 'feature',603),
+      ('accounts.payables',      'Payables',             'accounts', 'accounts', 'feature',604),
+      ('accounts.ledger',        'Ledger & trial balance','accounts','accounts', 'feature',605),
+      ('accounts.reports',       'Financial reports',    'accounts', 'accounts', 'feature',606),
+
       -- POS — legacy alias gates
       ('pos.kot_join_split',       'KOT join/split (legacy)', 'pos', 'pos',  'feature', 219),
       ('pos.item_cancel',          'Item cancel (legacy)',    'pos', 'pos',  'feature', 220),
@@ -222,6 +231,7 @@ export async function ensureFeatureCatalog() {
       CASE
         WHEN p.plan_code = 'custom' THEN TRUE
         WHEN p.plan_code = 'pro'    THEN TRUE
+        WHEN p.plan_code = 'standard' AND f.pack_code = 'accounts' THEN FALSE
         WHEN p.plan_code = 'standard' AND f.pack_code IN ('core','backoffice','pos') THEN TRUE
         WHEN p.plan_code = 'basic' AND f.feature_code IN (
           'core','core.company_profile','core.branches','core.users','core.roles',

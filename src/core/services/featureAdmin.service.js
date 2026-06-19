@@ -43,4 +43,10 @@ export async function updatePlanFeatures(planCode, updates) {
     .filter((u) => typeof u.featureCode === 'string' && typeof u.isEnabled === 'boolean')
     .map((u) => ({ featureCode: u.featureCode, isEnabled: u.isEnabled }));
   await repo.bulkUpsertPlanFeatures(pool, planCode, clean);
+  // Touch tenant_subscription so getEntitlementVersion detects the change and
+  // the client 30s poll propagates new features without requiring re-login.
+  await pool.query(
+    `UPDATE core.tenant_subscription SET updated_at = NOW() WHERE plan_code = $1`,
+    [planCode],
+  );
 }
