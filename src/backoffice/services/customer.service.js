@@ -281,3 +281,50 @@ export async function listCustomers(pool, authStaff, limitQuery, searchQuery = '
   const limit = limitQuery != null ? Number(limitQuery) : 200;
   return customerRepo.listCustomersByCompany(pool, companyId, limit, searchQuery);
 }
+
+/** Create or refresh customer sub-ledger in chart of accounts. */
+export async function postCustomerLedger(pool, customerId, authStaff, body = {}) {
+  const companyId = Number(authStaff.company_id);
+  if (!Number.isFinite(companyId) || companyId < 1) {
+    const err = new Error('Invalid company on session');
+    err.status = 400;
+    throw err;
+  }
+  const id = Number(customerId);
+  if (!Number.isFinite(id) || id < 1) {
+    const err = new Error('Invalid customerId');
+    err.status = 400;
+    throw err;
+  }
+
+  return withTransaction(async (client) => {
+    const customer = await customerRepo.findCustomerById(client, companyId, id);
+    if (!customer) {
+      const err = new Error('Customer not found');
+      err.status = 404;
+      throw err;
+    }
+
+    const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
+    const parentAccId = body.parentAccId ?? body.customerParentAccId ?? null;
+
+    const ledger = await partyLedger.syncCustomerLedger(client, {
+      companyId,
+      branchId,
+      customerCode: customer.customerCode,
+      customerName: customer.customerName,
+      parentAccId,
+    });
+
+    return {
+      customerId: id,
+      customerCode: customer.customerCode,
+      ledgerAccountId: ledger.accountId,
+      ledgerParentAccId: ledger.parentAccId,
+      created: ledger.created,
+      message: ledger.created
+        ? 'Customer ledger created in chart of accounts'
+        : 'Customer ledger already exists — updated',
+    };
+  });
+}

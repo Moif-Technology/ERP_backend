@@ -1,5 +1,6 @@
 import { pool } from '../../../config/db.js';
 import * as customerRepo from '../repositories/customer.repository.js';
+import { PM, normalizeBillPaymentMode } from '../utils/paymentModes.js';
 
 /**
  * Search customers for the logged-in counter's company.
@@ -15,7 +16,9 @@ export async function searchCustomers(authStaff, q, limit = 30) {
     customerName:  c.customerName,
     mobileNo:      c.mobileNo    ?? null,
     telephone:     c.telephone   ?? null,
-    paymentMode:   c.paymentMode ?? 'CASH',
+    address:       c.address     ?? null,
+    taxRegNo:      c.taxRegNo    ?? null,
+    paymentMode:   normalizeBillPaymentMode(c.paymentMode ?? PM.CASH),
     creditLimit:   c.creditLimit,
     creditBalance: c.creditBalance,
     // Tally-style outstanding: SUM(debit) - SUM(credit) from accounts.voucher_detail.

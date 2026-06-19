@@ -3,7 +3,8 @@ import * as salesService from '../services/sales.service.js';
 function handleError(res, err, fallback) {
   if (err.status) return res.status(err.status).json({ message: err.message });
   console.error(err);
-  return res.status(500).json({ message: fallback });
+  const detail = err.message && !err.message.includes('password') ? err.message : null;
+  return res.status(500).json({ message: detail || fallback });
 }
 
 /** POST /api/counter-pos/sales/hold */
@@ -43,6 +44,69 @@ export async function cancelHold(req, res) {
     return res.json(result);
   } catch (err) {
     return handleError(res, err, 'Failed to cancel hold bill');
+  }
+}
+
+/** POST /api/counter-pos/sales/delivery */
+export async function saveDelivery(req, res) {
+  try {
+    const result = await salesService.saveDeliveryBill(req.authStaff, req.body);
+    return res.status(201).json(result);
+  } catch (err) {
+    return handleError(res, err, 'Failed to save delivery');
+  }
+}
+
+/** GET /api/counter-pos/sales/delivery */
+export async function getDeliveryBills(req, res) {
+  try {
+    const list = await salesService.getDeliveryBills(req.authStaff);
+    return res.json(list);
+  } catch (err) {
+    return handleError(res, err, 'Failed to get delivery bills');
+  }
+}
+
+/** GET /api/counter-pos/sales/delivery/:salesId */
+export async function recallDelivery(req, res) {
+  try {
+    const items = await salesService.recallDeliveryBill(req.authStaff, req.params.salesId);
+    return res.json(items);
+  } catch (err) {
+    return handleError(res, err, 'Failed to recall delivery bill');
+  }
+}
+
+/** DELETE /api/counter-pos/sales/delivery/:salesId */
+export async function cancelDelivery(req, res) {
+  try {
+    const result = await salesService.cancelDelivery(req.authStaff, req.params.salesId);
+    return res.json(result);
+  } catch (err) {
+    return handleError(res, err, 'Failed to cancel delivery bill');
+  }
+}
+
+/** POST /api/counter-pos/sales/delivery/:salesId/settle */
+export async function settleDelivery(req, res) {
+  try {
+    const result = await salesService.settleDeliveryBill(
+      req.authStaff,
+      req.params.salesId,
+      req.body,
+    );
+    return res.json(result);
+  } catch (err) {
+    return handleError(res, err, 'Failed to settle delivery');
+  }
+}
+
+export async function settleDeliveryBulk(req, res) {
+  try {
+    const result = await salesService.settleDeliveryBulk(req.authStaff, req.body);
+    return res.json(result);
+  } catch (err) {
+    return handleError(res, err, 'Failed to settle deliveries');
   }
 }
 

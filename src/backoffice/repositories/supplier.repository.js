@@ -30,6 +30,7 @@ function mapRow(row) {
     mobileNo: row.mobile_no ?? null,
     email: row.email ?? null,
     recordStatus: row.record_status,
+    ledgerAccountId: row.ledger_account_id != null ? Number(row.ledger_account_id) : null,
   };
 }
 
@@ -62,10 +63,15 @@ export async function supplierExists(pool, companyId, supplierId) {
 export async function listSuppliers(pool, companyId, limit = 500) {
   const lim = Math.min(Math.max(Number(limit) || 500, 1), 2000);
   const { rows } = await pool.query(
-    `SELECT supplier_id, supplier_code, supplier_name, mobile_no, email, record_status
-     FROM biz.supplier_master
-     WHERE company_id = $1 AND record_status = 'ACTIVE'
-     ORDER BY supplier_name
+    `SELECT s.supplier_id, s.supplier_code, s.supplier_name, s.mobile_no, s.email, s.record_status,
+            ah.account_id AS ledger_account_id
+     FROM biz.supplier_master s
+     LEFT JOIN accounts.account_head_master ah
+       ON ah.company_id = s.company_id
+      AND ah.account_no = s.supplier_code
+      AND (ah.record_status IS NULL OR TRIM(UPPER(ah.record_status)) = 'ACTIVE')
+     WHERE s.company_id = $1 AND s.record_status = 'ACTIVE'
+     ORDER BY s.supplier_name
      LIMIT $2`,
     [companyId, lim],
   );

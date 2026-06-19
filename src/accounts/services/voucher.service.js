@@ -18,11 +18,33 @@ function resolveCompanyBranch(authStaff, body) {
   return { companyId, branchId };
 }
 
+function parseOptionalBranchId(raw) {
+  if (raw == null || String(raw).trim() === '') return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : undefined;
+}
+
+async function resolveVoucherBranch(pool, companyId, voucherMasterId, hintBranchId = null) {
+  const hint = parseOptionalBranchId(hintBranchId);
+  if (hint) {
+    const found = await voucherRepo.getVoucherWithDetails(pool, companyId, hint, voucherMasterId);
+    if (found) return hint;
+  }
+  const byId = await voucherRepo.getVoucherWithDetailsById(pool, companyId, voucherMasterId);
+  if (!byId) return null;
+  return Number(byId.master.branch_id);
+}
+
 export async function listVouchers(pool, authStaff, query) {
   const companyId = Number(authStaff.company_id);
+  let voucherTypeId = query.voucherTypeId ? Number(query.voucherTypeId) : undefined;
+  if (!voucherTypeId && query.voucherTypeCode) {
+    voucherTypeId = await voucherRepo.getVoucherTypeIdByCode(pool, companyId, String(query.voucherTypeCode).trim());
+  }
+  const branchId = parseOptionalBranchId(query.branchId);
   return voucherRepo.listVouchers(pool, companyId, {
-    branchId: query.branchId ? Number(query.branchId) : (authStaff.branch_id ? Number(authStaff.branch_id) : undefined),
-    voucherTypeId: query.voucherTypeId ? Number(query.voucherTypeId) : undefined,
+    branchId,
+    voucherTypeId,
     postStatus: query.postStatus || undefined,
     dateFrom: query.dateFrom || undefined,
     dateTo: query.dateTo || undefined,
@@ -33,8 +55,14 @@ export async function listVouchers(pool, authStaff, query) {
 
 export async function getVoucher(pool, authStaff, voucherMasterId) {
   const companyId = Number(authStaff.company_id);
-  const branchId = Number(authStaff.branch_id);
-  const data = await voucherRepo.getVoucherWithDetails(pool, companyId, branchId, voucherMasterId);
+  const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
+  let data = null;
+  if (branchId) {
+    data = await voucherRepo.getVoucherWithDetails(pool, companyId, branchId, voucherMasterId);
+  }
+  if (!data) {
+    data = await voucherRepo.getVoucherWithDetailsById(pool, companyId, voucherMasterId);
+  }
   if (!data) {
     const err = new Error('Voucher not found');
     err.status = 404;
@@ -132,7 +160,15 @@ export async function createVoucher(pool, authStaff, body) {
 }
 
 export async function updateVoucher(pool, authStaff, voucherMasterId, body) {
-  const { companyId, branchId } = resolveCompanyBranch(authStaff, body);
+  const companyId = Number(authStaff.company_id);
+  const branchId = await resolveVoucherBranch(
+    pool, companyId, voucherMasterId, body?.branchId ?? authStaff.branch_id,
+  );
+  if (!branchId) {
+    const err = new Error('Voucher not found');
+    err.status = 404;
+    throw err;
+  }
   const existing = await voucherRepo.getVoucherWithDetails(pool, companyId, branchId, voucherMasterId);
   if (!existing) {
     const err = new Error('Voucher not found');
@@ -209,7 +245,12 @@ export async function updateVoucher(pool, authStaff, voucherMasterId, body) {
 
 export async function postVoucher(pool, authStaff, voucherMasterId) {
   const companyId = Number(authStaff.company_id);
-  const branchId = Number(authStaff.branch_id);
+  const branchId = await resolveVoucherBranch(pool, companyId, voucherMasterId, authStaff.branch_id);
+  if (!branchId) {
+    const err = new Error('Voucher not found');
+    err.status = 404;
+    throw err;
+  }
   return withTransaction(async (client) => {
     await voucherRepo.updateVoucherPostStatus(client, companyId, branchId, voucherMasterId, 'POSTED');
     return { voucherMasterId, postStatus: 'POSTED' };
@@ -218,7 +259,12 @@ export async function postVoucher(pool, authStaff, voucherMasterId) {
 
 export async function unpostVoucher(pool, authStaff, voucherMasterId) {
   const companyId = Number(authStaff.company_id);
-  const branchId = Number(authStaff.branch_id);
+  const branchId = await resolveVoucherBranch(pool, companyId, voucherMasterId, authStaff.branch_id);
+  if (!branchId) {
+    const err = new Error('Voucher not found');
+    err.status = 404;
+    throw err;
+  }
   return withTransaction(async (client) => {
     await voucherRepo.updateVoucherPostStatus(client, companyId, branchId, voucherMasterId, 'PENDING');
     return { voucherMasterId, postStatus: 'PENDING' };
@@ -227,7 +273,12 @@ export async function unpostVoucher(pool, authStaff, voucherMasterId) {
 
 export async function deleteVoucher(pool, authStaff, voucherMasterId) {
   const companyId = Number(authStaff.company_id);
-  const branchId = Number(authStaff.branch_id);
+  const branchId = await resolveVoucherBranch(pool, companyId, voucherMasterId, authStaff.branch_id);
+  if (!branchId) {
+    const err = new Error('Voucher not found');
+    err.status = 404;
+    throw err;
+  }
   const existing = await voucherRepo.getVoucherWithDetails(pool, companyId, branchId, voucherMasterId);
   if (!existing) {
     const err = new Error('Voucher not found');
@@ -267,7 +318,7 @@ export async function getLedgerTransactions(pool, authStaff, accountId, query) {
     throw err;
   }
   const data = await voucherRepo.getLedgerTransactions(pool, companyId, accountId, {
-    branchId: query.branchId ? Number(query.branchId) : (authStaff.branch_id ? Number(authStaff.branch_id) : undefined),
+    branchId: parseOptionalBranchId(query.branchId),
     dateFrom: query.dateFrom || undefined,
     dateTo: query.dateTo || undefined,
     page: query.page ? Number(query.page) : 1,
@@ -285,10 +336,13 @@ export async function getLedgerTransactions(pool, authStaff, accountId, query) {
 
 export async function getAgingSummary(pool, authStaff, query) {
   const companyId = Number(authStaff.company_id);
+  const branchId = parseOptionalBranchId(query.branchId);
   const rows = await voucherRepo.getAgingSummary(pool, companyId, {
-    branchId: query.branchId ? Number(query.branchId) : (authStaff.branch_id ? Number(authStaff.branch_id) : undefined),
+    branchId,
     summaryType: query.summaryType || 'receivable',
     postStatus: query.postStatus || undefined,
+    dateFrom: query.dateFrom || undefined,
+    dateTo: query.dateTo || undefined,
   });
   return {
     summaryType: query.summaryType || 'receivable',
@@ -313,7 +367,7 @@ export async function getAgingSummary(pool, authStaff, query) {
 export async function getTrialBalance(pool, authStaff, query) {
   const companyId = Number(authStaff.company_id);
   const rows = await voucherRepo.getTrialBalance(pool, companyId, {
-    branchId: query.branchId ? Number(query.branchId) : (authStaff.branch_id ? Number(authStaff.branch_id) : undefined),
+    branchId: parseOptionalBranchId(query.branchId),
     dateTo: query.dateTo || undefined,
   });
   let grandDebit = 0, grandCredit = 0;

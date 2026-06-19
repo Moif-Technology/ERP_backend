@@ -1,4 +1,9 @@
 import { pool } from '../../../config/db.js';
+import {
+  PM,
+  normalizeBillPaymentMode,
+  isCreditCardBillMode,
+} from '../utils/paymentModes.js';
 import * as customerRepo from '../repositories/customer.repository.js';
 import * as settlementRepo from '../repositories/settlement.repository.js';
 import * as voucherRepo from '../../../accounts/repositories/voucher.repository.js';
@@ -15,10 +20,7 @@ function up(v) {
 }
 
 function resolveMode(dbMode) {
-  const m = up(dbMode);
-  if (m === 'CREDITCARD' || m === 'CARD') return 'CARD';
-  if (m === 'CREDIT') return 'CREDIT';
-  return 'CASH';
+  return normalizeBillPaymentMode(dbMode);
 }
 
 /** Credit customers with outstanding balance (for settlement list). */
@@ -26,7 +28,7 @@ export async function listCreditCustomers(authStaff, q, limit = 200) {
   const companyId = Number(authStaff.company_id);
   const customers = await customerRepo.searchCustomers(pool, companyId, q, limit);
   return customers
-    .filter(c => resolveMode(c.paymentMode) === 'CREDIT')
+    .filter(c => resolveMode(c.paymentMode) === PM.CREDIT)
     .map(c => ({
       customerId:   c.customerId,
       customerCode: c.customerCode,
@@ -52,6 +54,7 @@ export async function getCustomerOutstandingBills(authStaff, customerId) {
   const ledgerOs = await customerRepo.getCustomerOsBalance(pool, companyId, cid);
   const rawBills = await settlementRepo.getOutstandingBills(pool, companyId, cid);
   const bills = settlementRepo.reconcileBillsWithLedger(rawBills, ledgerOs, cid);
+  const billsSum = bills.reduce((s, b) => s + num(b.currentAmount), 0);
 
   return {
     customerId:   cid,
@@ -59,6 +62,7 @@ export async function getCustomerOutstandingBills(authStaff, customerId) {
     customerName: customer.customer_name,
     ledgerOs,
     billsTotal:   Math.max(ledgerOs, 0),
+    billsSum,
     osAmount:     Math.max(ledgerOs, 0),
     bills,
   };
@@ -93,10 +97,15 @@ function allocateFifo(bills, paymentAmount) {
 
 async function resolveReceiptLedger(client, companyId, branchId, paymentMode) {
   const mode = up(paymentMode);
-  const param = mode === 'CARD'
+  const primary = isCreditCardBillMode(mode)
+    ? 'CODRCreditCardReceiptLedger'
+    : 'CODRCashReceiptLedger';
+  const fallback = isCreditCardBillMode(mode)
     ? accountsParamRepo.PARAM_DEFAULT_CARD_LEDGER
     : accountsParamRepo.PARAM_DEFAULT_CASH_LEDGER;
-  return accountsParamRepo.getParameterAccountId(client, companyId, branchId, param);
+  let id = await accountsParamRepo.getParameterAccountId(client, companyId, branchId, primary);
+  if (!id) id = await accountsParamRepo.getParameterAccountId(client, companyId, branchId, fallback);
+  return id;
 }
 
 async function postReceiptVoucher(client, args) {
@@ -106,7 +115,7 @@ async function postReceiptVoucher(client, args) {
   } = args;
 
   const voucherTypeId =
-    (await voucherRepo.getVoucherTypeId(client, companyId, 'ReceiptVoucherNameCustomer', branchId)) ?? 2;
+    (await voucherRepo.getVoucherTypeId(client, companyId, 'ReceiptVoucherNameCustomer', branchId)) ?? 9;
   const voucherPrefix =
     (await voucherRepo.getVoucherPrefix(client, companyId, voucherTypeId)) || 'RCV';
 
@@ -165,7 +174,7 @@ async function postReceiptVoucher(client, args) {
   return voucherMasterId;
 }
 
-/** Settlement receipt history — filter by customer and date. */
+/** Settlement receipt history ΓÇö filter by customer and date. */
 export async function listSettlementHistory(authStaff, query = {}) {
   const companyId = Number(authStaff.company_id);
   const branchId  = Number(authStaff.branch_id);
@@ -190,7 +199,7 @@ export async function getSettlementReceipt(authStaff, transactionId) {
 }
 
 /**
- * Save credit settlement — FIFO bill allocation + accounts.cash_transaction_* + receipt voucher.
+ * Save credit settlement ΓÇö FIFO bill allocation + accounts.cash_transaction_* + receipt voucher.
  */
 export async function saveCreditSettlement(authStaff, body) {
   const companyId = Number(authStaff.company_id);
@@ -198,7 +207,7 @@ export async function saveCreditSettlement(authStaff, body) {
   const staffId   = Number(authStaff.staff_id);
   const customerId = Number(body.customerId);
   const amount     = num(body.amount);
-  const paymentMode = up(body.paymentMode || 'CASH');
+  const paymentMode = normalizeBillPaymentMode(body.paymentMode || PM.CASH);
   const counterNo   = Number(body.counterNo ?? 1);
 
   if (!Number.isFinite(customerId) || customerId < 1) {
@@ -207,8 +216,8 @@ export async function saveCreditSettlement(authStaff, body) {
   if (amount <= 0) {
     const e = new Error('Settlement amount must be greater than zero'); e.status = 400; throw e;
   }
-  if (paymentMode !== 'CASH' && paymentMode !== 'CARD') {
-    const e = new Error('Payment mode must be CASH or CARD'); e.status = 400; throw e;
+  if (paymentMode !== PM.CASH && paymentMode !== PM.CREDITCARD) {
+    const e = new Error('Payment mode must be CASH or CREDITCARD'); e.status = 400; throw e;
   }
 
   const customer = await settlementRepo.getCustomerById(pool, companyId, customerId);
@@ -275,7 +284,7 @@ export async function saveCreditSettlement(authStaff, body) {
       totalPaidAmount: amount,
       paymentMode,
       voucherMasterId,
-      remarks: `Counter credit settlement — ${customer.customer_code}`,
+      remarks: `Counter credit settlement ΓÇö ${customer.customer_code}`,
       createdBy: auditBy,
     });
 
@@ -309,6 +318,12 @@ export async function saveCreditSettlement(authStaff, body) {
     }
 
     const newOsInTxn = await customerRepo.getCustomerOsBalance(client, companyId, customerId);
+    if (newOsInTxn <= 0.005) {
+      await settlementRepo.syncCustomerCreditState(
+        client, companyId, customerId, customerLedgerId,
+      );
+    }
+
     await client.query(
       `UPDATE accounts.cash_transaction_master
        SET remarks = $3, modified_on = NOW()
@@ -316,13 +331,13 @@ export async function saveCreditSettlement(authStaff, body) {
       [
         companyId,
         transactionId,
-        `Counter credit settlement — ${customer.customer_code}|OSA:${newOsInTxn}`,
+        `Counter credit settlement ΓÇö ${customer.customer_code}|OSA:${newOsInTxn}`,
       ],
     );
 
     await client.query('COMMIT');
 
-    const newOs = newOsInTxn;
+    const newOs = newOsInTxn <= 0.005 ? 0 : newOsInTxn;
 
     return {
       transactionId,
@@ -339,11 +354,14 @@ export async function saveCreditSettlement(authStaff, body) {
       billsCleared: allocations.map(a => ({
         billId: a.billId,
         invoiceNo: a.invoiceNo,
+        billDate: a.billDate,
+        invoiceAmount: a.invoiceAmount,
         osBefore: a.currentAmount,
         paidAmount: a.paidAmount,
         osAfter: a.balance,
       })),
       remainingOs: newOs,
+      counterNo,
     };
   } catch (err) {
     await client.query('ROLLBACK');

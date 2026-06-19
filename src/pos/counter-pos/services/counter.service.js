@@ -24,7 +24,10 @@ async function buildSummary(ctx) {
   const totalCash    = Number(sales.total_cash);
   const totalCredit  = Number(sales.total_credit);
   const totalCard    = Number(sales.total_card);
+  const totalOnline  = Number(sales.total_online ?? 0);
+  const totalVoucher = Number(sales.total_voucher ?? 0);
   const totalDiscount = Number(sales.total_discount);
+  const itemDiscountTotal = Number(sales.item_discount_total ?? 0);
   const totalRefund  = Number(sales.total_refund);
   const totalRoundOff = Number(sales.total_round_off);
   const totalTax     = Number(sales.total_tax);
@@ -41,7 +44,10 @@ async function buildSummary(ctx) {
     totalCash,
     totalCredit,
     totalCard,
+    totalOnline,
+    totalVoucher,
     totalDiscount,
+    itemDiscountTotal,
     totalRefund,
     totalRoundOff,
     totalTax,
@@ -57,6 +63,7 @@ async function buildSummary(ctx) {
     creditBillCount: Number(sales.credit_bill_count),
     cardBillCount:   Number(sales.card_bill_count),
     multiBillCount:  Number(sales.multi_bill_count),
+    complimentBillCount: Number(sales.compliment_bill_count ?? 0),
     startBillNo:  sales.start_bill_no ? Number(sales.start_bill_no) : null,
     endBillNo:    sales.end_bill_no   ? Number(sales.end_bill_no)   : null,
   };

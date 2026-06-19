@@ -34,6 +34,12 @@ counterPosRouter.post('/sales/hold',             authMiddleware, salesController
 counterPosRouter.get('/sales/held',              authMiddleware, salesController.getHeldBills);
 counterPosRouter.get('/sales/held/:salesId',     authMiddleware, salesController.recallBill);
 counterPosRouter.delete('/sales/held/:salesId',  authMiddleware, salesController.cancelHold);
+counterPosRouter.post('/sales/delivery',                    authMiddleware, salesController.saveDelivery);
+counterPosRouter.get('/sales/delivery',                     authMiddleware, salesController.getDeliveryBills);
+counterPosRouter.get('/sales/delivery/:salesId',            authMiddleware, salesController.recallDelivery);
+counterPosRouter.delete('/sales/delivery/:salesId',         authMiddleware, salesController.cancelDelivery);
+counterPosRouter.post('/sales/delivery/settle-bulk',          authMiddleware, salesController.settleDeliveryBulk);
+counterPosRouter.post('/sales/delivery/:salesId/settle',    authMiddleware, salesController.settleDelivery);
 
 // Counter reading — X Report / Z Report
 counterPosRouter.get('/counter/summary',            authMiddleware, counterController.getSummary);

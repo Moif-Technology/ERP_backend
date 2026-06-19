@@ -73,6 +73,7 @@ function mapRow(row) {
     creditStatus: row.credit_status,
     remarks: emptyToNull(row.remarks),
     status: row.status,
+    ledgerAccountId: row.ledger_account_id != null ? Number(row.ledger_account_id) : null,
     createdByStaffId:
       row.created_by_staff_id != null ? Number(row.created_by_staff_id) : null,
     createdOn: row.created_on ?? null,
@@ -242,29 +243,34 @@ export async function listCustomersByCompany(pool, companyId, limit, search = ''
   const cap = Math.min(Math.max(Number(limit) || 200, 1), 1000);
   const q = String(search || '').trim();
   const params = [companyId];
-  let where = `WHERE company_id = $1 AND (status IS NULL OR status = 'ACTIVE')`;
+  let where = `WHERE c.company_id = $1 AND (c.status IS NULL OR c.status = 'ACTIVE')`;
   if (q) {
     params.push(`%${q}%`);
     where += ` AND (
-      customer_code ILIKE $2
-      OR customer_name ILIKE $2
-      OR COALESCE(company_name, '') ILIKE $2
-      OR COALESCE(mobile_no, '') ILIKE $2
-      OR COALESCE(telephone, '') ILIKE $2
-      OR COALESCE(email, '') ILIKE $2
+      c.customer_code ILIKE $2
+      OR c.customer_name ILIKE $2
+      OR COALESCE(c.company_name, '') ILIKE $2
+      OR COALESCE(c.mobile_no, '') ILIKE $2
+      OR COALESCE(c.telephone, '') ILIKE $2
+      OR COALESCE(c.email, '') ILIKE $2
     )`;
   }
   params.push(cap);
   const { rows } = await pool.query(
-    `SELECT customer_id, company_id, customer_code, customer_name, company_name,
-            customer_tax_reg_no, contact_person, designation, address, address_arabic, po_box,
-            country_name, city_name, telephone, fax, email, mobile_no,
-            payment_mode, credit_balance, credit_limit, credit_period,
-            customer_type, managed_by, loyalty_status, credit_status, remarks,
-            status, created_by_staff_id, created_on, modified_on
-     FROM biz.customer_master
+    `SELECT c.customer_id, c.company_id, c.customer_code, c.customer_name, c.company_name,
+            c.customer_tax_reg_no, c.contact_person, c.designation, c.address, c.address_arabic, c.po_box,
+            c.country_name, c.city_name, c.telephone, c.fax, c.email, c.mobile_no,
+            c.payment_mode, c.credit_balance, c.credit_limit, c.credit_period,
+            c.customer_type, c.managed_by, c.loyalty_status, c.credit_status, c.remarks,
+            c.status, c.created_by_staff_id, c.created_on, c.modified_on,
+            ah.account_id AS ledger_account_id
+     FROM biz.customer_master c
+     LEFT JOIN accounts.account_head_master ah
+       ON ah.company_id = c.company_id
+      AND ah.account_no = c.customer_code
+      AND (ah.record_status IS NULL OR TRIM(UPPER(ah.record_status)) = 'ACTIVE')
      ${where}
-     ORDER BY customer_name ASC
+     ORDER BY c.customer_name ASC
      LIMIT $${params.length}`,
     params
   );

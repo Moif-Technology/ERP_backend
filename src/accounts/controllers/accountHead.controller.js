@@ -49,6 +49,24 @@ export async function createAccountHead(req, res) {
   }
 }
 
+export async function suggestAccountNumber(req, res) {
+  try {
+    const data = await accountHeadService.suggestAccountNumber(pool, req.authStaff, req.query);
+    return res.json(data);
+  } catch (err) {
+    return handleError(res, err, 'Could not suggest account number');
+  }
+}
+
+export async function seedStandardChart(req, res) {
+  try {
+    const data = await accountHeadService.seedStandardChart(pool, req.authStaff, req.body);
+    return res.json(data);
+  } catch (err) {
+    return handleError(res, err, 'Could not load standard chart of accounts');
+  }
+}
+
 export async function updateAccountHead(req, res) {
   try {
     const data = await accountHeadService.updateAccountHead(pool, req.authStaff, Number(req.params.accountId), req.body);

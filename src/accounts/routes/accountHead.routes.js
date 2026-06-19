@@ -9,6 +9,8 @@ accountHeadRouter.use(authMiddleware);
 accountHeadRouter.use(requireFeature('backoffice.accounts'));
 accountHeadRouter.get('/', accountHeadController.listAccountHeads);
 accountHeadRouter.get('/tree', accountHeadController.getAccountTree);
+accountHeadRouter.get('/suggest-number', accountHeadController.suggestAccountNumber);
+accountHeadRouter.post('/seed-standard-chart', accountHeadController.seedStandardChart);
 accountHeadRouter.get('/:accountId', accountHeadController.getAccountHead);
 accountHeadRouter.post('/', accountHeadController.createAccountHead);
 accountHeadRouter.put('/:accountId', accountHeadController.updateAccountHead);

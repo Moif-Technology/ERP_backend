@@ -89,6 +89,53 @@ export async function listSuppliers(pool, authStaff, query) {
   return supplierRepo.listSuppliers(pool, companyId, limit);
 }
 
+/** Create or refresh supplier sub-ledger in chart of accounts. */
+export async function postSupplierLedger(pool, supplierId, authStaff, body = {}) {
+  const companyId = Number(authStaff.company_id);
+  if (!Number.isFinite(companyId) || companyId < 1) {
+    const err = new Error('Invalid company on session');
+    err.status = 400;
+    throw err;
+  }
+  const id = Number(supplierId);
+  if (!Number.isFinite(id) || id < 1) {
+    const err = new Error('Invalid supplierId');
+    err.status = 400;
+    throw err;
+  }
+
+  return withTransaction(async (client) => {
+    const supplier = await supplierRepo.findSupplierById(client, companyId, id);
+    if (!supplier) {
+      const err = new Error('Supplier not found');
+      err.status = 404;
+      throw err;
+    }
+
+    const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
+    const parentAccId = body.parentAccId ?? body.supplierParentAccId ?? null;
+
+    const ledger = await partyLedger.syncSupplierLedger(client, {
+      companyId,
+      branchId,
+      supplierCode: supplier.supplierCode,
+      supplierName: supplier.supplierName,
+      parentAccId,
+    });
+
+    return {
+      supplierId: id,
+      supplierCode: supplier.supplierCode,
+      ledgerAccountId: ledger.accountId,
+      ledgerParentAccId: ledger.parentAccId,
+      created: ledger.created,
+      message: ledger.created
+        ? 'Supplier ledger created in chart of accounts'
+        : 'Supplier ledger already exists — updated',
+    };
+  });
+}
+
 export async function createSupplier(pool, body, authStaff) {
   const code = trimOrEmpty(body.supplierCode);
   if (!code) {

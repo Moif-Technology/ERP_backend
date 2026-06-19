@@ -9,4 +9,5 @@ customerRouter.use(authMiddleware);
 customerRouter.use(requireAnyFeature(['core.customers', 'backoffice.customers', 'pos.customer_selection', 'crm']));
 customerRouter.get('/', customerController.listCustomers);
 customerRouter.post('/', customerController.createCustomer);
+customerRouter.post('/:customerId/post-ledger', customerController.postCustomerLedger);
 customerRouter.put('/:customerId', customerController.updateCustomer);

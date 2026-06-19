@@ -32,3 +32,25 @@ export async function patchBranchDefaults(req, res) {
     return res.status(500).json({ message: 'Could not update branch defaults' });
   }
 }
+
+export async function getBranchIntegration(req, res) {
+  try {
+    const data = await accountsParameterService.getBranchIntegration(pool, req.authStaff, req.query);
+    return res.json(data);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    console.error(err);
+    return res.status(500).json({ message: 'Could not load account integration' });
+  }
+}
+
+export async function patchBranchIntegration(req, res) {
+  try {
+    const data = await accountsParameterService.updateBranchIntegration(pool, req.authStaff, req.body);
+    return res.json(data);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    console.error(err);
+    return res.status(500).json({ message: 'Could not save account integration' });
+  }
+}

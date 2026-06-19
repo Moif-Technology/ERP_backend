@@ -9,6 +9,8 @@ function mapCustomer(row) {
     customerName:  row.customer_name,
     mobileNo:      row.mobile_no    ?? null,
     telephone:     row.telephone    ?? null,
+    address:       row.address      ?? null,
+    taxRegNo:      row.customer_tax_reg_no ?? null,
     paymentMode:   row.payment_mode ?? 'CASH',
     creditLimit:   row.credit_limit   != null ? Number(row.credit_limit)   : 0,
     creditBalance: row.credit_balance != null ? Number(row.credit_balance) : 0,
@@ -50,6 +52,7 @@ export async function searchCustomers(pool, companyId, search, limit = 40) {
   // that ledger to give a Tally-style outstanding = SUM(debit) − SUM(credit).
   const sqlWithVouchers = `
     SELECT cm.customer_id, cm.customer_code, cm.customer_name, cm.mobile_no, cm.telephone,
+           cm.address, cm.customer_tax_reg_no,
            cm.payment_mode, cm.credit_balance, cm.credit_limit, cm.loyalty_status, cm.customer_type,
            COALESCE(vd.os_balance, 0)::numeric AS os_balance
     FROM biz.customer_master cm
@@ -78,6 +81,7 @@ export async function searchCustomers(pool, companyId, search, limit = 40) {
     // voucher_detail missing on this DB — fall back to the static credit_balance column
     const sqlFallback = `
       SELECT cm.customer_id, cm.customer_code, cm.customer_name, cm.mobile_no, cm.telephone,
+             cm.address, cm.customer_tax_reg_no,
              cm.payment_mode, cm.credit_balance, cm.credit_limit, cm.loyalty_status, cm.customer_type,
              COALESCE(cm.credit_balance, 0) AS os_balance
       FROM biz.customer_master cm

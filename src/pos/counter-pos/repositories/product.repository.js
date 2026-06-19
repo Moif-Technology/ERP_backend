@@ -54,7 +54,7 @@ export async function searchProduct(pool, companyId, branchId, { barcode = null,
   return rows.length > 0 ? mapProduct(rows[0]) : null;
 }
 
-export async function lookupProducts(pool, companyId, branchId, { q = '', maxPrice = null }) {
+export async function lookupProducts(pool, companyId, branchId, { q = '', maxPrice = null, groupId = null }) {
   const term = String(q).trim();
   const params = [companyId, branchId];
   const conditions = [];
@@ -73,6 +73,11 @@ export async function lookupProducts(pool, companyId, branchId, { q = '', maxPri
   if (maxPrice != null && !Number.isNaN(Number(maxPrice))) {
     params.push(Number(maxPrice));
     conditions.push(`i.unit_price <= $${params.length}`);
+  }
+
+  if (groupId != null && Number.isFinite(Number(groupId))) {
+    params.push(Number(groupId));
+    conditions.push(`m.group_id = $${params.length}`);
   }
 
   const whereExtra = conditions.length ? `AND ${conditions.join(' AND ')}` : '';

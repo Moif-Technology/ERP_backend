@@ -27,17 +27,27 @@ const PAID_SUBQUERY = `
       AND ctc.bill_id = sm.sales_id
   ), 0)`;
 
+/** Credit bills only — cash / card are fully paid (O/S = 0). */
+const CREDIT_BILL_MODE_SQL = `
+  (
+    UPPER(TRIM(COALESCE(sm.payment_mode, ''))) = 'CREDIT'
+    OR (
+      UPPER(TRIM(COALESCE(sm.payment_mode, ''))) IN ('MULTIPAYMENT', 'MULTIPAY')
+      AND COALESCE(sm.credit_amount, 0) > 0.005
+    )
+  )`;
+
 const BASE_DUE_EXPR = `
   GREATEST(
     COALESCE(
       NULLIF(sm.outstanding_balance::numeric, 0),
       NULLIF(sm.credit_amount::numeric, 0),
-      sm.amount::numeric
+      CASE WHEN UPPER(TRIM(COALESCE(sm.payment_mode, ''))) = 'CREDIT' THEN sm.amount::numeric ELSE 0 END
     ) - ${PAID_SUBQUERY},
     0
   )`;
 
-/** Open credit sales for a customer (broad match — not only payment_mode = CREDIT). */
+/** Open credit sales for a customer (credit / multipay-credit only). */
 const SALES_OUTSTANDING_SQL = `
   SELECT
     sm.sales_id AS bill_id,
@@ -45,37 +55,15 @@ const SALES_OUTSTANDING_SQL = `
     sm.bill_date,
     sm.amount::numeric AS invoice_amount,
     ${BASE_DUE_EXPR} AS current_amount,
-    TRIM(COALESCE(sm.prefix, 'B-') || sm.bill_no::text) AS invoice_no
+    TRIM(COALESCE(sm.bill_no, sm.sales_id)::text) AS invoice_no
   FROM ops.sales_master sm
   WHERE sm.company_id = $1
     AND sm.customer_id = $2
     AND sm.amount > 0
+    AND ${CREDIT_BILL_MODE_SQL}
     AND COALESCE(UPPER(sm.transaction_type), 'SALE') NOT IN ('RETURN', 'REFUND')
-    AND COALESCE(UPPER(sm.hold_status), '') NOT IN ('HOLD', 'HELD')
+    AND COALESCE(UPPER(sm.hold_status), '') NOT IN ('HOLD', 'HELD', 'DELIVERY')
     AND COALESCE(UPPER(sm.post_status), 'POSTED') NOT IN ('CANCELLED', 'VOID', 'CANCELED')
-    AND (
-      UPPER(TRIM(COALESCE(sm.payment_mode, ''))) IN ('CREDIT', 'CREDITCARD')
-      OR COALESCE(sm.credit_amount, 0) > 0
-      OR COALESCE(sm.outstanding_balance, 0) > 0.005
-      OR EXISTS (
-        SELECT 1
-        FROM accounts.voucher_master vm
-        INNER JOIN accounts.voucher_detail vd
-          ON vd.company_id = vm.company_id
-         AND vd.voucher_master_id = vm.voucher_master_id
-        INNER JOIN biz.customer_master cm2
-          ON cm2.company_id = sm.company_id
-         AND cm2.customer_id = sm.customer_id
-        INNER JOIN accounts.account_head_master ah2
-          ON ah2.company_id = cm2.company_id
-         AND ah2.account_no = cm2.customer_code
-        WHERE vm.company_id = sm.company_id
-          AND vm.voucher_posted_id = sm.sales_id
-          AND vd.account_id = ah2.account_id
-          AND vd.debit_amount > 0
-          AND COALESCE(vd.outstanding_balance, 0) > 0.005
-      )
-    )
     AND ${BASE_DUE_EXPR} > 0.005
   ORDER BY sm.bill_date ASC, sm.sales_id ASC`;
 
@@ -96,7 +84,7 @@ const VOUCHER_OUTSTANDING_SQL = `
       ), 0),
       0
     ) AS current_amount,
-    TRIM(COALESCE(sm.prefix, 'B-') || COALESCE(sm.bill_no, vm.voucher_posted_id)::text) AS invoice_no
+    TRIM(COALESCE(sm.bill_no, vm.voucher_posted_id)::text) AS invoice_no
   FROM accounts.voucher_detail vd
   INNER JOIN accounts.voucher_master vm
     ON vm.company_id = vd.company_id
@@ -128,13 +116,13 @@ const VOUCHER_OUTSTANDING_SQL = `
     ) > 0.005
   ORDER BY COALESCE(sm.bill_date, vm.voucher_date) ASC, vm.voucher_posted_id ASC`;
 
+/** First source wins — voucher rows before sales (avoids double-count / inflated MAX). */
 function mergeOutstandingBills(...groups) {
   const map = new Map();
   for (const b of groups.flat()) {
     if (b.billId == null || b.currentAmount <= 0.005) continue;
-    const prev = map.get(b.billId);
-    if (!prev || b.currentAmount > prev.currentAmount) {
-      map.set(b.billId, b);
+    if (!map.has(b.billId)) {
+      map.set(b.billId, { ...b, currentAmount: num(b.currentAmount) });
     }
   }
   return [...map.values()].sort((a, b) => {
@@ -215,16 +203,22 @@ const VOUCHER_ORPHAN_OUTSTANDING_SQL = `
   ORDER BY vm.voucher_date ASC, vm.voucher_master_id ASC`;
 
 /**
- * Ensure bill lines sum to ledger O/S (Tally-style net debit − credit).
- * Adds an "Opening / Other" line for any remainder not linked to open bills.
+ * Align open bill lines with ledger O/S (Tally-style).
+ * - Ledger 0 → no open bills
+ * - Ledger > bill sum → add Opening / Other
+ * - Ledger < bill sum → trim newest bills until sums match
  */
 export function reconcileBillsWithLedger(bills, ledgerOs, customerId) {
   const target = num(ledgerOs);
-  const sum = bills.reduce((s, b) => s + num(b.currentAmount), 0);
-  const diff = parseFloat((target - sum).toFixed(3));
-  if (Math.abs(diff) <= 0.005) return bills;
+  if (target <= 0.005) return [];
 
-  const reconciled = [...bills];
+  let reconciled = bills
+    .filter(b => b.currentAmount > 0.005)
+    .map(b => ({ ...b, currentAmount: num(b.currentAmount) }));
+
+  let sum = reconciled.reduce((s, b) => s + num(b.currentAmount), 0);
+  let diff = parseFloat((target - sum).toFixed(3));
+
   if (diff > 0.005) {
     reconciled.unshift({
       billId:        -Math.abs(Number(customerId) || 1),
@@ -235,8 +229,22 @@ export function reconcileBillsWithLedger(bills, ledgerOs, customerId) {
       currentAmount: diff,
       isReconcile:   true,
     });
+    return reconciled;
   }
-  return reconciled.filter(b => b.currentAmount > 0.005);
+
+  if (diff < -0.005) {
+    let excess = -diff;
+    for (let i = reconciled.length - 1; i >= 0 && excess > 0.005; i -= 1) {
+      const cur = num(reconciled[i].currentAmount);
+      const take = Math.min(excess, cur);
+      const next = parseFloat((cur - take).toFixed(3));
+      reconciled[i] = { ...reconciled[i], currentAmount: next };
+      excess = parseFloat((excess - take).toFixed(3));
+    }
+    reconciled = reconciled.filter(b => b.currentAmount > 0.005);
+  }
+
+  return reconciled;
 }
 
 async function querySalesBills(db, companyId, customerId) {
@@ -265,7 +273,7 @@ async function trySalesBillsLegacy(db, companyId, customerId) {
         ), 0),
         0
       ) AS current_amount,
-      TRIM(COALESCE(sm.prefix, 'B-') || sm.bill_no::text) AS invoice_no
+      TRIM(COALESCE(sm.bill_no, sm.sales_id)::text) AS invoice_no
     FROM ops.sales_master sm
     WHERE sm.company_id = $1
       AND sm.customer_id = $2
@@ -319,14 +327,72 @@ async function queryOrphanVoucherBills(db, companyId, customerId) {
   }
 }
 
+export async function repairNonCreditSalesOutstanding(db, companyId, customerId) {
+  try {
+    await db.query(
+      `UPDATE ops.sales_master
+       SET outstanding_balance = 0, modified_at = NOW()
+       WHERE company_id = $1
+         AND customer_id = $2
+         AND COALESCE(outstanding_balance, 0) > 0.005
+         AND NOT (
+           UPPER(TRIM(COALESCE(payment_mode, ''))) = 'CREDIT'
+           OR (
+             UPPER(TRIM(COALESCE(payment_mode, ''))) IN ('MULTIPAYMENT', 'MULTIPAY')
+             AND COALESCE(credit_amount, 0) > 0.005
+           )
+         )`,
+      [companyId, customerId],
+    );
+  } catch (e) {
+    if (e.code !== '42703') throw e;
+  }
+}
+
+/** When ledger is fully cleared, zero per-bill / voucher O/S fields for this customer. */
+export async function syncCustomerCreditState(client, companyId, customerId, customerLedgerId) {
+  try {
+    await client.query(
+      `UPDATE ops.sales_master
+       SET outstanding_balance = 0, modified_at = NOW()
+       WHERE company_id = $1
+         AND customer_id = $2
+         AND COALESCE(outstanding_balance, 0) > 0.005`,
+      [companyId, customerId],
+    );
+  } catch (e) {
+    if (e.code !== '42703') throw e;
+  }
+
+  if (!customerLedgerId) return;
+
+  try {
+    await client.query(
+      `UPDATE accounts.voucher_detail vd
+       SET outstanding_balance = 0, modified_at = NOW()
+       FROM accounts.voucher_master vm
+       WHERE vd.company_id = $1
+         AND vd.account_id = $2
+         AND vd.voucher_master_id = vm.voucher_master_id
+         AND vm.company_id = $1
+         AND vd.debit_amount > 0
+         AND COALESCE(vd.outstanding_balance, 0) > 0.005`,
+      [companyId, customerLedgerId],
+    );
+  } catch (e) {
+    if (e.code !== '42P01' && e.code !== '42703') throw e;
+  }
+}
+
 export async function getOutstandingBills(db, companyId, customerId) {
-  const [salesBills, creditSalesBills, voucherBills, orphanBills] = await Promise.all([
-    querySalesBills(db, companyId, customerId),
-    queryCreditCustomerSales(db, companyId, customerId),
+  await repairNonCreditSalesOutstanding(db, companyId, customerId);
+
+  const [voucherBills, orphanBills, salesBills] = await Promise.all([
     queryVoucherBills(db, companyId, customerId),
     queryOrphanVoucherBills(db, companyId, customerId),
+    querySalesBills(db, companyId, customerId),
   ]);
-  return mergeOutstandingBills(salesBills, creditSalesBills, voucherBills, orphanBills);
+  return mergeOutstandingBills(voucherBills, orphanBills, salesBills);
 }
 
 export async function getCustomerById(db, companyId, customerId) {

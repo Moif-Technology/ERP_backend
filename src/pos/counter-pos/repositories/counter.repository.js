@@ -21,27 +21,57 @@ export async function getPendingSummary(pool, { companyId, branchId, counterNo, 
          AND staff_id              = $4
          AND COALESCE(NULLIF(TRIM(counter_close_status), ''), 'PENDING') = 'PENDING'
          AND post_status           = 'POSTED'
-         AND UPPER(COALESCE(hold_status, '')) NOT IN ('HOLD')
+         AND UPPER(COALESCE(hold_status, '')) NOT IN ('HOLD', 'DELIVERY')
      ),
      bill_pay AS (
        SELECT
          sm.sales_id,
          sm.transaction_type,
-         COALESCE(split.cash_amt,
-           CASE WHEN UPPER(COALESCE(sm.payment_mode, '')) = 'CASH'
-             THEN sm.amount ELSE COALESCE(sm.cash_amount, 0) END) AS cash_amt,
-         COALESCE(split.card_amt,
-           CASE WHEN UPPER(COALESCE(sm.payment_mode, '')) IN ('CARD', 'CREDITCARD')
-             THEN sm.amount ELSE COALESCE(sm.credit_card_amount, 0) END) AS card_amt,
-         COALESCE(split.credit_amt,
-           CASE WHEN UPPER(COALESCE(sm.payment_mode, '')) = 'CREDIT'
-             THEN sm.amount ELSE COALESCE(sm.credit_amount, 0) END) AS credit_amt
+         CASE
+           WHEN COALESCE(split.split_rows, 0) > 0 THEN COALESCE(split.cash_amt, 0)
+           WHEN UPPER(COALESCE(sm.payment_mode, '')) = 'CASH' THEN sm.amount
+           ELSE COALESCE(sm.cash_amount, 0)
+         END AS cash_amt,
+         CASE
+           WHEN COALESCE(split.split_rows, 0) > 0
+             THEN COALESCE(split.card_amt, 0) + COALESCE(split.online_amt, 0)
+           WHEN UPPER(COALESCE(sm.payment_mode, '')) IN ('CARD', 'CREDITCARD', 'CREDIT CARD')
+             THEN sm.amount
+           ELSE COALESCE(sm.credit_card_amount, 0)
+         END AS card_amt,
+         CASE
+           WHEN COALESCE(split.split_rows, 0) > 0 THEN COALESCE(split.credit_amt, 0)
+           WHEN UPPER(COALESCE(sm.payment_mode, '')) = 'CREDIT' THEN sm.amount
+           ELSE COALESCE(sm.credit_amount, 0)
+         END AS credit_amt,
+         CASE
+           WHEN COALESCE(split.split_rows, 0) > 0 THEN COALESCE(split.online_amt, 0)
+           ELSE 0
+         END AS online_amt,
+         CASE
+           WHEN COALESCE(split.split_rows, 0) > 0 THEN COALESCE(split.voucher_amt, 0)
+           WHEN UPPER(COALESCE(sm.payment_mode, '')) = 'VOUCHER' THEN sm.amount
+           ELSE 0
+         END AS voucher_amt
        FROM sm
        LEFT JOIN LATERAL (
          SELECT
-           COALESCE(SUM(sps.bill_amount) FILTER (WHERE UPPER(sps.pay_mode) = 'CASH'), 0) AS cash_amt,
-           COALESCE(SUM(sps.bill_amount) FILTER (WHERE UPPER(sps.pay_mode) IN ('CARD', 'CREDITCARD')), 0) AS card_amt,
-           COALESCE(SUM(sps.bill_amount) FILTER (WHERE UPPER(sps.pay_mode) = 'CREDIT'), 0) AS credit_amt
+           COUNT(*)::INT AS split_rows,
+           COALESCE(SUM(sps.bill_amount) FILTER (
+             WHERE UPPER(TRIM(COALESCE(sps.pay_mode, ''))) = 'CASH'
+           ), 0) AS cash_amt,
+           COALESCE(SUM(sps.bill_amount) FILTER (
+             WHERE UPPER(TRIM(COALESCE(sps.pay_mode, ''))) IN ('CARD', 'CREDITCARD', 'CREDIT CARD')
+           ), 0) AS card_amt,
+           COALESCE(SUM(sps.bill_amount) FILTER (
+             WHERE UPPER(TRIM(COALESCE(sps.pay_mode, ''))) = 'ONLINE'
+           ), 0) AS online_amt,
+           COALESCE(SUM(sps.bill_amount) FILTER (
+             WHERE UPPER(TRIM(COALESCE(sps.pay_mode, ''))) = 'VOUCHER'
+           ), 0) AS voucher_amt,
+           COALESCE(SUM(sps.bill_amount) FILTER (
+             WHERE UPPER(TRIM(COALESCE(sps.pay_mode, ''))) = 'CREDIT'
+           ), 0) AS credit_amt
          FROM ops.sales_payment_split sps
          WHERE sps.company_id = sm.company_id AND sps.sales_id = sm.sales_id
        ) split ON true
@@ -59,6 +89,20 @@ export async function getPendingSummary(pool, { companyId, branchId, counterNo, 
          SELECT SUM(CASE WHEN transaction_type = 'RETURN' THEN -card_amt ELSE card_amt END)
          FROM bill_pay
        ), 0) AS total_card,
+       COALESCE((
+         SELECT SUM(CASE WHEN transaction_type = 'RETURN' THEN -online_amt ELSE online_amt END)
+         FROM bill_pay
+       ), 0) AS total_online,
+       COALESCE((
+         SELECT SUM(CASE WHEN transaction_type = 'RETURN' THEN -voucher_amt ELSE voucher_amt END)
+         FROM bill_pay
+       ), 0) AS total_voucher,
+       COALESCE((
+         SELECT SUM(sc.discount_amount)
+         FROM ops.sales_child sc
+         INNER JOIN sm ON sm.sales_id = sc.sales_id AND sm.company_id = sc.company_id
+         WHERE sm.amount > 0
+       ), 0) AS item_discount_total,
        COALESCE(SUM(CASE WHEN amount > 0 THEN discount_amount     ELSE 0 END), 0)  AS total_discount,
        COALESCE(SUM(CASE WHEN amount > 0 THEN round_off_adjustment ELSE 0 END), 0) AS total_round_off,
        COALESCE(SUM(CASE WHEN amount > 0 THEN tax_1_amount        ELSE 0 END), 0)  AS total_tax,
@@ -71,18 +115,20 @@ export async function getPendingSummary(pool, { companyId, branchId, counterNo, 
        COUNT(CASE WHEN amount > 0 THEN 1 END)::INT                                          AS bill_count,
        COUNT(CASE WHEN amount > 0 AND payment_mode = 'CASH'   THEN 1 END)::INT              AS cash_bill_count,
        COUNT(CASE WHEN amount > 0 AND payment_mode = 'CREDIT' THEN 1 END)::INT              AS credit_bill_count,
-       COUNT(CASE WHEN amount > 0 AND payment_mode = 'CARD'   THEN 1 END)::INT              AS card_bill_count,
-       COUNT(CASE WHEN amount > 0 AND payment_mode = 'MULTI'  THEN 1 END)::INT              AS multi_bill_count,
+       COUNT(CASE WHEN amount > 0 AND UPPER(COALESCE(payment_mode, '')) IN ('CARD', 'CREDITCARD', 'CREDIT CARD') THEN 1 END)::INT              AS card_bill_count,
+       COUNT(CASE WHEN amount > 0 AND UPPER(COALESCE(payment_mode, '')) IN ('MULTI', 'MULTIPAYMENT') THEN 1 END)::INT              AS multi_bill_count,
+       COUNT(CASE WHEN amount > 0 AND UPPER(COALESCE(payment_mode, '')) IN ('COMPLIMENT', 'COMPLIMENTARY') THEN 1 END)::INT     AS compliment_bill_count,
        MIN(CASE WHEN amount > 0 THEN bill_no END)                                           AS start_bill_no,
        MAX(CASE WHEN amount > 0 THEN bill_no END)                                           AS end_bill_no
      FROM sm`,
     [companyId, branchId, counterNo, staffId],
   );
   return rows[0] ?? {
-    total_cash: 0, total_credit: 0, total_card: 0,
-    total_discount: 0, total_round_off: 0, total_tax: 0, gross_amount: 0,
+    total_cash: 0, total_credit: 0, total_card: 0, total_online: 0, total_voucher: 0,
+    total_discount: 0, item_discount_total: 0, total_round_off: 0, total_tax: 0, gross_amount: 0,
     total_refund: 0, bill_count: 0, cash_bill_count: 0, credit_bill_count: 0,
-    card_bill_count: 0, multi_bill_count: 0, start_bill_no: null, end_bill_no: null,
+    card_bill_count: 0, multi_bill_count: 0, compliment_bill_count: 0,
+    start_bill_no: null, end_bill_no: null,
   };
 }
 
@@ -102,7 +148,7 @@ export async function getCreditReceiptTotals(pool, { companyId, branchId, counte
        WHERE company_id = $1
          AND branch_id  = $2
          AND counter_no = $3
-         AND TRIM(COALESCE(created_by, '')) = TRIM($4::text)
+         AND created_by::text = TRIM($4::text)
          AND UPPER(COALESCE(status, 'ACTIVE')) = 'ACTIVE'
          AND UPPER(COALESCE(transaction_type, '')) IN (
            'CUSTOMER RECEIPT', 'CUSTOMER_RECEIPT', 'RECEIPT'
@@ -128,7 +174,7 @@ export async function markCreditReceiptsAsClosed(client, { companyId, branchId, 
        WHERE company_id = $2
          AND branch_id  = $3
          AND counter_no = $4
-         AND TRIM(COALESCE(created_by, '')) = TRIM($5::text)
+         AND created_by::text = TRIM($5::text)
          AND UPPER(COALESCE(status, 'ACTIVE')) = 'ACTIVE'
          AND UPPER(COALESCE(transaction_type, '')) IN (
            'CUSTOMER RECEIPT', 'CUSTOMER_RECEIPT', 'RECEIPT'
@@ -234,6 +280,7 @@ export async function insertCounterClose(client, data) {
     data.creditReceiptCount ?? 0,
   ];
   try {
+    await client.query('SAVEPOINT counter_close_insert');
     const { rows } = await client.query(
       `INSERT INTO ops.counter_close (
          company_id, branch_id, counter_no, staff_id, report_type, close_date,
@@ -254,9 +301,11 @@ export async function insertCounterClose(client, data) {
        ) RETURNING id, close_no`,
       [...baseParams, ...receiptParams],
     );
+    await client.query('RELEASE SAVEPOINT counter_close_insert');
     return { id: rows[0].id, closeNo: rows[0].close_no };
   } catch (e) {
     if (e.code !== '42703') throw e;
+    await client.query('ROLLBACK TO SAVEPOINT counter_close_insert');
     const { rows } = await client.query(
       `INSERT INTO ops.counter_close (
          company_id, branch_id, counter_no, staff_id, report_type, close_date,
@@ -290,12 +339,15 @@ export async function markSalesAsClosed(client, { companyId, branchId, counterNo
       AND staff_id             = $5
       AND COALESCE(NULLIF(TRIM(counter_close_status), ''), 'PENDING') = 'PENDING'
       AND post_status          = 'POSTED'
-      AND UPPER(COALESCE(hold_status, '')) NOT IN ('HOLD')`;
+       AND UPPER(COALESCE(hold_status, '')) NOT IN ('HOLD', 'DELIVERY')`;
   try {
+    await client.query('SAVEPOINT sales_close_update');
     const { rowCount } = await client.query(sql, [String(closeId), companyId, branchId, counterNo, staffId]);
+    await client.query('RELEASE SAVEPOINT sales_close_update');
     return rowCount;
   } catch (e) {
     if (e.code !== '42703') throw e;
+    await client.query('ROLLBACK TO SAVEPOINT sales_close_update');
     const { rowCount } = await client.query(
       sql.replace('modified_at', 'modified_on'),
       [String(closeId), companyId, branchId, counterNo, staffId],

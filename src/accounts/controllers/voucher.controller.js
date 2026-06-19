@@ -1,5 +1,6 @@
 import { pool } from '../../config/db.js';
 import * as voucherService from '../services/voucher.service.js';
+import * as financialReportService from '../services/financialReport.service.js';
 
 function handleError(res, err, fallbackMsg) {
   if (err.status) return res.status(err.status).json({ message: err.message });
@@ -71,6 +72,24 @@ export async function getAgingSummary(req, res) {
 
 export async function getTrialBalance(req, res) {
   try {
-    return res.json(await voucherService.getTrialBalance(pool, req.authStaff, req.query));
+    return res.json(await financialReportService.getFullTrialBalance(pool, req.authStaff, req.query));
   } catch (err) { return handleError(res, err, 'Could not load trial balance'); }
+}
+
+export async function getBalanceSheet(req, res) {
+  try {
+    return res.json(await financialReportService.getBalanceSheet(pool, req.authStaff, req.query));
+  } catch (err) { return handleError(res, err, 'Could not load balance sheet'); }
+}
+
+export async function getProfitAndLoss(req, res) {
+  try {
+    return res.json(await financialReportService.getProfitAndLoss(pool, req.authStaff, req.query));
+  } catch (err) { return handleError(res, err, 'Could not load profit and loss'); }
+}
+
+export async function listPartyAccounts(req, res) {
+  try {
+    return res.json(await financialReportService.listPartyAccounts(pool, req.authStaff, req.query));
+  } catch (err) { return handleError(res, err, 'Could not load party accounts'); }
 }

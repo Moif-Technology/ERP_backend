@@ -1,4 +1,4 @@
-import { pool } from '../config/db.js';
+import { pool } from '../../config/db.js';
 import * as appParameterRepo from '../repositories/appParameter.repository.js';
 
 function parseBranchId(raw) {
@@ -12,5 +12,8 @@ export async function getGvTax(authStaff, query = {}) {
   const companyId = Number(authStaff.company_id);
   const branchId = parseBranchId(query.branchId) ?? parseBranchId(authStaff.branch_id);
   const gvtax = await appParameterRepo.resolveGvTaxRate(pool, companyId, branchId);
-  return { gvtax };
+  const currencyPrecision = await appParameterRepo.resolveCurrencyPrecision(pool, companyId, branchId);
+  const autoRoundOff = await appParameterRepo.resolveAutoRoundOff(pool, companyId, branchId);
+  const receiptHeader = await appParameterRepo.resolveReceiptCompanyHeader(pool, companyId, branchId);
+  return { gvtax, currencyPrecision, autoRoundOff, receiptHeader };
 }

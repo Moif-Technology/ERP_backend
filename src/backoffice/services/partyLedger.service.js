@@ -6,8 +6,8 @@
  *         accounts_parameter CUSTOMER_PARENT_LEDGER / SUPPLIER_PARENT_LEDGER,
  *         then auto-detect Accounts Receivable / Accounts Payable group.
  */
-import * as accountHeadRepo from '../repositories/accountHead.repository.js';
-import * as accountsParamRepo from '../repositories/accountsParameter.repository.js';
+import * as accountHeadRepo from '../../accounts/repositories/accountHead.repository.js';
+import * as accountsParamRepo from '../../accounts/repositories/accountsParameter.repository.js';
 
 export const PARAM_CUSTOMER_PARENT = 'CUSTOMER_PARENT_LEDGER';
 export const PARAM_SUPPLIER_PARENT = 'SUPPLIER_PARENT_LEDGER';
@@ -114,7 +114,7 @@ export async function syncCustomerLedger(client, opts) {
     await accountHeadRepo.updateAccountHead(client, companyId, existing.accountId, {
       accountNo: code,
       accountHead: headLabel,
-      accountType: 'ASSET',
+      accountType: 'BS',
       parentAccId: parent,
       postingAllowed: true,
     });
@@ -128,7 +128,7 @@ export async function syncCustomerLedger(client, opts) {
     parentAccId: parent,
     accountNo: code,
     accountHead: headLabel,
-    accountType: 'ASSET',
+    accountType: 'BS',
     postingAllowed: true,
   });
   return { accountId, parentAccId: parent, created: true };
@@ -164,7 +164,7 @@ export async function syncSupplierLedger(client, opts) {
     await accountHeadRepo.updateAccountHead(client, companyId, existing.accountId, {
       accountNo: code,
       accountHead: headLabel,
-      accountType: 'LIABILITY',
+      accountType: 'BS',
       parentAccId: parent,
       postingAllowed: true,
     });
@@ -178,7 +178,7 @@ export async function syncSupplierLedger(client, opts) {
     parentAccId: parent,
     accountNo: code,
     accountHead: headLabel,
-    accountType: 'LIABILITY',
+    accountType: 'BS',
     postingAllowed: true,
   });
   return { accountId, parentAccId: parent, created: true };

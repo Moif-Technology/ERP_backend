@@ -1,7 +1,6 @@
 /**
- * accounts.account_head_master — company chart (MOIFONE).
- * Legacy DBs: company_id may be NULL or not aligned with core.staff_master.company_id;
- * posting_allowed is often integer 0/1; record_status may be NULL.
+ * accounts.account_head_master — one chart per company (FK requires parent/child same company_id).
+ * Branch-specific cash/card/sales mapping lives in accounts.accounts_parameter.
  */
 
 function postingAllowedSql(alias = 'a') {
@@ -17,14 +16,7 @@ export async function listAccountHeads(pool, companyId, { accountNoPrefix, posti
  SELECT a.account_id, a.account_no, a.account_head, a.account_type,
         a.parent_acc_id, a.posting_allowed, a.record_status
     FROM accounts.account_head_master a
-    WHERE (
-      a.company_id = $1
-      OR a.company_id IS NULL
-      OR EXISTS (
-        SELECT 1 FROM accounts.accounts_parameter ap
-        WHERE ap.company_id = $1 AND ap.account_id = a.account_id
-      )
-    )
+    WHERE a.company_id = $1
     AND (
       a.record_status IS NULL
       OR TRIM(UPPER(a.record_status)) = 'ACTIVE'
@@ -46,14 +38,7 @@ export async function findAccountHead(pool, companyId, accountId) {
     `SELECT a.account_id, a.account_no, a.account_head, a.account_type,
             a.parent_acc_id, a.posting_allowed, a.record_status
      FROM accounts.account_head_master a
-     WHERE (
-       a.company_id = $1
-       OR a.company_id IS NULL
-       OR EXISTS (
-         SELECT 1 FROM accounts.accounts_parameter ap
-         WHERE ap.company_id = $1 AND ap.account_id = a.account_id
-       )
-     )
+     WHERE a.company_id = $1
        AND a.account_id = $2
        AND (
          a.record_status IS NULL
@@ -70,14 +55,7 @@ export async function getAccountTree(pool, companyId) {
     `SELECT a.account_id, a.account_no, a.account_head, a.account_type,
             a.parent_acc_id, a.posting_allowed, a.record_status
      FROM accounts.account_head_master a
-     WHERE (
-       a.company_id = $1
-       OR a.company_id IS NULL
-       OR EXISTS (
-         SELECT 1 FROM accounts.accounts_parameter ap
-         WHERE ap.company_id = $1 AND ap.account_id = a.account_id
-       )
-     )
+     WHERE a.company_id = $1
      AND (a.record_status IS NULL OR TRIM(UPPER(a.record_status)) = 'ACTIVE')
      ORDER BY a.account_no ASC, a.account_id ASC`,
     [companyId]
@@ -87,11 +65,55 @@ export async function getAccountTree(pool, companyId) {
 
 export async function nextAccountId(client, companyId) {
   const { rows } = await client.query(
-    `SELECT COALESCE(MAX(account_id), 0) + 1 AS n
+    `SELECT COALESCE(MAX(account_id), 22) + 1 AS n
      FROM accounts.account_head_master WHERE company_id = $1`,
     [companyId]
   );
   return Number(rows[0].n);
+}
+
+/** Next child account_no under a parent (e.g. 03-02 → 03-02-002, 03 → 03-05). */
+export async function suggestNextAccountNo(db, companyId, parentAccId) {
+  const parent = await findAccountHead(db, companyId, parentAccId);
+  if (!parent) {
+    const err = new Error('Parent account not found');
+    err.status = 400;
+    throw err;
+  }
+  const parentNo = String(parent.account_no || '').trim();
+  if (!parentNo) {
+    const err = new Error('Parent account has no account number');
+    err.status = 400;
+    throw err;
+  }
+
+  const prefix = `${parentNo}-`;
+  const { rows } = await db.query(
+    `SELECT account_no
+     FROM accounts.account_head_master
+     WHERE company_id = $1
+       AND (parent_acc_id = $2 OR account_no LIKE $3)
+       AND (record_status IS NULL OR TRIM(UPPER(record_status)) = 'ACTIVE')`,
+    [companyId, parentAccId, `${prefix}%`],
+  );
+
+  let maxSeq = 0;
+  let width = 0;
+  for (const { account_no: no } of rows) {
+    const s = String(no || '');
+    if (!s.startsWith(prefix)) continue;
+    const tail = s.slice(prefix.length);
+    const segment = tail.split('-')[0];
+    if (!/^\d+$/.test(segment)) continue;
+    const n = parseInt(segment, 10);
+    if (n > maxSeq) maxSeq = n;
+    width = Math.max(width, segment.length);
+  }
+
+  const parentDashes = (parentNo.match(/-/g) || []).length;
+  if (width === 0) width = parentDashes === 0 ? 2 : 3;
+
+  return `${prefix}${String(maxSeq + 1).padStart(width, '0')}`;
 }
 
 export async function createAccountHead(client, row) {
@@ -126,7 +148,12 @@ export async function updateAccountHead(client, companyId, accountId, patch) {
   const params = [companyId, accountId];
   let idx = 3;
   if (patch.accountNo !== undefined) { sets.push(`account_no = $${idx++}`); params.push(patch.accountNo); }
-  if (patch.accountHead !== undefined) { sets.push(`account_head = $${idx++}`); params.push(patch.accountHead); }
+  if (patch.accountHead !== undefined) {
+    sets.push(`account_head = $${idx++}`);
+    params.push(patch.accountHead);
+    sets.push(`alias = $${idx++}`);
+    params.push(patch.accountHead);
+  }
   if (patch.accountType !== undefined) { sets.push(`account_type = $${idx++}`); params.push(patch.accountType); }
   if (patch.parentAccId !== undefined) { sets.push(`parent_acc_id = $${idx++}`); params.push(patch.parentAccId || null); }
   if (patch.postingAllowed !== undefined) { sets.push(`posting_allowed = $${idx++}`); params.push(patch.postingAllowed ? 1 : 0); }
@@ -134,7 +161,8 @@ export async function updateAccountHead(client, companyId, accountId, patch) {
   sets.push('updated_at = NOW()');
   const { rowCount } = await client.query(
     `UPDATE accounts.account_head_master SET ${sets.join(', ')}
-     WHERE company_id = $1 AND account_id = $2 AND (record_status IS NULL OR TRIM(UPPER(record_status)) = 'ACTIVE')`,
+     WHERE company_id = $1 AND account_id = $2
+       AND (record_status IS NULL OR TRIM(UPPER(record_status)) = 'ACTIVE')`,
     params
   );
   return rowCount > 0;

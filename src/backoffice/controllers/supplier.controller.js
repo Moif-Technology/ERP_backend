@@ -45,3 +45,19 @@ export async function createSupplier(req, res) {
     return res.status(500).json({ message: 'Could not create supplier' });
   }
 }
+
+export async function postSupplierLedger(req, res) {
+  try {
+    const result = await supplierService.postSupplierLedger(
+      pool,
+      req.params.supplierId,
+      req.authStaff,
+      req.body || {},
+    );
+    return res.json(result);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    console.error(err);
+    return res.status(500).json({ message: 'Could not post supplier to accounts' });
+  }
+}

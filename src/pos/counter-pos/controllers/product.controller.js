@@ -21,8 +21,8 @@ export async function searchByBarcode(req, res) {
 
 export async function lookupProducts(req, res) {
   try {
-    const { q = '', maxPrice } = req.query;
-    const products = await productService.lookupProducts(req.authStaff, { q, maxPrice });
+    const { q = '', maxPrice, groupId } = req.query;
+    const products = await productService.lookupProducts(req.authStaff, { q, maxPrice, groupId });
     return res.json({ products });
   } catch (err) {
     return handleError(res, err, 'Product lookup failed');
