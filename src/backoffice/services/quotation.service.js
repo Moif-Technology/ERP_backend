@@ -2,6 +2,7 @@ import { withTransaction } from '../../config/db.js';
 import * as branchRepo from '../../shared/repositories/branch.repository.js';
 import * as quotationRepo from '../repositories/quotation.repository.js';
 import { actorStaffPk } from '../../utils/actorStaff.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 function trimOrEmpty(v) {
   if (v == null) return '';
@@ -230,13 +231,12 @@ export async function createQuotation(pool, body, authStaff) {
       `ops.quotation_child_id:${companyId}`,
     ]);
 
-    const { seqNum, prefix: docPrefix } = await quotationRepo.nextQuotationSequenceNumber(
-      client,
+    const quotationNo = await nextDocNo(client, {
       companyId,
       branchId,
-      { createdBy: userLabel },
-    );
-    const quotationNo = quotationRepo.formatQuotationNo(seqNum, docPrefix);
+      sequenceCode: 'QUOTATION',
+      fiscalYear: new Date().getFullYear(),
+    });
 
     await quotationRepo.insertQuotationMaster(client, {
       companyId,

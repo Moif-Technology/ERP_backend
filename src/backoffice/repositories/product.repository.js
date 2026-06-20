@@ -577,6 +577,10 @@ export async function updateProductInventory(client, companyId, productId, branc
     minimumRetailPrice,
     maximumRetailPrice,
     priceLevel1,
+    priceLevel2,
+    priceLevel3,
+    priceLevel4,
+    priceLevel5,
     locationCode,
     minimumMarginPercentage,
     discountPercentage,
@@ -586,7 +590,7 @@ export async function updateProductInventory(client, companyId, productId, branc
     outputTax1Rate,
     modifiedBy,
   } = params;
- 
+
   const { rows } = await client.query(
     `UPDATE core.product_inventory SET
         pack_qty                    = $4,
@@ -599,14 +603,18 @@ export async function updateProductInventory(client, companyId, productId, branc
         minimum_retail_price        = $11,
         maximum_retail_price        = $12,
         price_level_1               = $13,
-        location_code               = $14,
-        minimum_margin_percentage   = $15,
-        discount_percentage         = $16,
-        input_tax_1_amount          = $17,
-        input_tax_1_rate            = $18,
-        output_tax_1_amount         = $19,
-        output_tax_1_rate           = $20,
-        modified_by                 = $21,
+        price_level_2               = $14,
+        price_level_3               = $15,
+        price_level_4               = $16,
+        price_level_5               = $17,
+        location_code               = $18,
+        minimum_margin_percentage   = $19,
+        discount_percentage         = $20,
+        input_tax_1_amount          = $21,
+        input_tax_1_rate            = $22,
+        output_tax_1_amount         = $23,
+        output_tax_1_rate           = $24,
+        modified_by                 = $25,
         modified_at                 = NOW()
      WHERE company_id = $1 AND product_id = $2 AND branch_id = $3
      RETURNING *`,
@@ -624,6 +632,10 @@ export async function updateProductInventory(client, companyId, productId, branc
       minimumRetailPrice,
       maximumRetailPrice,
       priceLevel1,
+      priceLevel2 ?? 0,
+      priceLevel3 ?? 0,
+      priceLevel4 ?? 0,
+      priceLevel5 ?? 0,
       emptyToNull(locationCode),
       minimumMarginPercentage,
       discountPercentage,

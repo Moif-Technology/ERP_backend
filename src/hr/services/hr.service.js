@@ -1,6 +1,7 @@
 import { withTransaction } from '../../config/db.js';
 import * as branchRepo from '../../shared/repositories/branch.repository.js';
 import * as hrRepo from '../repositories/hr.repository.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 function parseBranchId(authStaff, branchIdQueryOrBody) {
   const candidate = branchIdQueryOrBody ?? authStaff.branch_id;
@@ -105,7 +106,7 @@ export async function createEmployee(pool, authStaff, body) {
       `hr.employee_master:${companyId}:${branchId}`,
     ]);
     data.employeeId = await hrRepo.nextEmployeeId(client, companyId, branchId);
-    data.employeeCode = data.employeeCode || `EMP-${String(data.employeeId).padStart(4, '0')}`;
+    data.employeeCode = data.employeeCode || await nextDocNo(client, { companyId, branchId, sequenceCode: 'EMPLOYEE' });
     return hrRepo.insertEmployee(client, data);
   });
 }

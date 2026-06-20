@@ -1,5 +1,7 @@
+import { withTransaction } from '../../config/db.js';
 import { requireBranchId, requireCompanyId, trimOrNull, toIntOrNull } from '../../utils/crmHelpers.js';
 import * as repo from '../repositories/subletJob.repository.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 function actorLabel(a) {
   return trimOrNull(a?.staff_name, 50) || trimOrNull(a?.login_name, 50) || 'system';
@@ -41,8 +43,10 @@ export async function getSubletJobById(pool, id, authStaff) {
 export async function createSubletJob(pool, body, authStaff) {
   const companyId = requireCompanyId(authStaff);
   const branchId = requireBranchId(authStaff, body);
-  const subletNo = await repo.nextSubletNo(pool, companyId, branchId);
-  return repo.insertSubletJob(pool, { companyId, branchId, subletNo, ...buildPayload(body), createdBy: actorLabel(authStaff) });
+  return withTransaction(async (client) => {
+    const subletNo = await nextDocNo(client, { companyId, branchId, sequenceCode: 'SUBLET_JOB', fiscalYear: new Date().getFullYear() });
+    return repo.insertSubletJob(client, { companyId, branchId, subletNo, ...buildPayload(body), createdBy: actorLabel(authStaff) });
+  });
 }
 
 export async function updateSubletJob(pool, id, body, authStaff) {

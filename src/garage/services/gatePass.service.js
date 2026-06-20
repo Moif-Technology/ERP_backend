@@ -1,5 +1,7 @@
+import { withTransaction } from '../../config/db.js';
 import { requireBranchId, requireCompanyId, trimOrNull, toIntOrNull } from '../../utils/crmHelpers.js';
 import * as repo from '../repositories/gatePass.repository.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 const VALID_PASS_TYPES = ['IN', 'OUT'];
 
@@ -44,6 +46,8 @@ export async function getGatePassById(pool, id, authStaff) {
 export async function createGatePass(pool, body, authStaff) {
   const companyId = requireCompanyId(authStaff);
   const branchId = requireBranchId(authStaff, body);
-  const gpNo = await repo.nextGpNo(pool, companyId, branchId);
-  return repo.insertGatePass(pool, { companyId, branchId, gpNo, ...buildPayload(body), createdBy: actorLabel(authStaff) });
+  return withTransaction(async (client) => {
+    const gpNo = await nextDocNo(client, { companyId, branchId, sequenceCode: 'GATE_PASS', fiscalYear: new Date().getFullYear() });
+    return repo.insertGatePass(client, { companyId, branchId, gpNo, ...buildPayload(body), createdBy: actorLabel(authStaff) });
+  });
 }

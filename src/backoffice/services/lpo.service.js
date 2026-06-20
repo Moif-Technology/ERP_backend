@@ -2,6 +2,7 @@ import { withTransaction } from '../../config/db.js';
 import * as branchRepo from '../../shared/repositories/branch.repository.js';
 import * as lpoRepo from '../repositories/lpo.repository.js';
 import * as supplierRepo from '../repositories/supplier.repository.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 function parseBranchId(raw) {
   const n = Number(raw);
@@ -311,6 +312,12 @@ export async function createLpo(pool, body, authStaff) {
     }
 
     const lpoMasterId = await lpoRepo.nextLpoMasterId(client, companyId);
+    const autoLpoNo = await nextDocNo(client, {
+      companyId,
+      branchId,
+      sequenceCode: 'LPO',
+      fiscalYear: new Date().getFullYear(),
+    });
     const masterRow = buildMasterPayload(body, {
       companyId,
       branchId,
@@ -320,6 +327,11 @@ export async function createLpo(pool, body, authStaff) {
       sumSub,
       sumLineTotal,
     });
+    // Use auto-generated lpo_no unless caller explicitly provided one.
+    const callerLpoNo = (String(body.lpoNo ?? body.lpo_no ?? '')).trim().replace(/\D/g, '');
+    if (!callerLpoNo) {
+      masterRow.lpoNo = autoLpoNo;
+    }
 
     try {
       await lpoRepo.insertLpoMaster(client, masterRow);

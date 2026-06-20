@@ -73,7 +73,7 @@ export async function getPaymentAccounts(authStaff) {
 }
 
 export async function createSale(authStaff, body) {
-  return saleEntryService.createSale(pool, body, authStaff);
+  return saleEntryService.createSale(pool, body, authStaff, { salesChannel: 'VAN' });
 }
 
 export async function getDaySummary(authStaff, dateStr) {

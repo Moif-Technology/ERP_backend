@@ -1,6 +1,7 @@
 import { withTransaction } from '../../config/db.js';
 import { requireBranchId, requireCompanyId, trimOrNull, toIntOrNull } from '../../utils/crmHelpers.js';
 import * as repo from '../repositories/invoice.repository.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 const VAT_RATE = 0.05;
 
@@ -169,7 +170,7 @@ export async function createInvoice(pool, body, authStaff) {
   const amounts = calcAmounts(lines, discount);
 
   return withTransaction(async (client) => {
-    const invoiceNo = await repo.nextInvoiceNo(client, companyId, branchId);
+    const invoiceNo = await nextDocNo(client, { companyId, branchId, sequenceCode: 'GARAGE_INVOICE', fiscalYear: new Date().getFullYear() });
     const header = await repo.insertInvoice(client, {
       companyId, branchId, invoiceNo, jobCardId, jcNo,
       vehicleId: toIntOrNull(body.vehicleId),

@@ -8,6 +8,7 @@ import * as docRefRepo from '../../shared/repositories/documentReference.reposit
 import * as stockRepo from '../../shared/repositories/stock.repository.js';
 import * as txnExpenseRepo from '../../shared/repositories/transactionExpense.repository.js';
 import * as deliveryOrderRepo from '../repositories/deliveryOrder.repository.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 import * as productRepo from '../repositories/product.repository.js';
 import * as customerRepo from '../repositories/customer.repository.js';
 import { auditStaffId } from '../../pos/restaurant-pos/lib/staffAudit.js';
@@ -103,7 +104,7 @@ export async function listSales(pool, authStaff, query) {
  *  11.  TransactionExpenseDetail (cash account head expense line)
  *  12.  DO status update (DOMaster → INVOICED)
  */
-export async function createSale(pool, body, authStaff) {
+export async function createSale(pool, body, authStaff, { salesChannel = 'ERP' } = {}) {
   const companyId = Number(authStaff.company_id);
   if (!Number.isFinite(companyId) || companyId < 1) {
     const err = new Error('Invalid company on session');
@@ -336,6 +337,12 @@ export async function createSale(pool, body, authStaff) {
     // ───── STEP 3: SalesMaster INSERT ─────
     const salesId = await salesRepo.nextSalesId(client, companyId);
     const billNo = await salesRepo.nextBillNo(client, companyId, branchId);
+    const invoiceNo = await nextDocNo(client, {
+      companyId,
+      branchId,
+      sequenceCode: salesChannel === 'VAN' ? 'VAN_SALES' : 'SALES',
+      fiscalYear: new Date().getFullYear(),
+    });
 
     await salesRepo.insertSalesMaster(client, {
       companyId,
@@ -372,6 +379,12 @@ export async function createSale(pool, body, authStaff) {
       createdBy: auditBy,
       modifiedBy: auditBy,
     });
+
+    // Set the formatted invoice_no (INV-0042) generated from document_sequence.
+    await client.query(
+      `UPDATE ops.sales_master SET invoice_no = $1 WHERE company_id = $2 AND sales_id = $3`,
+      [invoiceNo, companyId, salesId],
+    );
 
     // ───── STEP 3b: ERP header fields ─────
     try {

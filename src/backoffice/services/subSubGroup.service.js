@@ -1,5 +1,5 @@
 import { withTransaction } from '../../config/db.js';
-import * as subGroupRepo from '../repositories/subGroup.repository.js';
+import * as subSubGroupRepo from '../repositories/subSubGroup.repository.js';
 import * as branchRepo from '../../shared/repositories/branch.repository.js';
 import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
@@ -9,13 +9,13 @@ function parseBranchId(raw) {
   return n;
 }
 
-function parseGroupId(raw) {
+function parseId(raw) {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1) return null;
   return n;
 }
 
-export async function listSubGroups(pool, authStaff, branchIdQuery, groupIdQuery) {
+export async function listSubSubGroups(pool, authStaff, branchIdQuery, groupIdQuery, subGroupIdQuery) {
   const companyId = Number(authStaff.company_id);
   let bid = parseBranchId(branchIdQuery);
   if (bid == null) {
@@ -32,17 +32,15 @@ export async function listSubGroups(pool, authStaff, branchIdQuery, groupIdQuery
     err.status = 400;
     throw err;
   }
-  const gid = groupIdQuery != null && groupIdQuery !== '' ? parseGroupId(groupIdQuery) : null;
-  return subGroupRepo.listSubGroupsByCompanyBranch(pool, companyId, bid, gid);
+  const gid = groupIdQuery != null && groupIdQuery !== '' ? parseId(groupIdQuery) : null;
+  const sgid = subGroupIdQuery != null && subGroupIdQuery !== '' ? parseId(subGroupIdQuery) : null;
+  return subSubGroupRepo.listSubSubGroupsByCompanyBranch(pool, companyId, bid, gid, sgid);
 }
 
-/**
- * Allocates sub_group_id per company; parent group must exist for company + branch.
- */
-export async function createSubGroup(pool, body, authStaff) {
-  const manualCode = (body.subGroupCode ?? '').trim();
+export async function createSubSubGroup(pool, body, authStaff) {
+  const manualCode = (body.subSubGroupCode ?? '').trim();
   if (manualCode.length > 50) {
-    const err = new Error('Sub-group code must be at most 50 characters');
+    const err = new Error('Sub-sub-group code must be at most 50 characters');
     err.status = 400;
     throw err;
   }
@@ -54,14 +52,22 @@ export async function createSubGroup(pool, body, authStaff) {
     throw err;
   }
 
-  const groupId = parseGroupId(body.groupId);
+  const groupId = parseId(body.groupId);
   if (groupId == null) {
     const err = new Error('groupId is required');
     err.status = 400;
     throw err;
   }
 
+  const subGroupId = parseId(body.subGroupId);
+  if (subGroupId == null) {
+    const err = new Error('subGroupId is required');
+    err.status = 400;
+    throw err;
+  }
+
   const companyId = Number(authStaff.company_id);
+
   const branchOk = await branchRepo.branchBelongsToCompany(pool, companyId, branchId);
   if (!branchOk) {
     const err = new Error('Invalid branch for this company');
@@ -69,38 +75,41 @@ export async function createSubGroup(pool, body, authStaff) {
     throw err;
   }
 
-  const groupOk = await subGroupRepo.groupExistsForCompanyBranch(pool, companyId, branchId, groupId);
-  if (!groupOk) {
-    const err = new Error('Group not found for this branch');
+  const subGroupOk = await subSubGroupRepo.subGroupExistsForCompanyBranch(
+    pool, companyId, branchId, groupId, subGroupId
+  );
+  if (!subGroupOk) {
+    const err = new Error('Sub-group not found for this branch/group');
     err.status = 400;
     throw err;
   }
 
-  const descRaw = body.subGroupDescription != null ? String(body.subGroupDescription).trim() : '';
-  const desc = descRaw ? descRaw.slice(0, 300) : '';
-
-  const descArRaw =
-    body.subGroupDescriptionArabic != null ? String(body.subGroupDescriptionArabic).trim() : '';
-  const descAr = descArRaw || null;
+  const desc = body.subSubGroupDescription != null
+    ? String(body.subSubGroupDescription).trim().slice(0, 200)
+    : '';
+  const descAr = body.subSubGroupDescriptionArabic != null
+    ? String(body.subSubGroupDescriptionArabic).trim() || null
+    : null;
 
   return withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
-      `biz.sub_group_master:${companyId}`,
+      `biz.sub_sub_group_master:${companyId}`,
     ]);
-    const subGroupCode = manualCode || await nextDocNo(client, {
+    const subSubGroupCode = manualCode || await nextDocNo(client, {
       companyId,
       branchId,
-      sequenceCode: 'SUB_GROUP',
+      sequenceCode: 'SUB_SUB_GROUP',
     });
-    const subGroupId = await subGroupRepo.nextSubGroupId(client, companyId);
-    return subGroupRepo.insertSubGroup(client, {
-      subGroupId,
+    const subSubGroupId = await subSubGroupRepo.nextSubSubGroupId(client, companyId);
+    return subSubGroupRepo.insertSubSubGroup(client, {
+      subSubGroupId,
       companyId,
       branchId,
       groupId,
-      subGroupCode,
-      subGroupDescription: desc,
-      subGroupDescriptionArabic: descAr,
+      subGroupId,
+      subSubGroupCode,
+      subSubGroupDescription: desc,
+      subSubGroupDescriptionArabic: descAr,
     });
   });
 }

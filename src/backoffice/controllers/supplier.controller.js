@@ -1,6 +1,17 @@
 import { pool } from '../../config/db.js';
 import * as supplierService from '../services/supplier.service.js';
 
+export async function getSupplierById(req, res) {
+  try {
+    const supplier = await supplierService.getSupplierById(pool, req.params.supplierId, req.authStaff);
+    return res.json({ supplier });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    console.error(err);
+    return res.status(500).json({ message: 'Could not load supplier' });
+  }
+}
+
 export async function listSuppliers(req, res) {
   try {
     const suppliers = await supplierService.listSuppliers(pool, req.authStaff, req.query);

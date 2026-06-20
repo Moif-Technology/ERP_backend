@@ -47,6 +47,7 @@ export async function ensureFeatureCatalog() {
       ('backoffice.inventory',    'Inventory',              'backoffice', 'backoffice','feature',202),
       ('backoffice.product_master','Product master',        'backoffice', 'backoffice','feature',203),
       ('backoffice.product_group','Product group',          'backoffice', 'backoffice','feature',204),
+      ('backoffice.sub_sub_group','Sub-sub-group master',   'backoffice', 'backoffice','feature',204),
       ('backoffice.stock_entry',  'Stock entry',            'backoffice', 'backoffice','feature',205),
       ('backoffice.stock_adjustment','Stock adjustment',    'backoffice', 'backoffice','feature',206),
       ('backoffice.damage_entry', 'Damage entry',           'backoffice', 'backoffice','feature',207),

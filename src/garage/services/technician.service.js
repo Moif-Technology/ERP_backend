@@ -1,5 +1,7 @@
+import { withTransaction } from '../../config/db.js';
 import { requireBranchId, requireCompanyId, trimOrNull, requiredStr } from '../../utils/crmHelpers.js';
 import * as repo from '../repositories/technician.repository.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 const VALID_STATUSES = ['ACTIVE', 'INACTIVE'];
 
@@ -35,7 +37,12 @@ export async function createTechnician(pool, body, authStaff) {
   const companyId = requireCompanyId(authStaff);
   const branchId = requireBranchId(authStaff, body);
   const payload = buildPayload(body);
-  return repo.insertTechnician(pool, { companyId, branchId, ...payload, createdBy: actorLabel(authStaff) });
+  return withTransaction(async (client) => {
+    if (!payload.empId && body.autoCode) {
+      payload.empId = await nextDocNo(client, { companyId, branchId, sequenceCode: 'TECHNICIAN' });
+    }
+    return repo.insertTechnician(client, { companyId, branchId, ...payload, createdBy: actorLabel(authStaff) });
+  });
 }
 
 export async function updateTechnician(pool, id, body, authStaff) {

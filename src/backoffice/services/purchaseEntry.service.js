@@ -8,6 +8,7 @@ import * as lpoRepo from '../repositories/lpo.repository.js';
 import * as grnRepo from '../repositories/grn.repository.js';
 import * as supplierRepo from '../repositories/supplier.repository.js';
 import * as purchaseEntryRepo from '../repositories/purchaseEntry.repository.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 // Seeded chart-of-accounts fallbacks (accountsSeed.repository.js)
 const ACCOUNTS_PAYABLE_ID = 2001;
@@ -279,7 +280,12 @@ export async function createPurchase(pool, body, authStaff) {
     }
 
     const purchaseId = await purchaseEntryRepo.nextPurchaseId(client, companyId);
-    const purchaseNo = await purchaseEntryRepo.nextPurchaseNo(client, companyId, branchId);
+    const purchaseNo = await nextDocNo(client, {
+      companyId,
+      branchId,
+      sequenceCode: 'PURCHASE',
+      fiscalYear: new Date().getFullYear(),
+    });
 
     await purchaseEntryRepo.insertPurchaseMaster(client, {
       companyId,

@@ -7,5 +7,6 @@ export const groupRouter = Router();
 
 groupRouter.use(authMiddleware);
 groupRouter.use(requireAnyFeature(['backoffice.product_group', 'pos.product_search']));
+groupRouter.get('/next-code', groupController.nextGroupCode);
 groupRouter.get('/', groupController.listGroups);
 groupRouter.post('/', groupController.createGroup);

@@ -5,6 +5,7 @@ import * as substituteRepo from '../repositories/substitute.repository.js';
 import * as subGroupRepo from '../repositories/subGroup.repository.js';
 import { generateScopedAutoCode } from '../../utils/autoCode.js';
 import { assertLimitAvailable } from '../../core/services/entitlement.service.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 function parsePackLines(raw) {
   if (!Array.isArray(raw)) return [];
@@ -135,13 +136,9 @@ export async function listProducts(pool, authStaff, query) {
  * Creates product_master + one product_inventory row for the branch (pricing / stock defaults).
  */
 export async function createProduct(pool, body, authStaff) {
-  const productCode = trimOrEmpty(body.productCode);
-  if (!productCode) {
-    const err = new Error('productCode is required');
-    err.status = 400;
-    throw err;
-  }
-  if (productCode.length > 50) {
+  let productCode = trimOrEmpty(body.productCode) || null;
+  const wantsAutoProductCode = Boolean(body.autoCode);
+  if (productCode && productCode.length > 50) {
     const err = new Error('productCode must be at most 50 characters');
     err.status = 400;
     throw err;
@@ -234,6 +231,10 @@ export async function createProduct(pool, body, authStaff) {
   const vatOut = parseMoney(body.vatOut);
   const vatOutPct = parseMoney(body.vatOutPct);
   const priceLevel1 = parseMoney(body.priceLevel1);
+  const priceLevel2 = parseMoney(body.priceLevel2);
+  const priceLevel3 = parseMoney(body.priceLevel3);
+  const priceLevel4 = parseMoney(body.priceLevel4);
+  const priceLevel5 = parseMoney(body.priceLevel5);
 
   const qtyOnHand = parseMoney4(body.qtyOnHand, 0);
   const reorderLevel = parseMoney4(body.reorderLevel, 0);
@@ -243,6 +244,15 @@ export async function createProduct(pool, body, authStaff) {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
       `core.product_master:${companyId}`,
     ]);
+
+    if (!productCode && wantsAutoProductCode) {
+      productCode = await nextDocNo(client, { companyId, branchId, sequenceCode: 'PRODUCT' });
+    }
+    if (!productCode) {
+      const err = new Error('productCode is required');
+      err.status = 400;
+      throw err;
+    }
 
     const existingMaster = await productRepo.findMasterByCompanyAndProductCode(
       client,
@@ -340,10 +350,10 @@ export async function createProduct(pool, body, authStaff) {
       minimumRetailPrice: minUnitPrice,
       maximumRetailPrice: unitPrice,
       priceLevel1: priceLevel1 || unitPrice,
-      priceLevel2: 0,
-      priceLevel3: 0,
-      priceLevel4: 0,
-      priceLevel5: 0,
+      priceLevel2: priceLevel2 || 0,
+      priceLevel3: priceLevel3 || 0,
+      priceLevel4: priceLevel4 || 0,
+      priceLevel5: priceLevel5 || 0,
       locationCode: sliceOrNull(body.location, 50),
       marginAmount: 0,
       minimumMarginPercentage: marginPct,
@@ -587,6 +597,10 @@ export async function updateProduct(pool, productId, body, authStaff) {
   const vatOut         = parseMoney(body.vatOut);
   const vatOutPct      = parseMoney(body.vatOutPct);
   const priceLevel1    = parseMoney(body.priceLevel1);
+  const priceLevel2    = parseMoney(body.priceLevel2);
+  const priceLevel3    = parseMoney(body.priceLevel3);
+  const priceLevel4    = parseMoney(body.priceLevel4);
+  const priceLevel5    = parseMoney(body.priceLevel5);
   const qtyOnHand      = parseMoney4(body.qtyOnHand, 0);
   const reorderLevel   = parseMoney4(body.reorderLevel, 0);
   const reorderQty     = parseMoney4(body.reorderQty, 0);
@@ -654,6 +668,10 @@ export async function updateProduct(pool, productId, body, authStaff) {
       minimumRetailPrice:       minUnitPrice,
       maximumRetailPrice:       unitPrice,
       priceLevel1:              priceLevel1 || unitPrice,
+      priceLevel2:              priceLevel2 || 0,
+      priceLevel3:              priceLevel3 || 0,
+      priceLevel4:              priceLevel4 || 0,
+      priceLevel5:              priceLevel5 || 0,
       locationCode:             sliceOrNull(body.location, 50),
       minimumMarginPercentage:  marginPct,
       discountPercentage:       discountPct,

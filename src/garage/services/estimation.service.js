@@ -8,6 +8,7 @@ import {
 } from '../../utils/crmHelpers.js';
 import * as repo from '../repositories/estimation.repository.js';
 import { findJobCardById } from '../repositories/jobCard.repository.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 const VALID_CLAIM_TYPES = ['OWN CLAIM', 'THIRD PARTY', 'COMPREHENSIVE', 'TPL', 'CASH'];
 const VALID_LINE_TYPES = ['REPAIR', 'SPARE'];
@@ -139,7 +140,7 @@ export async function createEstimation(pool, body, authStaff) {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
       `garage.estimation:${companyId}:${branchId}`,
     ]);
-    const estimationNo = await repo.nextEstimationNo(client, companyId, branchId);
+    const estimationNo = await nextDocNo(client, { companyId, branchId, sequenceCode: 'ESTIMATION', fiscalYear: new Date().getFullYear() });
     const header = await repo.insertEstimation(client, {
       companyId, branchId, estimationNo, ...payload, createdBy,
     });

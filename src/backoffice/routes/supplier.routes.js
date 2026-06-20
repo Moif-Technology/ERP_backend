@@ -8,6 +8,7 @@ export const supplierRouter = Router();
 supplierRouter.use(authMiddleware);
 supplierRouter.use(requireAnyFeature(['core.suppliers', 'backoffice.suppliers', 'backoffice.purchase']));
 supplierRouter.get('/', supplierController.listSuppliers);
+supplierRouter.get('/:supplierId', supplierController.getSupplierById);
 supplierRouter.post('/', supplierController.createSupplier);
 supplierRouter.post('/:supplierId/post-ledger', supplierController.postSupplierLedger);
 supplierRouter.put('/:supplierId', supplierController.updateSupplier);

@@ -7,6 +7,7 @@ import {
   trimOrNull,
 } from '../../utils/crmHelpers.js';
 import * as repo from '../repositories/partRequest.repository.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 function toDateOrNull(v) {
   if (v == null || v === '') return null;
@@ -66,7 +67,7 @@ export async function createPartRequest(pool, body, authStaff) {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
       `garage.part_request:${companyId}:${branchId}`,
     ]);
-    const requestNo = await repo.getNextRequestNo(client, companyId, branchId);
+    const requestNo = await nextDocNo(client, { companyId, branchId, sequenceCode: 'PART_REQUEST', fiscalYear: new Date().getFullYear() });
     const header = await repo.insertPartRequest(client, {
       companyId,
       branchId,

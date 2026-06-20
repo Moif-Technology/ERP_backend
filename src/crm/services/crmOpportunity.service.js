@@ -4,6 +4,7 @@ import {
   requiredStr, trimOrNull, toIntOrNull, toNumberOrNull,
   requireCompanyId, requireBranchId, actorStaffId,
 } from '../../utils/crmHelpers.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 const VALID_PRIORITY = new Set(['LOW', 'MEDIUM', 'HIGH', 'URGENT']);
 const VALID_STATUS = new Set(['OPEN', 'WON', 'LOST', 'CANCELLED']);
@@ -22,10 +23,6 @@ function toDateOrNull(v) {
   if (v == null || v === '') return null;
   const d = new Date(v);
   return Number.isFinite(d.getTime()) ? d.toISOString() : null;
-}
-
-function buildOpportunityCode(opportunityId) {
-  return `OPP-${String(opportunityId).padStart(4, '0')}`;
 }
 
 export async function list(pool, query, authStaff) {
@@ -85,12 +82,13 @@ export async function create(pool, body, authStaff) {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))',
       [`biz.opportunity_master:${companyId}`]);
     const opportunityId = await repo.nextOpportunityId(client, companyId);
+    const opportunityCode = await nextDocNo(client, { companyId, branchId, sequenceCode: 'OPPORTUNITY' });
     return repo.insert(client, {
       ...base,
       companyId,
       branchId,
       opportunityId,
-      opportunityCode: buildOpportunityCode(opportunityId),
+      opportunityCode,
       status,
       actorStaffId: actorStaffId(authStaff),
     });

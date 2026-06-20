@@ -4,15 +4,12 @@ import {
   requiredStr, trimOrNull, toIntOrNull, toNumberOrNull,
   requireCompanyId, requireBranchId, actorStaffId,
 } from '../../utils/crmHelpers.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 function toDateOrNull(v) {
   if (v == null || v === '') return null;
   const d = new Date(v);
   return Number.isFinite(d.getTime()) ? d.toISOString() : null;
-}
-
-function buildLeadCode(leadId) {
-  return `LEAD-${String(leadId).padStart(4, '0')}`;
 }
 
 export async function list(pool, query, authStaff) {
@@ -66,12 +63,13 @@ export async function create(pool, body, authStaff) {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))',
       [`biz.lead_master:${companyId}`]);
     const leadId = await repo.nextLeadId(client, companyId);
+    const leadCode = await nextDocNo(client, { companyId, branchId, sequenceCode: 'LEAD' });
     return repo.insert(client, {
       ...base,
       companyId,
       branchId,
       leadId,
-      leadCode: buildLeadCode(leadId),
+      leadCode,
       actorStaffId: actorStaffId(authStaff),
     });
   });

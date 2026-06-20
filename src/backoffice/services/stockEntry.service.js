@@ -1,5 +1,8 @@
 import { withTransaction } from '../../config/db.js';
 import * as repo from '../repositories/stockEntry.repository.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
+
+const DOC_TYPE_TO_SEQ = { ADJ: 'STOCK_ADJ', DMG: 'STOCK_DMG', ASE: 'STOCK_ASE' };
 
 function parseNum(v, fallback = null) {
   if (v == null || v === '' || v === '—') return fallback;
@@ -34,7 +37,13 @@ export async function saveEntry(pool, body, authStaff) {
       entryId = await repo.nextEntryId(client, companyId, branchId);
     }
 
-    const entryNo = rawNo?.trim() || await repo.generateEntryNo(client, companyId, branchId, docType);
+    const seqCode = DOC_TYPE_TO_SEQ[docType] ?? 'STOCK_ADJ';
+    const entryNo = rawNo?.trim() || await nextDocNo(client, {
+      companyId,
+      branchId,
+      sequenceCode: seqCode,
+      fiscalYear: new Date().getFullYear(),
+    });
     const masterRow = {
       companyId, branchId, entryId, entryNo, docType,
       entryDate: parseDate(entryDate),

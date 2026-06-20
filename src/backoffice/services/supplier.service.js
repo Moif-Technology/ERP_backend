@@ -2,6 +2,7 @@ import { withTransaction } from '../../config/db.js';
 import * as supplierRepo from '../repositories/supplier.repository.js';
 import { assertLimitAvailable } from '../../core/services/entitlement.service.js';
 import * as partyLedger from './partyLedger.service.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 function trimOrEmpty(v) {
   if (v == null) return '';
@@ -12,6 +13,32 @@ function sliceOrNull(v, maxLen) {
   const s = trimOrEmpty(v);
   if (!s) return null;
   return s.slice(0, maxLen);
+}
+
+function numericOrZero(v, defaultVal = 0) {
+  const n = parseFloat(v);
+  return Number.isFinite(n) && n >= 0 ? n : defaultVal;
+}
+
+function intOrZero(v) {
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+export async function getSupplierById(pool, supplierId, authStaff) {
+  const companyId = Number(authStaff.company_id);
+  if (!Number.isFinite(companyId) || companyId < 1) {
+    const err = new Error('Invalid company on session'); err.status = 400; throw err;
+  }
+  const id = Number(supplierId);
+  if (!Number.isFinite(id) || id < 1) {
+    const err = new Error('Invalid supplierId'); err.status = 400; throw err;
+  }
+  const supplier = await supplierRepo.getSupplierById(pool, companyId, id);
+  if (!supplier) {
+    const err = new Error('Supplier not found'); err.status = 404; throw err;
+  }
+  return supplier;
 }
 
 export async function updateSupplier(pool, supplierId, body, authStaff) {
@@ -28,7 +55,7 @@ export async function updateSupplier(pool, supplierId, body, authStaff) {
   if (code.length > 25) { const err = new Error('supplierCode must be at most 25 characters'); err.status = 400; throw err; }
   const name = trimOrEmpty(body.supplierName);
   if (!name) { const err = new Error('supplierName is required'); err.status = 400; throw err; }
-  const userLabel = (authStaff.staff_name || '').slice(0, 50) || 'system';
+  const userId = authStaff.id != null ? Number(authStaff.id) : null;
   const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
   const parentAccId = body.parentAccId ?? body.supplierParentAccId ?? null;
 
@@ -39,11 +66,24 @@ export async function updateSupplier(pool, supplierId, body, authStaff) {
     }
 
     const updated = await supplierRepo.updateSupplier(client, companyId, id, {
-      supplierCode: code,
-      supplierName: name.slice(0, 200),
-      mobileNo: sliceOrNull(body.mobileNo, 25),
-      email: sliceOrNull(body.email, 75),
-      modifiedBy: userLabel,
+      supplierCode:     code,
+      supplierName:     name.slice(0, 200),
+      mobileNo:         sliceOrNull(body.mobileNo, 25),
+      email:            sliceOrNull(body.email, 75),
+      taxRegNo:         sliceOrNull(body.taxRegNo, 100),
+      contactPerson:    sliceOrNull(body.contactPerson, 200),
+      address:          sliceOrNull(body.address, 300),
+      poBox:            sliceOrNull(body.poBox, 15),
+      city:             sliceOrNull(body.city, 50),
+      country:          sliceOrNull(body.country, 50),
+      telephone:        sliceOrNull(body.telephone, 25),
+      faxNo:            sliceOrNull(body.faxNo, 15),
+      paymentMode:      sliceOrNull(body.paymentMode, 50),
+      creditLimit:      numericOrZero(body.creditLimit),
+      creditBalance:    numericOrZero(body.creditBalance),
+      creditPeriodDays: intOrZero(body.creditPeriodDays),
+      remark:           sliceOrNull(body.remark, 750),
+      modifiedBy:       userId,
     });
     if (!updated) {
       const err = new Error('Supplier not found'); err.status = 404; throw err;
@@ -72,7 +112,7 @@ export async function updateSupplier(pool, supplierId, body, authStaff) {
 
     return {
       ...updated,
-      ledgerAccountId: ledger?.accountId ?? null,
+      ledgerAccountId:  ledger?.accountId ?? null,
       ledgerParentAccId: ledger?.parentAccId ?? null,
     };
   });
@@ -137,12 +177,8 @@ export async function postSupplierLedger(pool, supplierId, authStaff, body = {})
 }
 
 export async function createSupplier(pool, body, authStaff) {
-  const code = trimOrEmpty(body.supplierCode);
-  if (!code) {
-    const err = new Error('supplierCode is required');
-    err.status = 400;
-    throw err;
-  }
+  let code = trimOrEmpty(body.supplierCode);
+  const wantsAutoCode = Boolean(body.autoCode);
   if (code.length > 25) {
     const err = new Error('supplierCode must be at most 25 characters');
     err.status = 400;
@@ -168,7 +204,8 @@ export async function createSupplier(pool, body, authStaff) {
     throw err;
   }
 
-  const userLabel = (authStaff.staff_name || '').slice(0, 50) || 'system';
+  const userId = authStaff.id != null ? Number(authStaff.id) : null;
+  const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
 
   return withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
@@ -180,20 +217,40 @@ export async function createSupplier(pool, body, authStaff) {
       countFn: supplierRepo.countActiveSuppliers,
       db: client,
     });
+    if (!code && wantsAutoCode) {
+      code = await nextDocNo(client, { companyId, branchId: branchId ?? 0, sequenceCode: 'SUPPLIER' });
+    }
+    if (!code) {
+      const err = new Error('supplierCode is required');
+      err.status = 400;
+      throw err;
+    }
     const supplierId = await supplierRepo.nextSupplierId(client, companyId);
-    const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
     const parentAccId = body.parentAccId ?? body.supplierParentAccId ?? null;
 
     await supplierRepo.insertSupplier(client, {
       companyId,
       supplierId,
-      supplierCode: code,
-      supplierName: name.slice(0, 200),
-      mobileNo: sliceOrNull(body.mobileNo, 25),
-      email: sliceOrNull(body.email, 75),
-      recordStatus: 'ACTIVE',
-      createdBy: userLabel,
-      modifiedBy: userLabel,
+      supplierCode:     code,
+      supplierName:     name.slice(0, 200),
+      mobileNo:         sliceOrNull(body.mobileNo, 25),
+      email:            sliceOrNull(body.email, 75),
+      taxRegNo:         sliceOrNull(body.taxRegNo, 100),
+      contactPerson:    sliceOrNull(body.contactPerson, 200),
+      address:          sliceOrNull(body.address, 300),
+      poBox:            sliceOrNull(body.poBox, 15),
+      city:             sliceOrNull(body.city, 50),
+      country:          sliceOrNull(body.country, 50),
+      telephone:        sliceOrNull(body.telephone, 25),
+      faxNo:            sliceOrNull(body.faxNo, 15),
+      paymentMode:      sliceOrNull(body.paymentMode, 50),
+      creditLimit:      numericOrZero(body.creditLimit),
+      creditBalance:    numericOrZero(body.creditBalance),
+      creditPeriodDays: intOrZero(body.creditPeriodDays),
+      remark:           sliceOrNull(body.remark, 750),
+      recordStatus:     'ACTIVE',
+      createdBy:        userId,
+      modifiedBy:       userId,
     });
 
     let ledger = null;
@@ -220,7 +277,7 @@ export async function createSupplier(pool, body, authStaff) {
       supplierId,
       supplierCode: code,
       supplierName: name.slice(0, 200),
-      ledgerAccountId: ledger?.accountId ?? null,
+      ledgerAccountId:   ledger?.accountId ?? null,
       ledgerParentAccId: ledger?.parentAccId ?? null,
     };
   });

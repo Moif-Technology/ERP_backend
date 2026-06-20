@@ -3,6 +3,7 @@ import * as branchRepo from '../../shared/repositories/branch.repository.js';
 import * as deliveryOrderRepo from '../repositories/deliveryOrder.repository.js';
 import * as quotationRepo from '../repositories/quotation.repository.js';
 import { actorStaffPk } from '../../utils/actorStaff.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 function trimOrEmpty(v) {
   if (v == null) return '';
@@ -258,13 +259,12 @@ export async function createDeliveryOrder(pool, body, authStaff) {
       `ops.delivery_order_child_id:${companyId}`,
     ]);
 
-    const { seqNum, prefix: docPrefix } = await deliveryOrderRepo.nextDeliveryOrderSequenceNumber(
-      client,
+    const deliveryOrderNo = await nextDocNo(client, {
       companyId,
       branchId,
-      { createdBy: userLabel },
-    );
-    const deliveryOrderNo = deliveryOrderRepo.formatDeliveryOrderNo(seqNum, docPrefix);
+      sequenceCode: 'DELIVERY',
+      fiscalYear: new Date().getFullYear(),
+    });
 
     await deliveryOrderRepo.insertDeliveryOrderMaster(client, {
       companyId,

@@ -4,6 +4,7 @@ import { actorStaffPk } from '../../utils/actorStaff.js';
 import { generateScopedAutoCode } from '../../utils/autoCode.js';
 import { assertLimitAvailable } from '../../core/services/entitlement.service.js';
 import * as partyLedger from './partyLedger.service.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 function trimOrEmpty(v) {
   if (v == null) return '';
@@ -97,14 +98,7 @@ export async function createCustomer(pool, body, authStaff) {
       db: client,
     });
     if (!code && wantsAutoCode) {
-      code = await generateScopedAutoCode(client, {
-        tableName: 'biz.customer_master',
-        codeColumn: 'customer_code',
-        companyId,
-        prefix: body.customerCodePrefix || 'CUST',
-        padLength: 6,
-        maxLength: 20,
-      });
+      code = await nextDocNo(client, { companyId, branchId: branchId ?? 0, sequenceCode: 'CUSTOMER' });
     }
     if (!code) {
       const err = new Error('customerCode is required');

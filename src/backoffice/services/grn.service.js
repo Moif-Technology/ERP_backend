@@ -3,6 +3,7 @@ import * as branchRepo from '../../shared/repositories/branch.repository.js';
 import * as grnRepo from '../repositories/grn.repository.js';
 import * as supplierRepo from '../repositories/supplier.repository.js';
 import { actorStaffPk } from '../../utils/actorStaff.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 function parseBranchId(raw) {
   const n = Number(raw);
@@ -288,6 +289,12 @@ export async function createGrn(pool, body, authStaff) {
     }
 
     const grnId = await grnRepo.nextGrnId(client, companyId);
+    const autoGrnNo = await nextDocNo(client, {
+      companyId,
+      branchId,
+      sequenceCode: 'GRN',
+      fiscalYear: new Date().getFullYear(),
+    });
     const masterRow = buildMasterPayload(body, {
       companyId,
       branchId,
@@ -297,6 +304,10 @@ export async function createGrn(pool, body, authStaff) {
       authStaff,
     });
     masterRow.supplierId = supplierId;
+    // Override grnNo with the sequence-generated value (body override still possible via buildMasterPayload).
+    if (!masterRow.grnNo || masterRow.grnNo === String(grnId)) {
+      masterRow.grnNo = autoGrnNo;
+    }
 
     await grnRepo.insertGrnMaster(client, masterRow);
 

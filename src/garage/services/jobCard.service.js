@@ -9,6 +9,7 @@ import {
 import * as repo from '../repositories/jobCard.repository.js';
 import { linkPreJcToJobCard } from '../repositories/preJobCard.repository.js';
 import * as technicianRepo from '../repositories/technician.repository.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 const VALID_CUSTOMER_TYPES = ['CASH', 'CREDIT', 'INSURANCE', 'CORPORATE', 'WARRANTY'];
 const VALID_JOB_TYPES = ['BODYSHOP', 'MECHANICAL', 'ELECTRICAL', 'GENERAL SERVICE', 'AC SERVICE', 'TYRES', 'OTHER'];
@@ -176,7 +177,7 @@ export async function createJobCard(pool, body, authStaff) {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
       `garage.job_card:${companyId}:${branchId}`,
     ]);
-    const jcNo = await repo.nextJcNo(client, companyId, branchId);
+    const jcNo = await nextDocNo(client, { companyId, branchId, sequenceCode: 'JOB_CARD', fiscalYear: new Date().getFullYear() });
     const header = await repo.insertJobCard(client, {
       companyId, branchId, jcNo, ...payload, createdBy,
     });

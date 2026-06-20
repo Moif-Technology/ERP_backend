@@ -2,6 +2,7 @@ import { withTransaction } from '../../config/db.js';
 import * as groupRepo from '../repositories/group.repository.js';
 import * as branchRepo from '../../shared/repositories/branch.repository.js';
 import { actorStaffPk } from '../../utils/actorStaff.js';
+import { nextDocNo } from '../../shared/services/docSequence.service.js';
 
 function parseOptionalNumeric(v) {
   if (v == null || v === '') return null;
@@ -45,13 +46,11 @@ export async function listGroups(pool, authStaff, branchIdQuery) {
  * Allocates group_id per company + branch; company_id from JWT/session row.
  */
 export async function createGroup(pool, body, authStaff) {
-  const code = (body.groupCode ?? '').trim();
-  if (!code) {
-    const err = new Error('Group code is required');
-    err.status = 400;
-    throw err;
-  }
-  if (code.length > 50) {
+  // groupCode is now auto-generated from document_sequence.
+  // If the caller provides a code (manual override), validate and use it.
+  // If not provided (or empty), auto-generate.
+  const manualCode = (body.groupCode ?? '').trim();
+  if (manualCode.length > 50) {
     const err = new Error('Group code must be at most 50 characters');
     err.status = 400;
     throw err;
@@ -73,7 +72,6 @@ export async function createGroup(pool, body, authStaff) {
   }
 
   const descRaw = body.groupDescription != null ? String(body.groupDescription).trim() : '';
-  // Legacy Moifone DBs often use NOT NULL on text columns; empty string = "not provided".
   const desc = descRaw ? descRaw.slice(0, 300) : '';
 
   const descArRaw =
@@ -87,12 +85,20 @@ export async function createGroup(pool, body, authStaff) {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
       `biz.group_master:${companyId}:${branchId}`,
     ]);
+
+    // Auto-generate group code from document_sequence; use manual override if provided.
+    const groupCode = manualCode || await nextDocNo(client, {
+      companyId,
+      branchId,
+      sequenceCode: 'GROUP',
+    });
+
     const groupId = await groupRepo.nextGroupId(client, companyId, branchId);
     return groupRepo.insertGroup(client, {
       groupId,
       companyId,
       branchId,
-      groupCode: code,
+      groupCode,
       groupDescription: desc,
       groupDescriptionArabic: descAr,
       keyCode,
