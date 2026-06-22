@@ -443,10 +443,19 @@ export async function findProductByIdAndBranch(pool, companyId, productId, branc
             i.price_level_1, i.price_level_2, i.price_level_3, i.price_level_4, i.price_level_5,
             i.location_code, i.margin_amount, i.minimum_margin_percentage, i.discount_percentage,
             i.input_tax_1_amount, i.input_tax_1_rate, i.output_tax_1_amount, i.output_tax_1_rate,
-            i.pack_qty AS inv_pack_qty
+            i.pack_qty AS inv_pack_qty,
+            gm.group_description,
+            sgm.sub_group_description,
+            sm.supplier_name AS last_supplier_name
      FROM core.product_master m
      INNER JOIN core.product_inventory i
        ON m.company_id = i.company_id AND m.product_id = i.product_id
+     LEFT JOIN biz.group_master gm
+       ON m.company_id = gm.company_id AND m.group_id = gm.group_id
+     LEFT JOIN biz.sub_group_master sgm
+       ON m.company_id = sgm.company_id AND m.subgroup_id = sgm.sub_group_id
+     LEFT JOIN biz.supplier_master sm
+       ON m.company_id = sm.company_id AND m.last_supplier_id = sm.supplier_id
      WHERE m.company_id = $1
        AND m.product_id = $2
        AND i.branch_id = $3
@@ -463,7 +472,13 @@ export async function findProductByIdAndBranch(pool, companyId, productId, branc
     // inv-level packQty may differ from master packQty
     packQty: row.inv_pack_qty != null ? Number(row.inv_pack_qty) : 1,
   };
-  return { ...master, inventory: inv };
+  return {
+    ...master,
+    groupName: row.group_description ?? null,
+    subGroupName: row.sub_group_description ?? null,
+    lastSupplierName: row.last_supplier_name ?? null,
+    inventory: inv,
+  };
 }
  
 /**

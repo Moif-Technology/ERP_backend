@@ -46,7 +46,7 @@ export async function findStaffSessionByPk(pool, staffPk) {
     `SELECT s.id, s.staff_id, s.staff_name, s.role_id, s.branch_id, s.company_id,
             s.login_name, s.email, s.designation, r.role_name,
             r.software_type AS role_software_type,
-            c.company_name, c.company_address, b.branch_name,
+            c.company_name, c.company_address, c.currency, b.branch_name,
             st.software_code AS software_type_code
      FROM core.staff_master s
      JOIN core.company_master c ON c.company_id = s.company_id

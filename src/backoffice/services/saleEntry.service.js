@@ -70,6 +70,63 @@ function mapSaleRowToApi(row) {
   };
 }
 
+export async function getSale(pool, authStaff, salesId, branchId) {
+  const companyId = Number(authStaff.company_id);
+  const bid = parseBranchId(branchId) || parseBranchId(authStaff.branch_id);
+  if (!bid) {
+    const err = new Error('branchId is required');
+    err.status = 400;
+    throw err;
+  }
+  const sid = Math.trunc(Number(salesId));
+  if (!Number.isFinite(sid) || sid < 1) {
+    const err = new Error('Invalid salesId');
+    err.status = 400;
+    throw err;
+  }
+  const row = await saleEntryRepo.getSaleById(pool, companyId, bid, sid);
+  if (!row) {
+    const err = new Error('Sale not found');
+    err.status = 404;
+    throw err;
+  }
+  return {
+    salesId: Number(row.sales_id),
+    branchId: Number(row.branch_id),
+    billNo: row.bill_no != null ? String(row.bill_no) : '',
+    invoiceNo: row.invoice_no || '',
+    billDate: row.bill_date,
+    billTime: row.bill_time,
+    counterNo: row.counter_no != null ? String(row.counter_no) : '',
+    paymentMode: row.payment_mode || 'CASH',
+    customerId: row.customer_id != null ? Number(row.customer_id) : null,
+    customerName: row.customer_name || '',
+    subTotal: row.subtotal_amount != null ? String(row.subtotal_amount) : '0',
+    discount: row.discount_amount != null ? String(row.discount_amount) : '0',
+    taxAmount: row.tax_amount != null ? String(row.tax_amount) : '0',
+    roundOffAdj: row.round_off_adjustment != null ? String(row.round_off_adjustment) : '0',
+    amount: row.amount != null ? String(row.amount) : '0',
+    remarks: row.remarks || '',
+    lines: (row.lines || []).map((l) => ({
+      salesChildId: l.salesChildId != null ? Number(l.salesChildId) : null,
+      productId: l.productId != null ? Number(l.productId) : null,
+      shortDescription: l.shortDescription || '',
+      qty: Number(l.qty) || 0,
+      unitPrice: Number(l.unitPrice) || 0,
+      unitCost: Number(l.unitCost) || 0,
+      discountAmount: Number(l.discountAmount) || 0,
+      subtotalAmount: Number(l.subtotalAmount) || 0,
+      tax1Rate: Number(l.tax1Rate) || 0,
+      tax1Amount: Number(l.tax1Amount) || 0,
+      lineTotal: Number(l.lineTotal) || 0,
+      quotationId: l.quotationId != null ? Number(l.quotationId) : null,
+      doId: l.doId != null ? Number(l.doId) : null,
+      barcode: l.barcode || '',
+      ownRefNo: l.ownRefNo || '',
+    })),
+  };
+}
+
 export async function listSales(pool, authStaff, query) {
   const companyId = Number(authStaff.company_id);
   let branchId = parseBranchId(query.branchId);

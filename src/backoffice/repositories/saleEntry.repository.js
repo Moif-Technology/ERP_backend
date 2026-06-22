@@ -29,6 +29,60 @@ export async function updateSalesMasterErpFields(client, companyId, salesId, fie
   );
 }
 
+export async function getSaleById(pool, companyId, branchId, salesId) {
+  const { rows } = await pool.query(
+    `SELECT
+       sm.sales_id, sm.branch_id, sm.bill_no, sm.invoice_no,
+       sm.bill_date, sm.bill_time, sm.counter_no, sm.payment_mode,
+       sm.customer_id, cm.customer_name, cm.customer_code,
+       sm.subtotal_amount, sm.discount_amount,
+       COALESCE(sm.tax_1_amount,0)+COALESCE(sm.tax_2_amount,0)+COALESCE(sm.tax_3_amount,0) AS tax_amount,
+       sm.round_off_adjustment, sm.amount, sm.remarks,
+       sm.quotation_id, sm.delivery_order_id,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'salesChildId', sc.sales_child_id,
+             'productId',    sc.product_id,
+             'shortDescription', sc.short_description,
+             'qty',          sc.qty,
+             'unitPrice',    sc.unit_price,
+             'unitCost',     sc.unit_cost,
+             'packQty',      sc.pack_qty,
+             'discountAmount', sc.discount_amount,
+             'subtotalAmount', sc.subtotal_amount,
+             'tax1Rate',     sc.tax_1_rate,
+             'tax1Amount',   sc.tax_1_amount,
+             'lineTotal',    sc.line_total,
+             'quotationId',  sc.quotation_id,
+             'doId',         sc.do_id,
+             'barcode',      pm.barcode,
+             'ownRefNo',     pm.own_ref_no
+           ) ORDER BY sc.sales_child_id
+         ) FILTER (WHERE sc.sales_child_id IS NOT NULL),
+         '[]'::json
+       ) AS lines
+     FROM ops.sales_master sm
+     LEFT JOIN biz.customer_master cm
+       ON cm.company_id = sm.company_id AND cm.customer_id = sm.customer_id
+     LEFT JOIN ops.sales_child sc
+       ON sc.company_id = sm.company_id AND sc.sales_id = sm.sales_id
+     LEFT JOIN core.product_master pm
+       ON pm.company_id = sm.company_id AND pm.product_id = sc.product_id
+     WHERE sm.company_id = $1 AND sm.branch_id = $2 AND sm.sales_id = $3
+     GROUP BY
+       sm.sales_id, sm.branch_id, sm.bill_no, sm.invoice_no,
+       sm.bill_date, sm.bill_time, sm.counter_no, sm.payment_mode,
+       sm.customer_id, cm.customer_name, cm.customer_code,
+       sm.subtotal_amount, sm.discount_amount,
+       sm.tax_1_amount, sm.tax_2_amount, sm.tax_3_amount,
+       sm.round_off_adjustment, sm.amount, sm.remarks,
+       sm.quotation_id, sm.delivery_order_id`,
+    [companyId, branchId, salesId],
+  );
+  return rows[0] || null;
+}
+
 export async function listSales(pool, companyId, branchId, limit, offset) {
   const lim = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const off = Math.max(Number(offset) || 0, 0);

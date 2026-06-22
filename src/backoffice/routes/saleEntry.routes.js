@@ -8,4 +8,5 @@ export const saleEntryRouter = Router();
 saleEntryRouter.use(authMiddleware);
 saleEntryRouter.use(requireFeature('backoffice.sales'));
 saleEntryRouter.get('/', saleEntryController.listSales);
+saleEntryRouter.get('/:salesId', saleEntryController.getSaleById);
 saleEntryRouter.post('/', saleEntryController.createSale);

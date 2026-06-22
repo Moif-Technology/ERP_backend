@@ -1,6 +1,18 @@
 import { pool } from '../../config/db.js';
 import * as saleEntryService from '../services/saleEntry.service.js';
 
+export async function getSaleById(req, res) {
+  try {
+    const sale = await saleEntryService.getSale(pool, req.authStaff, req.params.salesId, req.query.branchId);
+    return res.json({ sale });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    if (err.code === '42P01') return res.status(503).json({ message: 'Sales tables not installed.' });
+    console.error(err);
+    return res.status(500).json({ message: 'Could not load sale' });
+  }
+}
+
 export async function listSales(req, res) {
   try {
     const rows = await saleEntryService.listSales(pool, req.authStaff, req.query);
