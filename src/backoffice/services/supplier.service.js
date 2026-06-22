@@ -3,6 +3,7 @@ import * as supplierRepo from '../repositories/supplier.repository.js';
 import { assertLimitAvailable } from '../../core/services/entitlement.service.js';
 import * as partyLedger from './partyLedger.service.js';
 import { nextDocNo } from '../../shared/services/docSequence.service.js';
+import { auditUserName } from '../../shared/lib/auditUser.js';
 
 function trimOrEmpty(v) {
   if (v == null) return '';
@@ -55,7 +56,7 @@ export async function updateSupplier(pool, supplierId, body, authStaff) {
   if (code.length > 25) { const err = new Error('supplierCode must be at most 25 characters'); err.status = 400; throw err; }
   const name = trimOrEmpty(body.supplierName);
   if (!name) { const err = new Error('supplierName is required'); err.status = 400; throw err; }
-  const userId = authStaff.id != null ? Number(authStaff.id) : null;
+  const userLabel = auditUserName(authStaff);
   const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
   const parentAccId = body.parentAccId ?? body.supplierParentAccId ?? null;
 
@@ -83,7 +84,7 @@ export async function updateSupplier(pool, supplierId, body, authStaff) {
       creditBalance:    numericOrZero(body.creditBalance),
       creditPeriodDays: intOrZero(body.creditPeriodDays),
       remark:           sliceOrNull(body.remark, 750),
-      modifiedBy:       userId,
+      modifiedBy: userLabel,
     });
     if (!updated) {
       const err = new Error('Supplier not found'); err.status = 404; throw err;
@@ -204,8 +205,8 @@ export async function createSupplier(pool, body, authStaff) {
     throw err;
   }
 
-  const userId = authStaff.id != null ? Number(authStaff.id) : null;
   const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
+  const userLabel = auditUserName(authStaff);
 
   return withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
@@ -249,8 +250,8 @@ export async function createSupplier(pool, body, authStaff) {
       creditPeriodDays: intOrZero(body.creditPeriodDays),
       remark:           sliceOrNull(body.remark, 750),
       recordStatus:     'ACTIVE',
-      createdBy:        userId,
-      modifiedBy:       userId,
+      createdBy: userLabel,
+      modifiedBy: userLabel,
     });
 
     let ledger = null;

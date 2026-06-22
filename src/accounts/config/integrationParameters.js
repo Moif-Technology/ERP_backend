@@ -31,7 +31,7 @@ export const INTEGRATION_PARAMETER_DEFS = [
   { key: 'purchaseDrLedgerCash', param: 'PurchaseEntryDRLedgerCash', tab: 'purchase', label: 'Purchase DR — Cash', type: 'ledger', filterPrefix: '12' },
   { key: 'purchaseDrLedgerCredit', param: 'PurchaseEntryDRLedgerCredit', tab: 'purchase', label: 'Purchase DR — Credit', type: 'ledger', filterPrefix: '12' },
   { key: 'purchaseDrLedgerOverseas', param: 'PurchaseEntryDRLedgerOverseas', tab: 'purchase', label: 'Purchase DR — Overseas', type: 'ledger', filterPrefix: '12' },
-  { key: 'purchaseDrLedgerExempted', param: 'PurchaseEntryDRLedgerExempted', tab: 'purchase', label: 'Purchase DR — Exempted', type: 'ledger', filterPrefix: '12' },
+  { key: 'purchaseDrLedgerExempted', param: 'PurchaseEntryDRLedgerExempted', tab: 'purchase', label: 'Purchase DR — Exempted / Zero-rated (0%)', type: 'ledger', filterPrefix: '12' },
   { key: 'purchaseDrDiscountLedger', param: 'PurchaseEntryDRDiscountLedger', tab: 'purchase', label: 'Purchase DR — Discount', type: 'ledger' },
   { key: 'purchaseDrRoundingLedger', param: 'PurchaseEntryDRRoundingLedger', tab: 'purchase', label: 'Purchase DR — Rounding', type: 'ledger' },
   { key: 'inputTax5', param: 'InputTax5%', tab: 'purchase', label: 'Input tax (5%)', type: 'ledger', filterPrefix: '04-02' },

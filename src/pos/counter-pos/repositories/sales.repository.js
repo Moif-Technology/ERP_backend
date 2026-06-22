@@ -358,9 +358,13 @@ export async function getHeldBillItems(pool, companyId, salesId) {
     `SELECT sc.sales_child_id, sc.product_id, sc.product_code, sc.group_id,
             sc.short_description, sc.qty, sc.unit_price, sc.discount_amount,
             sc.subtotal_amount, sc.tax_1_amount, sc.tax_1_rate, sc.line_total,
-            sc.modifier
+            sc.modifier, COALESCE(pm.description_arabic, gm.group_description_arabic) AS description_arabic
      FROM ops.sales_child sc
      JOIN ops.sales_master sm ON sm.sales_id = sc.sales_id AND sm.company_id = sc.company_id
+     LEFT JOIN core.product_master pm
+       ON pm.company_id = sc.company_id AND pm.product_id = sc.product_id
+     LEFT JOIN biz.group_master gm
+       ON gm.company_id = sc.company_id AND gm.group_id = sc.group_id
      WHERE sc.company_id = $1 AND sc.sales_id = $2
        AND sm.hold_status = 'HOLD'`,
     [companyId, salesId],
@@ -425,9 +429,13 @@ export async function getDeliveryBillItems(db, companyId, salesId) {
     `SELECT sc.sales_child_id, sc.product_id, sc.product_code, sc.group_id,
             sc.short_description, sc.qty, sc.unit_price, sc.discount_amount,
             sc.subtotal_amount, sc.tax_1_amount, sc.tax_1_rate, sc.line_total,
-            sc.modifier
+            sc.modifier, COALESCE(pm.description_arabic, gm.group_description_arabic) AS description_arabic
      FROM ops.sales_child sc
      JOIN ops.sales_master sm ON sm.sales_id = sc.sales_id AND sm.company_id = sc.company_id
+     LEFT JOIN core.product_master pm
+       ON pm.company_id = sc.company_id AND pm.product_id = sc.product_id
+     LEFT JOIN biz.group_master gm
+       ON gm.company_id = sc.company_id AND gm.group_id = sc.group_id
      WHERE sc.company_id = $1 AND sc.sales_id = $2
        AND sm.hold_status = 'DELIVERY'`,
     [companyId, salesId],
@@ -706,8 +714,13 @@ export async function getPostedBillDetail(pool, companyId, branchId, salesId) {
   const { rows: items } = await pool.query(
     `SELECT sc.sales_child_id, sc.product_id, sc.product_code,
             sc.short_description, sc.qty, sc.unit_price, sc.discount_amount,
-            sc.subtotal_amount, sc.tax_1_amount, sc.tax_1_rate, sc.line_total
+            sc.subtotal_amount, sc.tax_1_amount, sc.tax_1_rate, sc.line_total,
+            COALESCE(pm.description_arabic, gm.group_description_arabic) AS description_arabic
      FROM ops.sales_child sc
+     LEFT JOIN core.product_master pm
+       ON pm.company_id = sc.company_id AND pm.product_id = sc.product_id
+     LEFT JOIN biz.group_master gm
+       ON gm.company_id = sc.company_id AND gm.group_id = sc.group_id
      WHERE sc.company_id = $1 AND sc.sales_id = $2
      ORDER BY sc.sales_child_id`,
     [companyId, salesId],

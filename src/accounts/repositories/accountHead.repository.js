@@ -10,11 +10,24 @@ function postingAllowedSql(alias = 'a') {
     )`;
 }
 
+function mapAccountRow(r) {
+  if (!r) return r;
+  return {
+    ...r,
+    nature_of_trns_id: r.nature_of_trns_id != null ? Number(r.nature_of_trns_id) : null,
+    vat_group_id: r.vat_group_id != null ? Number(r.vat_group_id) : null,
+  };
+}
+
+const ACCOUNT_SELECT = `
+  a.account_id, a.account_no, a.account_head, a.account_type,
+  a.parent_acc_id, a.posting_allowed, a.record_status,
+  a.nature_of_trns_id, a.vat_group_id`;
+
 export async function listAccountHeads(pool, companyId, { accountNoPrefix, postingOnly } = {}) {
   const params = [companyId];
   let sql = `
- SELECT a.account_id, a.account_no, a.account_head, a.account_type,
-        a.parent_acc_id, a.posting_allowed, a.record_status
+ SELECT ${ACCOUNT_SELECT}
     FROM accounts.account_head_master a
     WHERE a.company_id = $1
     AND (
@@ -30,13 +43,12 @@ export async function listAccountHeads(pool, companyId, { accountNoPrefix, posti
   }
   sql += ' ORDER BY a.account_no ASC, a.account_id ASC';
   const { rows } = await pool.query(sql, params);
-  return rows;
+  return rows.map(mapAccountRow);
 }
 
 export async function findAccountHead(pool, companyId, accountId) {
   const { rows } = await pool.query(
-    `SELECT a.account_id, a.account_no, a.account_head, a.account_type,
-            a.parent_acc_id, a.posting_allowed, a.record_status
+    `SELECT ${ACCOUNT_SELECT}
      FROM accounts.account_head_master a
      WHERE a.company_id = $1
        AND a.account_id = $2
@@ -47,20 +59,19 @@ export async function findAccountHead(pool, companyId, accountId) {
      LIMIT 1`,
     [companyId, accountId]
   );
-  return rows[0] || null;
+  return mapAccountRow(rows[0]) || null;
 }
 
 export async function getAccountTree(pool, companyId) {
   const { rows } = await pool.query(
-    `SELECT a.account_id, a.account_no, a.account_head, a.account_type,
-            a.parent_acc_id, a.posting_allowed, a.record_status
+    `SELECT ${ACCOUNT_SELECT}
      FROM accounts.account_head_master a
      WHERE a.company_id = $1
      AND (a.record_status IS NULL OR TRIM(UPPER(a.record_status)) = 'ACTIVE')
      ORDER BY a.account_no ASC, a.account_id ASC`,
     [companyId]
   );
-  return rows;
+  return rows.map(mapAccountRow);
 }
 
 export async function nextAccountId(client, companyId) {
@@ -135,6 +146,14 @@ export async function createAccountHead(client, row) {
     cols.push('alias');
     vals.push(row.accountHead);
   }
+  if (row.natureOfTrnsId != null && row.natureOfTrnsId !== '') {
+    cols.push('nature_of_trns_id');
+    vals.push(Number(row.natureOfTrnsId) || 0);
+  }
+  if (row.vatPercentage != null && row.vatPercentage !== '') {
+    cols.push('vat_group_id');
+    vals.push(Number(row.vatPercentage));
+  }
   const placeholders = vals.map((_, i) => `$${i + 1}`).join(', ');
   await client.query(
     `INSERT INTO accounts.account_head_master (${cols.join(', ')}) VALUES (${placeholders})`,
@@ -157,6 +176,14 @@ export async function updateAccountHead(client, companyId, accountId, patch) {
   if (patch.accountType !== undefined) { sets.push(`account_type = $${idx++}`); params.push(patch.accountType); }
   if (patch.parentAccId !== undefined) { sets.push(`parent_acc_id = $${idx++}`); params.push(patch.parentAccId || null); }
   if (patch.postingAllowed !== undefined) { sets.push(`posting_allowed = $${idx++}`); params.push(patch.postingAllowed ? 1 : 0); }
+  if (patch.natureOfTrnsId !== undefined) {
+    sets.push(`nature_of_trns_id = $${idx++}`);
+    params.push(patch.natureOfTrnsId != null && patch.natureOfTrnsId !== '' ? Number(patch.natureOfTrnsId) : null);
+  }
+  if (patch.vatPercentage !== undefined) {
+    sets.push(`vat_group_id = $${idx++}`);
+    params.push(patch.vatPercentage != null && patch.vatPercentage !== '' ? Number(patch.vatPercentage) : null);
+  }
   if (sets.length === 0) return false;
   sets.push('updated_at = NOW()');
   const { rowCount } = await client.query(
@@ -187,6 +214,43 @@ export async function accountHasChildren(pool, companyId, accountId) {
     [companyId, accountId]
   );
   return rows.length > 0;
+}
+
+/** Root account plus all active descendant account_ids (recursive). */
+export async function listDescendantAccountIds(db, companyId, rootAccountId) {
+  const { rows } = await db.query(
+    `WITH RECURSIVE descendants AS (
+       SELECT account_id
+       FROM accounts.account_head_master
+       WHERE company_id = $1 AND account_id = $2
+         AND (record_status IS NULL OR TRIM(UPPER(record_status)) = 'ACTIVE')
+       UNION ALL
+       SELECT c.account_id
+       FROM accounts.account_head_master c
+       INNER JOIN descendants d ON c.parent_acc_id = d.account_id
+       WHERE c.company_id = $1
+         AND (c.record_status IS NULL OR TRIM(UPPER(c.record_status)) = 'ACTIVE')
+     )
+     SELECT account_id FROM descendants
+     ORDER BY account_id`,
+    [companyId, rootAccountId],
+  );
+  return rows.map((r) => Number(r.account_id));
+}
+
+export async function listAccountHeadsByIds(db, companyId, accountIds) {
+  const ids = (accountIds || []).map(Number).filter((id) => id > 0);
+  if (!ids.length) return [];
+  const { rows } = await db.query(
+    `SELECT ${ACCOUNT_SELECT}
+     FROM accounts.account_head_master a
+     WHERE a.company_id = $1
+       AND a.account_id = ANY($2::int[])
+       AND (a.record_status IS NULL OR TRIM(UPPER(a.record_status)) = 'ACTIVE')
+     ORDER BY a.account_no ASC, a.account_id ASC`,
+    [companyId, ids],
+  );
+  return rows.map(mapAccountRow);
 }
 
 export async function accountHasVouchers(pool, companyId, accountId) {

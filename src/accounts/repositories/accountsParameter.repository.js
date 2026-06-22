@@ -11,6 +11,7 @@ import {
   PARAMETER_READ_FALLBACKS,
 } from '../config/integrationParameters.js';
 import { CHART_ACCOUNT_IDS } from './accountsSeed.repository.js';
+import * as accountHeadRepo from './accountHead.repository.js';
 
 export const PARAM_DEFAULT_CASH_LEDGER = 'DEFAULT_CASH_LEDGER';
 export const PARAM_DEFAULT_CARD_LEDGER = 'DEFAULT_CARD_LEDGER';
@@ -107,6 +108,148 @@ async function chartAccountExists(db, companyId, accountId) {
   return rows.length > 0;
 }
 
+async function findPostingAccountUnderParent(db, companyId, parentAccountId) {
+  const { rows } = await db.query(
+    `SELECT account_id FROM accounts.account_head_master
+     WHERE company_id = $1 AND parent_acc_id = $2 AND posting_allowed = 1
+       AND (record_status IS NULL OR TRIM(UPPER(record_status)) = 'ACTIVE')
+     ORDER BY account_id ASC LIMIT 1`,
+    [companyId, parentAccountId],
+  );
+  const id = rows[0]?.account_id;
+  return id != null ? Math.trunc(Number(id)) : null;
+}
+
+async function findAccountByNo(db, companyId, accountNo) {
+  const { rows } = await db.query(
+    `SELECT account_id, posting_allowed FROM accounts.account_head_master
+     WHERE company_id = $1 AND account_no = $2
+       AND (record_status IS NULL OR TRIM(UPPER(record_status)) = 'ACTIVE')
+     LIMIT 1`,
+    [companyId, accountNo],
+  );
+  if (!rows[0]) return null;
+  if (Number(rows[0].posting_allowed) !== 1) return null;
+  return Math.trunc(Number(rows[0].account_id));
+}
+
+/** Create or reuse a posting leaf under a chart group (e.g. 12 Purchase, 19 Tax). */
+async function findOrCreatePostingLeaf(db, companyId, {
+  parentAccountId, preferredAccountNo, accountHead, balanceType = 'DR',
+}) {
+  const byNo = await findAccountByNo(db, companyId, preferredAccountNo);
+  if (byNo) return byNo;
+
+  const underParent = await findPostingAccountUnderParent(db, companyId, parentAccountId);
+  if (underParent) return underParent;
+
+  if (!(await chartAccountExists(db, companyId, parentAccountId))) return null;
+
+  const accountId = await accountHeadRepo.nextAccountId(db, companyId);
+  let accountNo = preferredAccountNo;
+  try {
+    const suggested = await accountHeadRepo.suggestNextAccountNo(db, companyId, parentAccountId);
+    if (suggested) accountNo = suggested;
+  } catch {
+    // keep preferredAccountNo
+  }
+
+  await db.query(
+    `INSERT INTO accounts.account_head_master
+       (company_id, account_id, parent_acc_id, account_no, account_head, alias,
+        account_type, group_type, level_no, display_order, account_balance_type,
+        opening_balance, account_balance, posting_allowed, station_id,
+        cr_on, cr_by, mod_on, mod_by, nature_of_trns_id, vat_group_id, record_status,
+        created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $5, 'PL', '', 2, 1, $6,
+             0, 0, 1, 10, NOW(), 'integration-seed', NOW(), 'integration-seed', 0, 0, 'ACTIVE', NOW(), NOW())`,
+    [companyId, accountId, parentAccountId, accountNo, accountHead, balanceType],
+  );
+  return accountId;
+}
+
+/** Purchase DR + input tax ledgers — required for purchase voucher on save/post. */
+async function ensurePurchaseLedgerDefaults(db, companyId, branchId) {
+  if (!(await chartAccountExists(db, companyId, CHART_ACCOUNT_IDS.PURCHASE_GROUP))) return 0;
+
+  const purchaseDrId = await findOrCreatePostingLeaf(db, companyId, {
+    parentAccountId: CHART_ACCOUNT_IDS.PURCHASE_GROUP,
+    preferredAccountNo: '12-001',
+    accountHead: 'PURCHASE ACCOUNT',
+    balanceType: 'DR',
+  });
+
+  const purchaseExemptDrId = await findOrCreatePostingLeaf(db, companyId, {
+    parentAccountId: CHART_ACCOUNT_IDS.PURCHASE_GROUP,
+    preferredAccountNo: '12-002',
+    accountHead: 'PURCHASE EXEMPT (ZERO RATED)',
+    balanceType: 'DR',
+  });
+
+  const inputTaxId = await findOrCreatePostingLeaf(db, companyId, {
+    parentAccountId: CHART_ACCOUNT_IDS.TAX_GROUP,
+    preferredAccountNo: '04-02-001',
+    accountHead: 'INPUT VAT 5%',
+    balanceType: 'DR',
+  });
+
+  let applied = 0;
+
+  if (purchaseDrId) {
+    for (const paramName of [
+      'PurchaseEntryDRLedgerCash',
+      'PurchaseEntryDRLedgerCredit',
+      'PurchaseEntryDRLedgerOverseas',
+    ]) {
+      const existing = await getParameterRow(db, companyId, branchId, paramName);
+      if (existing?.account_id != null) continue;
+      await upsertParameter(db, {
+        companyId,
+        branchId,
+        parameterName: paramName,
+        accountId: purchaseDrId,
+        numericValue: null,
+        stringValue: 'PURCHASE ACCOUNT',
+      });
+      applied += 1;
+    }
+  }
+
+  if (purchaseExemptDrId) {
+    const existingExempt = await getParameterRow(db, companyId, branchId, 'PurchaseEntryDRLedgerExempted');
+    const exemptAccId = existingExempt?.account_id != null ? Number(existingExempt.account_id) : null;
+    const sameAsTaxable = purchaseDrId != null && exemptAccId === purchaseDrId;
+    if (exemptAccId == null || sameAsTaxable) {
+      await upsertParameter(db, {
+        companyId,
+        branchId,
+        parameterName: 'PurchaseEntryDRLedgerExempted',
+        accountId: purchaseExemptDrId,
+        numericValue: null,
+        stringValue: 'PURCHASE EXEMPT (ZERO RATED)',
+      });
+      applied += 1;
+    }
+  }
+
+  if (inputTaxId) {
+    const existing = await getParameterRow(db, companyId, branchId, 'InputTax5%');
+    if (existing?.account_id == null) {
+      await upsertParameter(db, {
+        companyId,
+        branchId,
+        parameterName: 'InputTax5%',
+        accountId: inputTaxId,
+        numericValue: null,
+        stringValue: 'INPUT VAT 5%',
+      });
+      applied += 1;
+    }
+  }
+
+  return applied;
+}
+
 /** Back-fill missing branch integration rows from standard chart IDs (idempotent). */
 export async function ensureBranchIntegrationDefaults(db, companyId, branchId) {
   const hasChart = await chartAccountExists(db, companyId, CHART_ACCOUNT_IDS.DEFAULT_CASH);
@@ -168,6 +311,8 @@ export async function ensureBranchIntegrationDefaults(db, companyId, branchId) {
     });
     applied += 1;
   }
+
+  applied += await ensurePurchaseLedgerDefaults(db, companyId, branchId);
 
   return { applied };
 }

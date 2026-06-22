@@ -1,6 +1,6 @@
 import { withTransaction } from '../../config/db.js';
 import * as customerRepo from '../repositories/customer.repository.js';
-import { actorStaffPk } from '../../utils/actorStaff.js';
+import { actorStaffPk, auditUserName } from '../../utils/actorStaff.js';
 import { generateScopedAutoCode } from '../../utils/autoCode.js';
 import { assertLimitAvailable } from '../../core/services/entitlement.service.js';
 import * as partyLedger from './partyLedger.service.js';
@@ -83,7 +83,7 @@ export async function createCustomer(pool, body, authStaff) {
     throw err;
   }
 
-  const userLabel = (authStaff.staff_name || '').slice(0, 50) || 'system';
+  const userLabel = auditUserName(authStaff);
 
   const customerPrefix = sliceOrNull(body.customerPrefix, 1);
 
@@ -183,7 +183,7 @@ export async function updateCustomer(pool, customerId, body, authStaff) {
   if (code.length > 20) { const err = new Error('customerCode must be at most 20 characters'); err.status = 400; throw err; }
   const name = trimOrEmpty(body.customerName);
   if (!name) { const err = new Error('customerName is required'); err.status = 400; throw err; }
-  const userLabel = (authStaff.staff_name || '').slice(0, 50) || 'system';
+  const userLabel = auditUserName(authStaff);
   return withTransaction(async (client) => {
     const existing = await customerRepo.findCustomerById(client, companyId, id);
     if (!existing) {

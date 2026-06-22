@@ -3,6 +3,13 @@ import * as salesRepo from '../../pos/restaurant-pos/repositories/sales.reposito
 import * as branchRepo from '../../shared/repositories/branch.repository.js';
 import * as saleEntryRepo from '../repositories/saleEntry.repository.js';
 import * as accountHeadRepo from '../../accounts/repositories/accountHead.repository.js';
+import * as accountsParameterRepo from '../../accounts/repositories/accountsParameter.repository.js';
+import {
+  resolveBoSalesCrLedger,
+  resolveOutputTaxLedger,
+  resolveDiscountLedger,
+  resolveRoundingLedger,
+} from '../../accounts/lib/integrationPosting.js';
 import * as voucherRepo from '../../accounts/repositories/voucher.repository.js';
 import * as docRefRepo from '../../shared/repositories/documentReference.repository.js';
 import * as stockRepo from '../../shared/repositories/stock.repository.js';
@@ -277,16 +284,21 @@ export async function createSale(pool, body, authStaff, { salesChannel = 'ERP' }
     ? paymentModeRaw.toUpperCase().includes('CARD') ? 'CREDITCARD' : 'CREDIT'
     : 'CASH';
 
-  const receiptLedgerId = nullableLong(body.receiptLedgerId ?? body.accountHeadId);
+  let receiptLedgerId = nullableLong(body.receiptLedgerId ?? body.accountHeadId);
+  if ((paymentMode === 'CASH' || paymentMode === 'CREDITCARD') && receiptLedgerId == null) {
+    receiptLedgerId = await accountsParameterRepo.getParameterAccountId(
+      pool, companyId, branchId, paymentMode === 'CREDITCARD' ? 'DEFAULT_CARD_LEDGER' : 'DEFAULT_CASH_LEDGER',
+    );
+  }
   if (paymentMode === 'CASH' || paymentMode === 'CREDITCARD') {
     if (receiptLedgerId == null) {
-      const err = new Error('Account head (receipt ledger) is required for cash or card sales');
+      const err = new Error('Cash/card ledger not configured — set in Account Integration (Payment / Receipt tab)');
       err.status = 400;
       throw err;
     }
     const head = await accountHeadRepo.findAccountHead(pool, companyId, receiptLedgerId);
     if (!head) {
-      const err = new Error('Invalid or non-posting account head for this company');
+      const err = new Error('Invalid cash/card ledger for this company');
       err.status = 400;
       throw err;
     }
@@ -610,6 +622,16 @@ export async function createSale(pool, body, authStaff, { salesChannel = 'ERP' }
     let salesVoucherId = null;
     try {
       await client.query('SAVEPOINT voucher_save');
+      const salesCrLedgerId = (await resolveBoSalesCrLedger(client, companyId, branchId, paymentMode))
+        || receiptLedgerId;
+      const outputTaxLedgerId = sumTax > 0 ? await resolveOutputTaxLedger(client, companyId, branchId) : null;
+      const discountLedgerId = headerDisc > 0
+        ? await resolveDiscountLedger(client, companyId, branchId, 'sales')
+        : null;
+      const roundLedgerId = roundOff !== 0
+        ? await resolveRoundingLedger(client, companyId, branchId, 'sales')
+        : null;
+
       const salesVoucherTypeId = await voucherRepo.getVoucherTypeId(client, companyId, 'SalesEntryVoucherName', branchId) || 1;
       const voucherPrefix = await voucherRepo.getVoucherPrefix(client, companyId, salesVoucherTypeId) || 'SVT';
 
@@ -657,8 +679,7 @@ export async function createSale(pool, body, authStaff, { salesChannel = 'ERP' }
       }
 
       // Line 2: Sales CR Ledger — CR = subTotal
-      if (receiptLedgerId != null || customerId != null) {
-        const salesCrLedgerId = receiptLedgerId || customerId;
+      if (salesCrLedgerId != null) {
         await voucherRepo.insertVoucherDetail(client, {
           companyId,
           branchId,
@@ -676,15 +697,15 @@ export async function createSale(pool, body, authStaff, { salesChannel = 'ERP' }
       }
 
       // Line 3: Discount DR (if any)
-      if (headerDisc > 0 && receiptLedgerId != null) {
+      if (headerDisc > 0 && discountLedgerId) {
         await voucherRepo.insertVoucherDetail(client, {
           companyId,
           branchId,
           voucherDetailId: detailSeq++,
           voucherMasterId: vMasterId,
-          accountId: receiptLedgerId,
-          creditAmount: headerDisc,
-          debitAmount: 0,
+          accountId: discountLedgerId,
+          creditAmount: 0,
+          debitAmount: headerDisc,
           outstandingBalance: 0,
           narration: `Discount SVT: ${billNo}`,
           postStatus: 'PENDING',
@@ -693,14 +714,29 @@ export async function createSale(pool, body, authStaff, { salesChannel = 'ERP' }
         });
       }
 
-      // Line 4: Tax CR (if any)
-      if (sumTax > 0 && receiptLedgerId != null) {
+      if (sumTax > 0 && outputTaxLedgerId) {
         await voucherRepo.insertVoucherDetail(client, {
           companyId,
           branchId,
           voucherDetailId: detailSeq++,
           voucherMasterId: vMasterId,
-          accountId: receiptLedgerId,
+          accountId: outputTaxLedgerId,
+          creditAmount: sumTax,
+          debitAmount: 0,
+          outstandingBalance: 0,
+          narration: `Tax SVT: ${billNo}`,
+          postStatus: 'PENDING',
+          recordStatus: 'ACTIVE',
+          createdBy: auditBy,
+        });
+      } else if (sumTax > 0 && salesCrLedgerId) {
+        privilegeWarnings.push('Output tax ledger not configured — tax credited to sales ledger');
+        await voucherRepo.insertVoucherDetail(client, {
+          companyId,
+          branchId,
+          voucherDetailId: detailSeq++,
+          voucherMasterId: vMasterId,
+          accountId: salesCrLedgerId,
           creditAmount: sumTax,
           debitAmount: 0,
           outstandingBalance: 0,
@@ -712,13 +748,13 @@ export async function createSale(pool, body, authStaff, { salesChannel = 'ERP' }
       }
 
       // Line 5: Round-off (if any)
-      if (roundOff !== 0 && receiptLedgerId != null) {
+      if (roundOff !== 0 && roundLedgerId) {
         await voucherRepo.insertVoucherDetail(client, {
           companyId,
           branchId,
           voucherDetailId: detailSeq++,
           voucherMasterId: vMasterId,
-          accountId: receiptLedgerId,
+          accountId: roundLedgerId,
           creditAmount: roundOff > 0 ? roundOff : 0,
           debitAmount: roundOff < 0 ? Math.abs(roundOff) : 0,
           outstandingBalance: 0,
