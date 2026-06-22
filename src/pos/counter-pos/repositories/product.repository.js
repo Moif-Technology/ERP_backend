@@ -8,6 +8,7 @@ function mapProduct(row) {
     productCode: row.product_code,
     barcode:     row.barcode ?? null,
     productName: row.product_name,
+    descriptionArabic: row.description_arabic ?? null,
     shortName:   row.short_name ?? null,
     unitName:    row.unit_name  ?? null,
     groupId:     row.group_id   != null ? Number(row.group_id)   : null,
@@ -36,7 +37,7 @@ export async function searchProduct(pool, companyId, branchId, { barcode = null,
 
   const { rows } = await pool.query(
     `SELECT m.product_id, m.product_code, m.barcode, m.product_name, m.short_name,
-            m.unit_name, m.group_id, m.subgroup_id,
+            m.description_arabic, m.unit_name, m.group_id, m.subgroup_id,
             i.unit_price, i.minimum_retail_price, i.maximum_retail_price,
             i.qty_on_hand, i.output_tax_1_rate
      FROM core.product_master m
@@ -84,7 +85,7 @@ export async function lookupProducts(pool, companyId, branchId, { q = '', maxPri
 
   const { rows } = await pool.query(
     `SELECT m.product_id, m.product_code, m.barcode, m.product_name, m.short_name,
-            m.unit_name, m.group_id, m.subgroup_id,
+            m.description_arabic, m.unit_name, m.group_id, m.subgroup_id,
             i.unit_price, i.minimum_retail_price, i.maximum_retail_price,
             i.qty_on_hand, i.output_tax_1_rate
      FROM core.product_master m

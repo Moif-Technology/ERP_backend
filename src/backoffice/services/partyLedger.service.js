@@ -204,3 +204,24 @@ export async function ensureCustomerLedgerForId(client, companyId, branchId, cus
   });
   return accountId;
 }
+
+/** Back-office purchase: ensure ledger exists for supplier_id (loads code/name from DB). */
+export async function ensureSupplierLedgerForId(client, companyId, branchId, supplierId) {
+  const { rows } = await client.query(
+    `SELECT supplier_code, supplier_name
+       FROM biz.supplier_master
+      WHERE company_id = $1 AND supplier_id = $2
+      LIMIT 1`,
+    [companyId, supplierId],
+  );
+  const sup = rows[0];
+  if (!sup) return null;
+
+  const { accountId } = await syncSupplierLedger(client, {
+    companyId,
+    branchId,
+    supplierCode: sup.supplier_code,
+    supplierName: sup.supplier_name,
+  });
+  return accountId;
+}

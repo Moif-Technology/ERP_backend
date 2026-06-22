@@ -41,8 +41,14 @@ export async function createSupplier(req, res) {
     if (err.code === '42P01') {
       return res.status(503).json({ message: 'Supplier table not installed. Run database migrations.' });
     }
+    if (err.code === '22P02') {
+      return res.status(400).json({ message: err.message || 'Invalid supplier data' });
+    }
     console.error(err);
-    return res.status(500).json({ message: 'Could not create supplier' });
+    const detail = err.message && !err.status ? err.message : null;
+    return res.status(500).json({
+      message: detail && detail.length < 200 ? detail : 'Could not create supplier',
+    });
   }
 }
 

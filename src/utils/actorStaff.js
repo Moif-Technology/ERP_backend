@@ -1,3 +1,7 @@
+import { auditUserName } from '../shared/lib/auditUser.js';
+
+export { auditUserName };
+
 /**
  * core.staff_master primary key for the logged-in row (JWT access token `sub`).
  */

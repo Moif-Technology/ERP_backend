@@ -1,6 +1,7 @@
 import * as branchRepo from '../../shared/repositories/branch.repository.js';
 import * as accountHeadRepo from '../repositories/accountHead.repository.js';
 import * as accountsParameterRepo from '../repositories/accountsParameter.repository.js';
+import { findOrSeedVatNature } from './vatNature.service.js';
 import { replaceStandardChart } from '../repositories/accountsSeed.repository.js';
 import { withTransaction } from '../../config/db.js';
 
@@ -22,7 +23,37 @@ function mapRow(r) {
     accountType: r.account_type || null,
     parentAccId: r.parent_acc_id ? Number(r.parent_acc_id) : null,
     postingAllowed: Boolean(Number(r.posting_allowed) === 1 || r.posting_allowed === true),
+    natureOfTrnsId: r.nature_of_trns_id != null ? Number(r.nature_of_trns_id) : null,
+    vatPercentage: r.vat_group_id != null ? Number(r.vat_group_id) : null,
   };
+}
+
+function parseVatPercentage(raw) {
+  if (raw == null || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 50) {
+    const err = new Error('vatPercentage must be between 0 and 50');
+    err.status = 400;
+    throw err;
+  }
+  return Math.trunc(n);
+}
+
+async function validateNatureId(pool, companyId, natureId) {
+  if (natureId == null || natureId === '') return null;
+  const id = Number(natureId);
+  if (!Number.isFinite(id) || id < 1) {
+    const err = new Error('Invalid natureOfTrnsId');
+    err.status = 400;
+    throw err;
+  }
+  const row = await findOrSeedVatNature(pool, companyId, id);
+  if (!row) {
+    const err = new Error('Nature of transaction not found');
+    err.status = 400;
+    throw err;
+  }
+  return id;
 }
 
 export async function listAccountHeads(pool, authStaff, query) {
@@ -129,6 +160,8 @@ export async function createAccountHead(pool, authStaff, body) {
     }
 
     const accountId = await accountHeadRepo.nextAccountId(client, companyId);
+    const natureOfTrnsId = await validateNatureId(client, companyId, body.natureOfTrnsId);
+    const vatPercentage = parseVatPercentage(body.vatPercentage);
     await accountHeadRepo.createAccountHead(client, {
       companyId,
       accountId,
@@ -137,6 +170,8 @@ export async function createAccountHead(pool, authStaff, body) {
       accountHead: String(accountHead).trim(),
       accountType: accountType || null,
       postingAllowed: postingAllowed !== false,
+      natureOfTrnsId,
+      vatPercentage,
     });
     return {
       accountId,
@@ -145,6 +180,8 @@ export async function createAccountHead(pool, authStaff, body) {
       accountType,
       parentAccId: pid,
       postingAllowed: postingAllowed !== false,
+      natureOfTrnsId,
+      vatPercentage,
     };
   });
 }
@@ -188,6 +225,16 @@ export async function updateAccountHead(pool, authStaff, accountId, body) {
     patch.parentAccId = body.parentAccId != null && body.parentAccId !== '' ? Number(body.parentAccId) : null;
   }
   if (body.postingAllowed !== undefined) patch.postingAllowed = body.postingAllowed !== false;
+  if (body.natureOfTrnsId !== undefined) {
+    patch.natureOfTrnsId = body.natureOfTrnsId === '' || body.natureOfTrnsId == null
+      ? null
+      : await validateNatureId(pool, companyId, body.natureOfTrnsId);
+  }
+  if (body.vatPercentage !== undefined) {
+    patch.vatPercentage = body.vatPercentage === '' || body.vatPercentage == null
+      ? null
+      : parseVatPercentage(body.vatPercentage);
+  }
 
   if (patch.accountNo === '') {
     const err = new Error('accountNo cannot be empty');

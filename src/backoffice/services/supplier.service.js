@@ -2,6 +2,7 @@ import { withTransaction } from '../../config/db.js';
 import * as supplierRepo from '../repositories/supplier.repository.js';
 import { assertLimitAvailable } from '../../core/services/entitlement.service.js';
 import * as partyLedger from './partyLedger.service.js';
+import { auditUserName } from '../../shared/lib/auditUser.js';
 
 function trimOrEmpty(v) {
   if (v == null) return '';
@@ -28,7 +29,7 @@ export async function updateSupplier(pool, supplierId, body, authStaff) {
   if (code.length > 25) { const err = new Error('supplierCode must be at most 25 characters'); err.status = 400; throw err; }
   const name = trimOrEmpty(body.supplierName);
   if (!name) { const err = new Error('supplierName is required'); err.status = 400; throw err; }
-  const userLabel = (authStaff.staff_name || '').slice(0, 50) || 'system';
+  const userLabel = auditUserName(authStaff);
   const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
   const parentAccId = body.parentAccId ?? body.supplierParentAccId ?? null;
 
@@ -43,6 +44,7 @@ export async function updateSupplier(pool, supplierId, body, authStaff) {
       supplierName: name.slice(0, 200),
       mobileNo: sliceOrNull(body.mobileNo, 25),
       email: sliceOrNull(body.email, 75),
+      paymentMode: sliceOrNull(body.paymentMode, 50),
       modifiedBy: userLabel,
     });
     if (!updated) {
@@ -168,7 +170,7 @@ export async function createSupplier(pool, body, authStaff) {
     throw err;
   }
 
-  const userLabel = (authStaff.staff_name || '').slice(0, 50) || 'system';
+  const userLabel = auditUserName(authStaff);
 
   return withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
@@ -191,6 +193,7 @@ export async function createSupplier(pool, body, authStaff) {
       supplierName: name.slice(0, 200),
       mobileNo: sliceOrNull(body.mobileNo, 25),
       email: sliceOrNull(body.email, 75),
+      paymentMode: sliceOrNull(body.paymentMode, 50),
       recordStatus: 'ACTIVE',
       createdBy: userLabel,
       modifiedBy: userLabel,

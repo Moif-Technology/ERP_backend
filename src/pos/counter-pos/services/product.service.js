@@ -38,6 +38,7 @@ function mapPosProduct(p, fallbackBarcode = '') {
     productCode: p.productCode,
     barcode:     p.barcode ?? fallbackBarcode,
     description: p.productName,
+    descriptionArabic: p.descriptionArabic ?? null,
     shortName:   p.shortName ?? null,
     unitName:    p.unitName  ?? null,
     groupId:     p.groupId   ?? null,

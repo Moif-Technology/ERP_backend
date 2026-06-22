@@ -177,6 +177,45 @@ async function loadVoucherDetails(pool, companyId, branchId, masterRow) {
   return { master: masterRow, details: dRows };
 }
 
+export async function listVouchersByPostedId(pool, companyId, branchId, postedId, creationMode = 'INVENTORYACCOUNTS') {
+  const { rows: mRows } = await pool.query(
+    `SELECT vm.*, vt.voucher_name, vt.voucher_type_code
+     FROM accounts.voucher_master vm
+     LEFT JOIN accounts.voucher_type_master vt
+       ON vt.company_id = vm.company_id AND vt.voucher_type_id = vm.voucher_type_id
+     WHERE vm.company_id = $1 AND vm.branch_id = $2 AND vm.voucher_posted_id = $3
+       AND vm.creation_mode = $4 AND vm.record_status = 'ACTIVE'
+     ORDER BY vm.voucher_master_id ASC`,
+    [companyId, branchId, postedId, creationMode],
+  );
+  const out = [];
+  for (const masterRow of mRows) {
+    out.push(await loadVoucherDetails(pool, companyId, branchId, masterRow));
+  }
+  return out;
+}
+
+export async function updateVoucherMaster(client, companyId, branchId, voucherMasterId, fields = {}) {
+  await client.query(
+    `UPDATE accounts.voucher_master
+     SET voucher_date = COALESCE($4, voucher_date),
+         reference_no = COALESCE($5, reference_no),
+         voucher_amount = COALESCE($6, voucher_amount),
+         remarks = COALESCE($7, remarks),
+         modified_at = NOW()
+     WHERE company_id = $1 AND branch_id = $2 AND voucher_master_id = $3`,
+    [
+      companyId,
+      branchId,
+      voucherMasterId,
+      fields.voucherDate ?? null,
+      fields.referenceNo ?? null,
+      fields.voucherAmount ?? null,
+      fields.remarks ?? null,
+    ],
+  );
+}
+
 export async function updateVoucherPostStatus(client, companyId, branchId, voucherMasterId, postStatus) {
   await client.query(
     `UPDATE accounts.voucher_master SET post_status = $4, modified_at = NOW()
@@ -225,9 +264,16 @@ export async function listVoucherTypes(pool, companyId) {
 
 /* ──────────── ledger view (transactions for one account) ──────────── */
 
-export async function getLedgerTransactions(pool, companyId, accountId, { branchId, dateFrom, dateTo, page = 1, pageSize = 30 } = {}) {
-  const params = [companyId, accountId];
-  let where = 'vd.company_id = $1 AND vd.account_id = $2 AND vd.record_status = \'ACTIVE\'';
+export async function getLedgerTransactions(pool, companyId, accountIds, { branchId, dateFrom, dateTo, page = 1, pageSize = 30 } = {}) {
+  const ids = (Array.isArray(accountIds) ? accountIds : [accountIds])
+    .map(Number)
+    .filter((id) => id > 0);
+  if (!ids.length) {
+    return { total: 0, page: Math.max(1, page), pageSize, openDebit: 0, openCredit: 0, rows: [] };
+  }
+
+  const params = [companyId, ids];
+  let where = 'vd.company_id = $1 AND vd.account_id = ANY($2::int[]) AND vd.record_status = \'ACTIVE\'';
   if (branchId) {
     params.push(branchId);
     where += ` AND vd.branch_id = $${params.length}`;
@@ -244,8 +290,8 @@ export async function getLedgerTransactions(pool, companyId, accountId, { branch
   let openDebit = 0;
   let openCredit = 0;
   if (dateFrom) {
-    const openParams = [companyId, accountId];
-    let openWhere = 'vd.company_id = $1 AND vd.account_id = $2 AND vd.record_status = \'ACTIVE\'';
+    const openParams = [companyId, ids];
+    let openWhere = 'vd.company_id = $1 AND vd.account_id = ANY($2::int[]) AND vd.record_status = \'ACTIVE\'';
     if (branchId) {
       openParams.push(branchId);
       openWhere += ` AND vd.branch_id = $${openParams.length}`;
@@ -276,15 +322,19 @@ export async function getLedgerTransactions(pool, companyId, accountId, { branch
   const offset = (Math.max(1, page) - 1) * pageSize;
   params.push(pageSize, offset);
   const dataSql = `
-    SELECT vd.voucher_detail_id, vd.voucher_master_id, vd.debit_amount, vd.credit_amount,
+    SELECT vd.voucher_detail_id, vd.voucher_master_id, vd.account_id,
+           vd.debit_amount, vd.credit_amount,
            vd.narration, vm.voucher_date, vm.auto_voucher_no, vm.voucher_prefix,
            vm.reference_no, vm.post_status, vt.voucher_name, vt.voucher_type_code,
-           vm.branch_id
+           vm.branch_id,
+           ah.account_no, ah.account_head
     FROM accounts.voucher_detail vd
     JOIN accounts.voucher_master vm
       ON vm.company_id = vd.company_id AND vm.branch_id = vd.branch_id AND vm.voucher_master_id = vd.voucher_master_id
     LEFT JOIN accounts.voucher_type_master vt
       ON vt.company_id = vm.company_id AND vt.voucher_type_id = vm.voucher_type_id
+    LEFT JOIN accounts.account_head_master ah
+      ON ah.company_id = vd.company_id AND ah.account_id = vd.account_id
     WHERE ${where} AND vm.record_status = 'ACTIVE'
     ORDER BY vm.voucher_date ASC, vd.voucher_detail_id ASC
     LIMIT $${params.length - 1} OFFSET $${params.length}`;

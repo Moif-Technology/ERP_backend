@@ -39,10 +39,26 @@ export const CHART_ACCOUNT_IDS = {
   DEBTORS_GROUP: 17,
   CREDITORS_GROUP: 18,
   SALES_GROUP: 13,
+  PURCHASE_GROUP: 12,
+  TAX_GROUP: 19,
   DEFAULT_CASH: 20,
   DEFAULT_BANK: 21,
   DEFAULT_SALES: 22,
 };
+
+/** Legacy VATNatureTable — 10 standard nature-of-transaction rows per company. */
+export const STANDARD_VAT_NATURES = [
+  [1, 'Domestic Taxable Purchase', 'Purchase'],
+  [2, 'Domestic NonTaxable Purchase', 'Purchase'],
+  [3, 'Domestic Taxable Sale', 'Sales'],
+  [4, 'Domestic NonTaxable Sale', 'Sales'],
+  [5, 'Input Vat', 'VatIN'],
+  [6, 'OutPut Vat', 'VatOUT'],
+  [7, 'Discount Vat IN', 'VatINDiscount'],
+  [8, 'Discount Vat OUT', 'VatOUTDiscount'],
+  [9, 'Input Vat Expenses', 'VatIN'],
+  [10, 'OutPut Vat Income', 'VatOUT'],
+];
 
 const DEFAULT_VOUCHER_TYPES = [
   [1, 'SV', 'Sales Voucher', 'SV-'],
@@ -137,11 +153,28 @@ async function seedVoucherTypes(client, companyId, actor) {
   }
 }
 
+export async function seedVatNatures(client, companyId, actor = 'seed') {
+  for (const [vatNatureId, vatNatureName, vatNatureType] of STANDARD_VAT_NATURES) {
+    await client.query(
+      `INSERT INTO accounts.vat_nature_master (
+         company_id, vat_nature_id, vat_nature_name, vat_nature_type, record_status
+       ) VALUES ($1, $2, $3, $4, 'ACTIVE')
+       ON CONFLICT (company_id, vat_nature_id)
+       DO UPDATE SET
+         vat_nature_name = EXCLUDED.vat_nature_name,
+         vat_nature_type = EXCLUDED.vat_nature_type,
+         record_status = 'ACTIVE'`,
+      [companyId, vatNatureId, vatNatureName, vatNatureType],
+    );
+  }
+}
+
 async function insertStandardChart(client, companyId, actor) {
   for (const row of STANDARD_CHART_ACCOUNTS) {
     await insertChartAccount(client, companyId, row, actor);
   }
   await seedVoucherTypes(client, companyId, actor);
+  await seedVatNatures(client, companyId, actor);
 }
 
 export async function replaceStandardChart(client, { companyId, branchId, actor = 'chart-replace' }) {
@@ -197,6 +230,7 @@ export async function seedDefaultTenantAccounts(client, { companyId, branchId, a
   }
 
   await seedVoucherTypes(client, companyId, actor);
+  await seedVatNatures(client, companyId, actor);
   await upsertBranchParameters(client, companyId, branchId);
 }
 

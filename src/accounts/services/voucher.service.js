@@ -1,6 +1,11 @@
 import * as voucherRepo from '../repositories/voucher.repository.js';
 import * as accountHeadRepo from '../repositories/accountHead.repository.js';
 import { withTransaction } from '../../config/db.js';
+import {
+  isInventoryPurchasePaymentVoucher,
+  resolvePurchasePaymentVoucherTypeIds,
+  tryRestorePurchaseOutstandingForVoucher,
+} from '../../backoffice/lib/purchasePaymentOutstanding.js';
 
 function resolveCompanyBranch(authStaff, body) {
   const companyId = Number(authStaff.company_id);
@@ -265,9 +270,20 @@ export async function unpostVoucher(pool, authStaff, voucherMasterId) {
     err.status = 404;
     throw err;
   }
+  const existing = await voucherRepo.getVoucherWithDetails(pool, companyId, branchId, voucherMasterId);
+  if (!existing) {
+    const err = new Error('Voucher not found');
+    err.status = 404;
+    throw err;
+  }
   return withTransaction(async (client) => {
+    let purchaseOutstandingRestored = false;
+    const restore = await tryRestorePurchaseOutstandingForVoucher(
+      client, companyId, branchId, existing.master, existing.details,
+    );
+    purchaseOutstandingRestored = Boolean(restore.restored);
     await voucherRepo.updateVoucherPostStatus(client, companyId, branchId, voucherMasterId, 'PENDING');
-    return { voucherMasterId, postStatus: 'PENDING' };
+    return { voucherMasterId, postStatus: 'PENDING', purchaseOutstandingRestored };
   });
 }
 
@@ -285,14 +301,26 @@ export async function deleteVoucher(pool, authStaff, voucherMasterId) {
     err.status = 404;
     throw err;
   }
-  if (existing.master.post_status === 'POSTED') {
+
+  const { paymentVoucherTypeId } = await resolvePurchasePaymentVoucherTypeIds(pool, companyId, branchId);
+  const isPurchasePayment = isInventoryPurchasePaymentVoucher(existing.master, paymentVoucherTypeId);
+
+  if (existing.master.post_status === 'POSTED' && !isPurchasePayment) {
     const err = new Error('Cannot delete a posted voucher. Unpost first.');
     err.status = 409;
     throw err;
   }
+
   return withTransaction(async (client) => {
+    let purchaseOutstandingRestored = false;
+    if (isPurchasePayment) {
+      const restore = await tryRestorePurchaseOutstandingForVoucher(
+        client, companyId, branchId, existing.master, existing.details,
+      );
+      purchaseOutstandingRestored = Boolean(restore.restored);
+    }
     await voucherRepo.softDeleteVoucher(client, companyId, branchId, voucherMasterId);
-    return { deleted: true };
+    return { deleted: true, purchaseOutstandingRestored };
   });
 }
 
@@ -317,12 +345,19 @@ export async function getLedgerTransactions(pool, authStaff, accountId, query) {
     err.status = 404;
     throw err;
   }
-  const data = await voucherRepo.getLedgerTransactions(pool, companyId, accountId, {
+
+  const accountIds = await accountHeadRepo.listDescendantAccountIds(pool, companyId, accountId);
+  const childIds = accountIds.filter((id) => id !== accountId);
+  const childHeads = childIds.length
+    ? await accountHeadRepo.listAccountHeadsByIds(pool, companyId, childIds)
+    : [];
+
+  const data = await voucherRepo.getLedgerTransactions(pool, companyId, accountIds, {
     branchId: parseOptionalBranchId(query.branchId),
     dateFrom: query.dateFrom || undefined,
     dateTo: query.dateTo || undefined,
     page: query.page ? Number(query.page) : 1,
-    pageSize: query.pageSize ? Math.min(Number(query.pageSize), 100) : 30,
+    pageSize: query.pageSize ? Math.min(Number(query.pageSize), 500) : 30,
   });
   return {
     account: {
@@ -330,6 +365,13 @@ export async function getLedgerTransactions(pool, authStaff, accountId, query) {
       accountNo: account.account_no,
       accountHead: account.account_head,
     },
+    includeChildren: childIds.length > 0,
+    childAccounts: childHeads.map((h) => ({
+      accountId: Number(h.account_id),
+      accountNo: h.account_no,
+      accountHead: h.account_head,
+    })),
+    accountScopeIds: accountIds,
     ...data,
   };
 }

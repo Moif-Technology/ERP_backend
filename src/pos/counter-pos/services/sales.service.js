@@ -719,6 +719,7 @@ export async function getSalesViewerBill(authStaff, salesId) {
       productId:     it.product_id != null ? Number(it.product_id) : null,
       productCode:   it.product_code ?? '',
       description:   it.short_description ?? '',
+      descriptionArabic: it.description_arabic ?? null,
       qty:           Number(it.qty),
       unitPrice:     Number(it.unit_price),
       discount:      Number(it.discount_amount),
