@@ -49,6 +49,34 @@ export async function resolvePurchaseReturnRoundingLedger(client, companyId, bra
   return resolveRoundingLedger(client, companyId, branchId, 'purchase');
 }
 
+export async function resolveSalesReturnCrLedger(client, companyId, branchId, paymentMode, { taxable = true } = {}) {
+  if (!taxable) {
+    let exId = await getIntegrationAccountId(client, companyId, branchId, 'SalesReturnCRLedgerExempted');
+    if (exId) return exId;
+    return resolveBoSalesCrExemptLedger(client, companyId, branchId);
+  }
+  const mode = String(paymentMode || 'CASH').toUpperCase();
+  let param = 'SalesReturnCRLedgerCash';
+  if (mode.includes('CARD')) param = 'SalesReturnCRLedgerCreditCard';
+  else if (mode.includes('CREDIT') && !mode.includes('CARD')) param = 'SalesReturnCRLedgerCredit';
+  else if (mode.includes('OVERSEAS')) param = 'SalesReturnCRLedgerOverseas';
+  const id = await getIntegrationAccountId(client, companyId, branchId, param);
+  if (id) return id;
+  return resolveBoSalesCrLedger(client, companyId, branchId, paymentMode);
+}
+
+export async function resolveSalesReturnDiscountLedger(client, companyId, branchId) {
+  const id = await getIntegrationAccountId(client, companyId, branchId, 'SalesReturnCRDiscountLedger');
+  if (id) return id;
+  return resolveDiscountLedger(client, companyId, branchId, 'sales');
+}
+
+export async function resolveSalesReturnRoundingLedger(client, companyId, branchId) {
+  const id = await getIntegrationAccountId(client, companyId, branchId, 'SalesReturnCRRoundingLedger');
+  if (id) return id;
+  return resolveRoundingLedger(client, companyId, branchId, 'sales');
+}
+
 export async function resolveBoSalesCrLedger(client, companyId, branchId, paymentMode) {
   const mode = String(paymentMode || 'CASH').toUpperCase();
   let param = 'BOSalesCRLedgerCash';
@@ -56,6 +84,10 @@ export async function resolveBoSalesCrLedger(client, companyId, branchId, paymen
   else if (mode.includes('CREDIT')) param = 'BOSalesCRLedgerCredit';
   else if (mode.includes('OVERSEAS')) param = 'BOSalesCRLedgerOverseas';
   return getIntegrationAccountId(client, companyId, branchId, param);
+}
+
+export async function resolveBoSalesCrExemptLedger(client, companyId, branchId) {
+  return getIntegrationAccountId(client, companyId, branchId, 'BOSalesCRCounterExempted');
 }
 
 export async function resolveInputTaxLedger(client, companyId, branchId) {
@@ -89,8 +121,12 @@ export function splitTaxableSubtotals(lines) {
   for (const L of lines) {
     const sub = round2(L.subtotalAmount ?? L.subtotal_amount ?? 0);
     if (Math.abs(sub) <= 0.0001) continue;
-    const rate = Number(L.inputTax1Rate ?? L.input_tax_1_rate ?? L.vatPct ?? L.taxPercent ?? 0);
-    const taxAmt = Number(L.inputTax1Amount ?? L.input_tax_1_amount ?? L.vatAmt ?? L.taxAmt ?? 0);
+    const rate = Number(
+      L.inputTax1Rate ?? L.input_tax_1_rate ?? L.tax1Rate ?? L.vatPct ?? L.taxPercent ?? 0,
+    );
+    const taxAmt = Number(
+      L.inputTax1Amount ?? L.input_tax_1_amount ?? L.tax1Amount ?? L.vatAmt ?? L.taxAmt ?? 0,
+    );
     const isTaxable = rate > 0.001 || Math.abs(taxAmt) > 0.001;
     if (isTaxable) taxable += sub;
     else exempt += sub;

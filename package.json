@@ -15,6 +15,8 @@
     "migrate:purchase-return": "node scripts/run-077-migration.mjs",
     "migrate:purchase-return-constraints": "node scripts/run-078-migration.mjs",
     "migrate:purchase-return-numbering": "node scripts/run-079-migration.mjs",
+    "migrate:sales-crby": "node scripts/run-086-sales-crby-migration.mjs",
+    "migrate:transaction-expense-crby": "node scripts/run-087-transaction-expense-crby.mjs",
     "seed:platform-admin": "node scripts/seed-platform-admin.mjs",
     "seed:test-tenants": "node scripts/seed-test-tenants.mjs",
     "test:accounts-schema": "node scripts/verify-accounts-schema.mjs",

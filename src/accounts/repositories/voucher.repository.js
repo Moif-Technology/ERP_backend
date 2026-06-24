@@ -119,10 +119,26 @@ export async function listVouchers(pool, companyId, { branchId, voucherTypeId, p
     SELECT vm.voucher_master_id, vm.voucher_type_id, vm.auto_voucher_no,
            vm.voucher_prefix, vm.voucher_date, vm.reference_no, vm.voucher_amount,
            vm.remarks, vm.post_status, vm.creation_mode, vm.branch_id,
-           vt.voucher_name, vt.voucher_type_code
+           vt.voucher_name, vt.voucher_type_code,
+           cm.customer_name, cm.customer_code
     FROM accounts.voucher_master vm
     LEFT JOIN accounts.voucher_type_master vt
       ON vt.company_id = vm.company_id AND vt.voucher_type_id = vm.voucher_type_id
+    LEFT JOIN LATERAL (
+      SELECT ctm.customer_id
+      FROM accounts.cash_transaction_master ctm
+      WHERE ctm.company_id = vm.company_id
+        AND (
+          ctm.voucher_master_id = vm.voucher_master_id
+          OR (vm.voucher_posted_id IS NOT NULL AND ctm.transaction_id = vm.voucher_posted_id)
+        )
+      ORDER BY
+        CASE WHEN ctm.voucher_master_id = vm.voucher_master_id THEN 0 ELSE 1 END,
+        ctm.transaction_id DESC
+      LIMIT 1
+    ) ctm_pick ON TRUE
+    LEFT JOIN biz.customer_master cm
+      ON cm.company_id = vm.company_id AND cm.customer_id = ctm_pick.customer_id
     WHERE ${where}
     ORDER BY vm.voucher_date DESC, vm.voucher_master_id DESC
     LIMIT $${params.length - 1} OFFSET $${params.length}`;
@@ -403,7 +419,12 @@ export async function getAgingSummary(pool, companyId, { branchId, summaryType, 
     )`;
   }
 
-  const havingClause = summaryType === 'payable'
+  const isPayable = summaryType === 'payable';
+  const outstandingExpr = isPayable
+    ? 'GREATEST(COALESCE(NULLIF(vd.outstanding_balance, 0), vd.credit_amount - vd.debit_amount), 0)'
+    : 'GREATEST(COALESCE(NULLIF(vd.outstanding_balance, 0), vd.debit_amount - vd.credit_amount), 0)';
+
+  const havingClause = isPayable
     ? 'HAVING SUM(vd.credit_amount) - SUM(vd.debit_amount) > 0.01'
     : 'HAVING SUM(vd.debit_amount) - SUM(vd.credit_amount) > 0.01';
 
@@ -416,16 +437,16 @@ export async function getAgingSummary(pool, companyId, { branchId, summaryType, 
       COUNT(DISTINCT vm.voucher_master_id)::int AS bill_count,
       COALESCE(SUM(vd.debit_amount), 0)::numeric  AS total_debit,
       COALESCE(SUM(vd.credit_amount), 0)::numeric AS total_credit,
-      ABS(COALESCE(SUM(vd.debit_amount), 0) - COALESCE(SUM(vd.credit_amount), 0))::numeric AS outstanding,
+      COALESCE(SUM(${outstandingExpr}), 0)::numeric AS outstanding,
       MAX(vm.voucher_date) AS last_bill_date,
       COALESCE(SUM(CASE WHEN NOW()::date - vm.voucher_date::date <= 30
-        THEN ABS(vd.debit_amount - vd.credit_amount) ELSE 0 END), 0)::numeric AS age_0_30,
+        THEN ${outstandingExpr} ELSE 0 END), 0)::numeric AS age_0_30,
       COALESCE(SUM(CASE WHEN NOW()::date - vm.voucher_date::date BETWEEN 31 AND 60
-        THEN ABS(vd.debit_amount - vd.credit_amount) ELSE 0 END), 0)::numeric AS age_30_60,
+        THEN ${outstandingExpr} ELSE 0 END), 0)::numeric AS age_30_60,
       COALESCE(SUM(CASE WHEN NOW()::date - vm.voucher_date::date BETWEEN 61 AND 120
-        THEN ABS(vd.debit_amount - vd.credit_amount) ELSE 0 END), 0)::numeric AS age_60_120,
+        THEN ${outstandingExpr} ELSE 0 END), 0)::numeric AS age_60_120,
       COALESCE(SUM(CASE WHEN NOW()::date - vm.voucher_date::date > 120
-        THEN ABS(vd.debit_amount - vd.credit_amount) ELSE 0 END), 0)::numeric AS age_120_plus
+        THEN ${outstandingExpr} ELSE 0 END), 0)::numeric AS age_120_plus
     FROM accounts.voucher_detail vd
     JOIN accounts.voucher_master vm
       ON vm.company_id = vd.company_id AND vm.branch_id = vd.branch_id AND vm.voucher_master_id = vd.voucher_master_id
@@ -435,6 +456,89 @@ export async function getAgingSummary(pool, companyId, { branchId, summaryType, 
     GROUP BY ah.account_id, ah.account_no, ah.account_head, ah.account_type
     ${havingClause}
     ORDER BY outstanding DESC`;
+  const { rows } = await pool.query(sql, params);
+  return rows;
+}
+
+/** PDC allocations apply to sales bills (bill_id = sales_id), not receipt vouchers. */
+const PDC_BILL_LINK_SQL = `
+  (
+    (
+      UPPER(COALESCE(vm.creation_mode, '')) = 'INVENTORYACCOUNTS'
+      AND vm.voucher_posted_id IS NOT NULL
+      AND ctc.bill_id = vm.voucher_posted_id
+    )
+    OR (
+      vm.voucher_posted_id IS NULL
+      AND ctc.bill_id = (-vm.voucher_master_id)::bigint
+    )
+  )`;
+
+const PDC_PENDING_SUBQUERY = `
+  COALESCE((
+    SELECT SUM(ctc.paid_amount)::numeric
+    FROM accounts.cash_transaction_child ctc
+    INNER JOIN accounts.cash_transaction_master ctm
+      ON ctm.company_id = ctc.company_id AND ctm.transaction_id = ctc.transaction_id
+    WHERE ctc.company_id = vd.company_id
+      AND COALESCE(ctm.post_dated_cheque, false) = true
+      AND UPPER(COALESCE(ctm.status, '')) = 'PDC_PENDING'
+      AND ${PDC_BILL_LINK_SQL}
+  ), 0)`;
+
+export async function getAgingDetail(pool, companyId, accountId, { branchId, summaryType, postStatus, dateFrom, dateTo } = {}) {
+  const params = [companyId, accountId];
+  let where = 'vd.company_id = $1 AND vd.account_id = $2 AND vd.record_status = \'ACTIVE\' AND vm.record_status = \'ACTIVE\'';
+  if (branchId) { params.push(branchId); where += ` AND vd.branch_id = $${params.length}`; }
+  if (postStatus) { params.push(postStatus); where += ` AND vm.post_status = $${params.length}`; }
+  if (dateFrom) { params.push(dateFrom); where += ` AND vm.voucher_date >= $${params.length}::date`; }
+  if (dateTo) { params.push(dateTo); where += ` AND vm.voucher_date < ($${params.length}::date + interval '1 day')`; }
+
+  const isPayable = summaryType === 'payable';
+  const outstandingExpr = isPayable
+    ? 'GREATEST(COALESCE(NULLIF(vd.outstanding_balance, 0), vd.credit_amount - vd.debit_amount), 0)'
+    : 'GREATEST(COALESCE(NULLIF(vd.outstanding_balance, 0), vd.debit_amount - vd.credit_amount), 0)';
+
+  const sql = `
+    SELECT
+      vm.voucher_master_id,
+      vm.voucher_date,
+      vm.auto_voucher_no,
+      vm.voucher_prefix,
+      vm.reference_no,
+      vm.post_status,
+      vt.voucher_name,
+      vt.voucher_type_code,
+      vd.debit_amount,
+      vd.credit_amount,
+      (${outstandingExpr})::numeric AS outstanding,
+      ${PDC_PENDING_SUBQUERY}::numeric AS pdc_pending,
+      vd.narration,
+      (NOW()::date - vm.voucher_date::date)::int AS age_days
+    FROM accounts.voucher_detail vd
+    JOIN accounts.voucher_master vm
+      ON vm.company_id = vd.company_id AND vm.branch_id = vd.branch_id AND vm.voucher_master_id = vd.voucher_master_id
+    LEFT JOIN ops.sales_master sm
+      ON sm.company_id = vm.company_id
+     AND sm.sales_id = vm.voucher_posted_id
+     AND UPPER(COALESCE(vm.creation_mode, '')) = 'INVENTORYACCOUNTS'
+    LEFT JOIN accounts.voucher_type_master vt
+      ON vt.company_id = vm.company_id AND vt.voucher_type_id = vm.voucher_type_id
+    WHERE ${where}
+      AND (
+        (
+          UPPER(COALESCE(vm.creation_mode, '')) = 'INVENTORYACCOUNTS'
+          AND vm.voucher_posted_id IS NOT NULL
+          AND UPPER(COALESCE(vm.post_status, 'PENDING')) = 'POSTED'
+          AND UPPER(COALESCE(sm.post_status, 'PENDING')) = 'POSTED'
+        )
+        OR (
+          vm.voucher_posted_id IS NULL
+          AND UPPER(COALESCE(vm.post_status, 'PENDING')) = 'POSTED'
+        )
+      )
+      AND ((${outstandingExpr}) > 0.01 OR ${PDC_PENDING_SUBQUERY} > 0.01)
+    ORDER BY vm.voucher_date DESC, vm.voucher_master_id DESC`;
   const { rows } = await pool.query(sql, params);
   return rows;
 }

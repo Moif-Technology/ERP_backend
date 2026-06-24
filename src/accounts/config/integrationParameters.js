@@ -6,6 +6,7 @@
 export const INTEGRATION_TABS = [
   { id: 'purchase', label: 'Purchase' },
   { id: 'purchaseReturn', label: 'Purchase Return' },
+  { id: 'salesReturn', label: 'Sales Return' },
   { id: 'salesBo', label: 'Sales (Back Office)' },
   { id: 'salesCounter', label: 'Sales (Counter POS)' },
   { id: 'paymentReceipt', label: 'Payment / Receipt' },
@@ -45,6 +46,16 @@ export const INTEGRATION_PARAMETER_DEFS = [
   { key: 'purchaseReturnCrRoundingLedger', param: 'PurchaseReturnCRRoundingLedger', tab: 'purchaseReturn', label: 'Purchase return CR — Rounding', type: 'ledger' },
   { key: 'purchaseReturnCrLedgerExempted', param: 'PurchaseReturnCRLedgerExempted', tab: 'purchaseReturn', label: 'Purchase return CR — Exempted', type: 'ledger', filterPrefix: '12' },
   { key: 'purchaseReturnVoucher', param: 'PurchaseReturnVoucherName', tab: 'purchaseReturn', label: 'Purchase return voucher type', type: 'voucher' },
+
+  // ── Sales return ──
+  { key: 'salesReturnCrLedgerCash', param: 'SalesReturnCRLedgerCash', tab: 'salesReturn', label: 'Sales return DR — Cash', type: 'ledger', filterPrefix: '13' },
+  { key: 'salesReturnCrLedgerCredit', param: 'SalesReturnCRLedgerCredit', tab: 'salesReturn', label: 'Sales return DR — Credit', type: 'ledger', filterPrefix: '13' },
+  { key: 'salesReturnCrLedgerCreditCard', param: 'SalesReturnCRLedgerCreditCard', tab: 'salesReturn', label: 'Sales return DR — Credit card', type: 'ledger', filterPrefix: '13' },
+  { key: 'salesReturnCrLedgerOverseas', param: 'SalesReturnCRLedgerOverseas', tab: 'salesReturn', label: 'Sales return DR — Overseas', type: 'ledger', filterPrefix: '13' },
+  { key: 'salesReturnCrDiscountLedger', param: 'SalesReturnCRDiscountLedger', tab: 'salesReturn', label: 'Sales return CR — Discount', type: 'ledger' },
+  { key: 'salesReturnCrRoundingLedger', param: 'SalesReturnCRRoundingLedger', tab: 'salesReturn', label: 'Sales return CR — Rounding', type: 'ledger' },
+  { key: 'salesReturnCrLedgerExempted', param: 'SalesReturnCRLedgerExempted', tab: 'salesReturn', label: 'Sales return DR — Exempted', type: 'ledger', filterPrefix: '13' },
+  { key: 'salesReturnVoucher', param: 'SalesReturnVoucherName', tab: 'salesReturn', label: 'Sales return voucher type', type: 'voucher' },
 
   // ── Sales back office ──
   { key: 'boSalesCrLedgerCash', param: 'BOSalesCRLedgerCash', tab: 'salesBo', label: 'Sales CR — Cash', type: 'ledger', filterPrefix: '13' },

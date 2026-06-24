@@ -70,6 +70,12 @@ export async function getAgingSummary(req, res) {
   } catch (err) { return handleError(res, err, 'Could not load aging summary'); }
 }
 
+export async function getAgingDetail(req, res) {
+  try {
+    return res.json(await voucherService.getAgingDetail(pool, req.authStaff, req.params.accountId, req.query));
+  } catch (err) { return handleError(res, err, 'Could not load aging detail'); }
+}
+
 export async function getTrialBalance(req, res) {
   try {
     return res.json(await financialReportService.getFullTrialBalance(pool, req.authStaff, req.query));

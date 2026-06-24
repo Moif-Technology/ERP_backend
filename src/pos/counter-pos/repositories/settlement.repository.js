@@ -15,16 +15,38 @@ function mapBillRow(r) {
     invoiceNo:     r.invoice_no,
     invoiceAmount: num(r.invoice_amount),
     currentAmount: num(r.current_amount),
+    pdcPending:    num(r.pdc_pending),
+    clearedPaid:   num(r.cleared_paid),
   };
 }
 
-/** Amount still due on a bill after prior settlement lines. */
-const PAID_SUBQUERY = `
+/** Join condition: receipt is pending PDC (cheque not yet cleared). */
+const PDC_PENDING_MASTER_SQL = `
+  COALESCE(ctm.post_dated_cheque, false) = true
+  AND UPPER(COALESCE(ctm.status, '')) = 'PDC_PENDING'`;
+
+/** Cleared payments only — PDC pending does not reduce bill O/S until cheque clears. */
+const CLEARED_PAID_SUBQUERY = `
   COALESCE((
     SELECT SUM(ctc.paid_amount)::numeric
     FROM accounts.cash_transaction_child ctc
+    LEFT JOIN accounts.cash_transaction_master ctm
+      ON ctm.company_id = ctc.company_id AND ctm.transaction_id = ctc.transaction_id
     WHERE ctc.company_id = sm.company_id
       AND ctc.bill_id = sm.sales_id
+      AND NOT (${PDC_PENDING_MASTER_SQL})
+  ), 0)`;
+
+/** PDC given against bill — cheque received but not yet cleared. */
+const PDC_PAID_SUBQUERY = `
+  COALESCE((
+    SELECT SUM(ctc.paid_amount)::numeric
+    FROM accounts.cash_transaction_child ctc
+    INNER JOIN accounts.cash_transaction_master ctm
+      ON ctm.company_id = ctc.company_id AND ctm.transaction_id = ctc.transaction_id
+    WHERE ctc.company_id = sm.company_id
+      AND ctc.bill_id = sm.sales_id
+      AND (${PDC_PENDING_MASTER_SQL})
   ), 0)`;
 
 /** Credit bills only — cash / card are fully paid (O/S = 0). */
@@ -37,13 +59,17 @@ const CREDIT_BILL_MODE_SQL = `
     )
   )`;
 
+/** Only posted sales / vouchers are payable via receipt or payment allocation. */
+const POSTED_SALE_STATUS_SQL = `AND UPPER(COALESCE(sm.post_status, 'PENDING')) = 'POSTED'`;
+const POSTED_VOUCHER_STATUS_SQL = `AND UPPER(COALESCE(vm.post_status, 'PENDING')) = 'POSTED'`;
+
 const BASE_DUE_EXPR = `
   GREATEST(
     COALESCE(
       NULLIF(sm.outstanding_balance::numeric, 0),
       NULLIF(sm.credit_amount::numeric, 0),
       CASE WHEN UPPER(TRIM(COALESCE(sm.payment_mode, ''))) = 'CREDIT' THEN sm.amount::numeric ELSE 0 END
-    ) - ${PAID_SUBQUERY},
+    ) - ${CLEARED_PAID_SUBQUERY},
     0
   )`;
 
@@ -55,6 +81,8 @@ const SALES_OUTSTANDING_SQL = `
     sm.bill_date,
     sm.amount::numeric AS invoice_amount,
     ${BASE_DUE_EXPR} AS current_amount,
+    ${PDC_PAID_SUBQUERY} AS pdc_pending,
+    ${CLEARED_PAID_SUBQUERY} AS cleared_paid,
     TRIM(COALESCE(sm.bill_no, sm.sales_id)::text) AS invoice_no
   FROM ops.sales_master sm
   WHERE sm.company_id = $1
@@ -63,8 +91,8 @@ const SALES_OUTSTANDING_SQL = `
     AND ${CREDIT_BILL_MODE_SQL}
     AND COALESCE(UPPER(sm.transaction_type), 'SALE') NOT IN ('RETURN', 'REFUND')
     AND COALESCE(UPPER(sm.hold_status), '') NOT IN ('HOLD', 'HELD', 'DELIVERY')
-    AND COALESCE(UPPER(sm.post_status), 'POSTED') NOT IN ('CANCELLED', 'VOID', 'CANCELED')
-    AND ${BASE_DUE_EXPR} > 0.005
+    ${POSTED_SALE_STATUS_SQL}
+    AND (${BASE_DUE_EXPR} > 0.005 OR ${PDC_PAID_SUBQUERY} > 0.005)
   ORDER BY sm.bill_date ASC, sm.sales_id ASC`;
 
 /** Fallback: open DR lines on customer ledger linked to posted sales vouchers. */
@@ -84,7 +112,7 @@ const VOUCHER_OUTSTANDING_SQL = `
       ), 0),
       0
     ) AS current_amount,
-    TRIM(COALESCE(sm.bill_no, vm.voucher_posted_id)::text) AS invoice_no
+    TRIM(COALESCE(vm.voucher_prefix, 'SV-') || COALESCE(vm.auto_voucher_no, vm.voucher_posted_id)::text) AS invoice_no
   FROM accounts.voucher_detail vd
   INNER JOIN accounts.voucher_master vm
     ON vm.company_id = vd.company_id
@@ -104,6 +132,8 @@ const VOUCHER_OUTSTANDING_SQL = `
     AND vd.debit_amount > 0
     AND vm.voucher_posted_id IS NOT NULL
     AND (vd.record_status IS NULL OR TRIM(UPPER(vd.record_status)) = 'ACTIVE')
+    ${POSTED_VOUCHER_STATUS_SQL}
+    AND (sm.sales_id IS NULL OR UPPER(COALESCE(sm.post_status, 'PENDING')) = 'POSTED')
     AND GREATEST(
       COALESCE(NULLIF(vd.outstanding_balance, 0), vd.debit_amount, 0)::numeric
       - COALESCE((
@@ -120,9 +150,17 @@ const VOUCHER_OUTSTANDING_SQL = `
 function mergeOutstandingBills(...groups) {
   const map = new Map();
   for (const b of groups.flat()) {
-    if (b.billId == null || b.currentAmount <= 0.005) continue;
+    if (b.billId == null) continue;
+    const due = num(b.currentAmount);
+    const pdc = num(b.pdcPending);
+    if (due <= 0.005 && pdc <= 0.005) continue;
     if (!map.has(b.billId)) {
-      map.set(b.billId, { ...b, currentAmount: num(b.currentAmount) });
+      map.set(b.billId, {
+        ...b,
+        currentAmount: due,
+        pdcPending: pdc,
+        clearedPaid: num(b.clearedPaid),
+      });
     }
   }
   return [...map.values()].sort((a, b) => {
@@ -141,6 +179,8 @@ const CREDIT_CUSTOMER_SALES_SQL = `
     sm.bill_date,
     sm.amount::numeric AS invoice_amount,
     ${BASE_DUE_EXPR} AS current_amount,
+    ${PDC_PAID_SUBQUERY} AS pdc_pending,
+    ${CLEARED_PAID_SUBQUERY} AS cleared_paid,
     TRIM(COALESCE(sm.prefix, 'B-') || sm.bill_no::text) AS invoice_no
   FROM ops.sales_master sm
   INNER JOIN biz.customer_master cm
@@ -152,8 +192,8 @@ const CREDIT_CUSTOMER_SALES_SQL = `
     AND sm.amount > 0
     AND COALESCE(UPPER(sm.transaction_type), 'SALE') NOT IN ('RETURN', 'REFUND')
     AND COALESCE(UPPER(sm.hold_status), '') NOT IN ('HOLD', 'HELD')
-    AND COALESCE(UPPER(sm.post_status), 'POSTED') NOT IN ('CANCELLED', 'VOID', 'CANCELED')
-    AND ${BASE_DUE_EXPR} > 0.005
+    ${POSTED_SALE_STATUS_SQL}
+    AND (${BASE_DUE_EXPR} > 0.005 OR ${PDC_PAID_SUBQUERY} > 0.005)
   ORDER BY sm.bill_date ASC, sm.sales_id ASC`;
 
 /** DR lines on customer ledger not linked to a posted sale (opening balance, journals, etc.). */
@@ -190,6 +230,7 @@ const VOUCHER_ORPHAN_OUTSTANDING_SQL = `
     AND vd.debit_amount > 0
     AND vm.voucher_posted_id IS NULL
     AND (vd.record_status IS NULL OR TRIM(UPPER(vd.record_status)) = 'ACTIVE')
+    ${POSTED_VOUCHER_STATUS_SQL}
     AND GREATEST(
       COALESCE(NULLIF(vd.outstanding_balance, 0), vd.debit_amount, 0)::numeric
       - COALESCE((
@@ -201,6 +242,17 @@ const VOUCHER_ORPHAN_OUTSTANDING_SQL = `
       0
     ) > 0.005
   ORDER BY vm.voucher_date ASC, vm.voucher_master_id ASC`;
+
+/**
+ * Return open posted bill lines only — no synthetic "Opening / Other" row.
+ * Receipt / payment must allocate against real posted bills, not ledger gaps
+ * caused by unposted sales still sitting on the account.
+ */
+export function reconcilePostedBills(bills) {
+  return bills
+    .filter((b) => num(b.currentAmount) > 0.005)
+    .map((b) => ({ ...b, currentAmount: num(b.currentAmount) }));
+}
 
 /**
  * Align open bill lines with ledger O/S (Tally-style).
@@ -279,6 +331,7 @@ async function trySalesBillsLegacy(db, companyId, customerId) {
       AND sm.customer_id = $2
       AND sm.amount > 0
       AND UPPER(TRIM(COALESCE(sm.payment_mode, ''))) = 'CREDIT'
+      AND UPPER(COALESCE(sm.post_status, 'PENDING')) = 'POSTED'
       AND GREATEST(
         sm.amount::numeric - COALESCE((
           SELECT SUM(ctc.paid_amount)::numeric
@@ -384,6 +437,50 @@ export async function syncCustomerCreditState(client, companyId, customerId, cus
   }
 }
 
+/** Reject receipt/payment allocation against unposted bills. */
+export async function assertPostedBillAllocations(db, companyId, allocations) {
+  for (const a of allocations) {
+    const billId = Number(a.billId);
+    if (!Number.isFinite(billId) || a.isReconcile) continue;
+
+    if (billId > 0) {
+      const { rows: saleRows } = await db.query(
+        `SELECT sm.sales_id
+         FROM ops.sales_master sm
+         WHERE sm.company_id = $1 AND sm.sales_id = $2
+           AND UPPER(COALESCE(sm.post_status, 'PENDING')) = 'POSTED'
+         LIMIT 1`,
+        [companyId, billId],
+      );
+      if (!saleRows[0]) {
+        const err = new Error(
+          `Bill ${a.invoiceNo || billId} is not posted — post the sale before receiving payment`,
+        );
+        err.status = 400;
+        throw err;
+      }
+      continue;
+    }
+
+    const voucherMasterId = Math.abs(billId);
+    const { rows } = await db.query(
+      `SELECT voucher_master_id
+       FROM accounts.voucher_master
+       WHERE company_id = $1 AND voucher_master_id = $2
+         AND UPPER(COALESCE(post_status, 'PENDING')) = 'POSTED'
+       LIMIT 1`,
+      [companyId, voucherMasterId],
+    );
+    if (!rows[0]) {
+      const err = new Error(
+        `Voucher ${a.invoiceNo || voucherMasterId} is not posted — post before receiving payment`,
+      );
+      err.status = 400;
+      throw err;
+    }
+  }
+}
+
 export async function getOutstandingBills(db, companyId, customerId) {
   await repairNonCreditSalesOutstanding(db, companyId, customerId);
 
@@ -438,6 +535,10 @@ export async function nextTransactionChildIdBase(client, companyId, count) {
 }
 
 export async function insertCashTransactionMaster(client, row) {
+  const postDatedCheque = Boolean(row.postDatedCheque);
+  const status = row.status || (postDatedCheque ? 'PDC_PENDING' : 'ACTIVE');
+  const chequeDetails = row.chequeDetails ?? null;
+  const chequeDate = row.chequeDate ?? null;
   const baseParams = [
     row.companyId, row.branchId, row.transactionId, row.transactionNo, row.transactionDate ?? new Date(),
     row.counterNo ?? null, row.customerId, row.amount, row.transactionType ?? 'CUSTOMER RECEIPT',
@@ -450,17 +551,19 @@ export async function insertCashTransactionMaster(client, row) {
       `INSERT INTO accounts.cash_transaction_master (
          company_id, branch_id, transaction_id, transaction_no, transaction_date,
          counter_no, customer_id, amount, transaction_type,
-         post_dated_cheque, total_current_amount, total_paid_amount,
+         post_dated_cheque, cheque_details, cheque_date,
+         total_current_amount, total_paid_amount,
          remarks, status, payment_mode, voucher_master_id,
          created_by, modified_by, counter_close_status
        ) VALUES (
          $1,$2,$3,$4,$5,
          $6,$7,$8,$9,
-         false,$10,$11,
-         $12,'ACTIVE',$13,$14,
+         $16,$17,$18,
+         $10,$11,
+         $12,$19,$13,$14,
          $15,$15,'PENDING'
        )`,
-      baseParams,
+      [...baseParams, postDatedCheque, chequeDetails, chequeDate, status],
     );
   } catch (e) {
     if (e.code !== '42703') throw e;
@@ -474,11 +577,11 @@ export async function insertCashTransactionMaster(client, row) {
        ) VALUES (
          $1,$2,$3,$4,$5,
          $6,$7,$8,$9,
-         false,$10,$11,
-         $12,'ACTIVE',$13,$14,
+         $16,$10,$11,
+         $12,$17,$13,$14,
          $15,$15
        )`,
-      baseParams,
+      [...baseParams, postDatedCheque, status],
     );
   }
 }
@@ -682,6 +785,10 @@ export async function getSettlementReceipt(db, companyId, branchId, transactionI
       customerName:  m.customer_name ?? '—',
       paidAmount:    paid,
       paymentMode:   m.payment_mode ?? 'CASH',
+      postDatedCheque: Boolean(m.post_dated_cheque) || String(m.payment_mode || '').toUpperCase() === 'CHEQUE',
+      chequeDetails: m.cheque_details ?? null,
+      chequeDate: m.cheque_date ?? null,
+      status: m.status ?? 'ACTIVE',
       osBefore,
       osAfter,
       counterNo:     m.counter_no != null ? Number(m.counter_no) : null,
@@ -780,6 +887,133 @@ export async function reduceOrphanVoucherOutstanding(client, companyId, billId, 
         [companyId, customerLedgerId, voucherMasterId, remaining],
       );
     }
+  } catch (e) {
+    if (e.code === '42P01' || e.code === '42703') return;
+    throw e;
+  }
+}
+
+export async function getCashTransactionByVoucherMasterId(db, companyId, voucherMasterId) {
+  try {
+    const { rows } = await db.query(
+      `SELECT ctm.*, cm.customer_code, cm.customer_name
+       FROM accounts.cash_transaction_master ctm
+       LEFT JOIN biz.customer_master cm
+         ON cm.company_id = ctm.company_id AND cm.customer_id = ctm.customer_id
+       WHERE ctm.company_id = $1 AND ctm.voucher_master_id = $2
+       LIMIT 1`,
+      [companyId, Number(voucherMasterId)],
+    );
+    return rows[0] || null;
+  } catch (e) {
+    if (e.code === '42P01' || e.code === '42703') return null;
+    throw e;
+  }
+}
+
+export async function deleteCashTransactionChildren(client, companyId, transactionId) {
+  await client.query(
+    `DELETE FROM accounts.cash_transaction_child
+     WHERE company_id = $1 AND transaction_id = $2`,
+    [companyId, Number(transactionId)],
+  );
+}
+
+export async function updateCashTransactionChildBalances(client, companyId, transactionId, allocations) {
+  for (const a of allocations) {
+    await client.query(
+      `UPDATE accounts.cash_transaction_child
+       SET balance = $4, modified_at = NOW()
+       WHERE company_id = $1 AND transaction_id = $2 AND bill_id = $3`,
+      [companyId, Number(transactionId), a.billId, a.balance],
+    );
+  }
+}
+
+export async function updateCashTransactionMaster(client, companyId, branchId, transactionId, fields = {}) {
+  await client.query(
+    `UPDATE accounts.cash_transaction_master
+     SET amount = COALESCE($4, amount),
+         total_paid_amount = COALESCE($4, total_paid_amount),
+         total_current_amount = COALESCE($5, total_current_amount),
+         transaction_date = COALESCE($6, transaction_date),
+         remarks = COALESCE($7, remarks),
+         payment_mode = COALESCE($8, payment_mode),
+         post_dated_cheque = COALESCE($9, post_dated_cheque),
+         cheque_details = COALESCE($10, cheque_details),
+         cheque_date = COALESCE($11, cheque_date),
+         status = COALESCE($12, status),
+         modified_at = NOW()
+     WHERE company_id = $1 AND branch_id = $2 AND transaction_id = $3`,
+    [
+      companyId,
+      branchId,
+      Number(transactionId),
+      fields.amount ?? null,
+      fields.totalCurrentAmount ?? null,
+      fields.transactionDate ?? null,
+      fields.remarks ?? null,
+      fields.paymentMode ?? null,
+      fields.postDatedCheque ?? null,
+      fields.chequeDetails ?? null,
+      fields.chequeDate ?? null,
+      fields.status ?? null,
+    ],
+  );
+}
+
+export async function getSalesOutstandingBalance(client, companyId, salesId) {
+  try {
+    const { rows } = await client.query(
+      `SELECT outstanding_balance FROM ops.sales_master
+       WHERE company_id = $1 AND sales_id = $2 LIMIT 1`,
+      [companyId, salesId],
+    );
+    return num(rows[0]?.outstanding_balance);
+  } catch (e) {
+    if (e.code === '42P01' || e.code === '42703') return 0;
+    throw e;
+  }
+}
+
+export async function restoreSaleVoucherOutstanding(client, companyId, salesId, customerLedgerId, restoreBy) {
+  try {
+    await client.query(
+      `UPDATE accounts.voucher_detail vd
+       SET outstanding_balance = COALESCE(vd.outstanding_balance, 0) + $4,
+           modified_at = NOW()
+       FROM accounts.voucher_master vm
+       WHERE vd.company_id = $1
+         AND vd.voucher_master_id = vm.voucher_master_id
+         AND vm.company_id = $1
+         AND vm.voucher_posted_id = $2
+         AND vd.account_id = $3
+         AND vd.debit_amount > 0`,
+      [companyId, salesId, customerLedgerId, restoreBy],
+    );
+  } catch (e) {
+    if (e.code === '42P01' || e.code === '42703') return;
+    throw e;
+  }
+}
+
+export async function restoreOrphanVoucherOutstanding(client, companyId, billId, customerLedgerId, restoreBy) {
+  const voucherMasterId = Math.abs(Number(billId));
+  if (!Number.isFinite(voucherMasterId) || voucherMasterId < 1) return;
+  try {
+    await client.query(
+      `UPDATE accounts.voucher_detail vd
+       SET outstanding_balance = COALESCE(vd.outstanding_balance, 0) + $4,
+           modified_at = NOW()
+       FROM accounts.voucher_master vm
+       WHERE vd.company_id = $1
+         AND vd.voucher_master_id = vm.voucher_master_id
+         AND vm.company_id = $1
+         AND vm.voucher_master_id = $3
+         AND vd.account_id = $2
+         AND vd.debit_amount > 0`,
+      [companyId, customerLedgerId, voucherMasterId, restoreBy],
+    );
   } catch (e) {
     if (e.code === '42P01' || e.code === '42703') return;
     throw e;

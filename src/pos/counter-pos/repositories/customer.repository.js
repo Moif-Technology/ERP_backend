@@ -98,9 +98,19 @@ export async function searchCustomers(pool, companyId, search, limit = 40) {
 /**
  * Outstanding balance for a single customer (Tally-style: SUM(debit) − SUM(credit)).
  * Customer is linked to its ledger via account_head_master.account_no == customer_code.
- * Returns 0 when the customer has no ledger yet or the voucher tables are missing.
+ * When postedOnly is true, only POSTED voucher lines count (for receipt / settlement).
  */
-export async function getCustomerOsBalance(db, companyId, customerId) {
+export async function getCustomerOsBalance(db, companyId, customerId, { postedOnly = false } = {}) {
+  const postedFilter = postedOnly
+    ? `AND EXISTS (
+         SELECT 1
+         FROM accounts.voucher_master vm
+         WHERE vm.company_id = vd.company_id
+           AND vm.voucher_master_id = vd.voucher_master_id
+           AND (vm.record_status IS NULL OR TRIM(UPPER(vm.record_status)) = 'ACTIVE')
+           AND UPPER(COALESCE(vm.post_status, 'PENDING')) = 'POSTED'
+       )`
+    : '';
   try {
     const { rows } = await db.query(
       `SELECT (COALESCE(SUM(vd.debit_amount), 0) - COALESCE(SUM(vd.credit_amount), 0))::numeric AS os
@@ -112,6 +122,7 @@ export async function getCustomerOsBalance(db, companyId, customerId) {
          ON vd.company_id = ah.company_id
         AND vd.account_id = ah.account_id
         AND (vd.record_status IS NULL OR TRIM(UPPER(vd.record_status)) = 'ACTIVE')
+        ${postedFilter}
        WHERE cm.company_id = $1 AND cm.customer_id = $2`,
       [companyId, customerId],
     );
