@@ -5,6 +5,7 @@ function parseContext(authStaff, query = {}) {
   return {
     companyId: Number(authStaff.company_id),
     branchId:  Number(authStaff.branch_id),
+    stationId: Number(authStaff.station_id ?? authStaff.branch_id),
     staffId:   Number(authStaff.staff_id),
     counterNo: Number(query.counterNo ?? 1),
   };
@@ -172,7 +173,7 @@ export async function getCashInOutList(authStaff, query) {
  */
 export async function getCashInOutReport(authStaff, query) {
   const companyId = Number(authStaff.company_id);
-  const branchId  = Number(authStaff.branch_id);
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
   const today     = new Date().toISOString().slice(0, 10);
   const counterNo = query.counterNo != null && query.counterNo !== ''
     ? Number(query.counterNo)
@@ -180,7 +181,7 @@ export async function getCashInOutReport(authStaff, query) {
 
   const { rows, summary } = await repo.listCashInOutReport(pool, {
     companyId,
-    branchId,
+    stationId,
     counterNo,
     dateFrom: query.dateFrom || today,
     dateTo:   query.dateTo   || today,

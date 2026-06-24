@@ -18,12 +18,12 @@ export async function nextSalesChildId(client, companyId) {
   return Number(rows[0].n);
 }
 
-export async function nextBillNo(client, companyId, branchId) {
+export async function nextBillNo(client, companyId, stationId) {
   const { rows } = await client.query(
     `SELECT COALESCE(MAX(bill_no), 0) + 1 AS n
      FROM ops.sales_master
-     WHERE company_id = $1 AND branch_id = $2`,
-    [companyId, branchId]
+     WHERE company_id = $1 AND station_id = $2`,
+    [companyId, stationId]
   );
   return Number(rows[0].n);
 }
@@ -33,6 +33,7 @@ export async function insertSalesMaster(client, row) {
     companyId,
     salesId,
     branchId,
+    stationId,
     kotMasterId,
     counterNo,
     billNo,
@@ -74,11 +75,11 @@ export async function insertSalesMaster(client, row) {
         tax_1_rate, tax_2_rate, tax_3_rate,
         round_off_adjustment,
         waiter_id, table_id, area_id, no_of_customers, staff_id, remarks,
-        entry_source, created_by, modified_by
+        entry_source, created_by, modified_by, station_id
       ) VALUES (
         $1,$2,$3,$4,$5,$6, NOW(), NOW(), $7,$8,$9,
         $10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,
-        'RESTAURANT-POS',$32,$33
+        'RESTAURANT-POS',$32,$33,$34
       )`,
     [
       companyId,
@@ -114,6 +115,7 @@ export async function insertSalesMaster(client, row) {
       remarks,
       createdBy,
       modifiedBy,
+      stationId ?? branchId,
     ]
   );
 }
@@ -124,6 +126,7 @@ export async function insertSalesChild(client, row) {
     salesChildId,
     salesId,
     branchId,
+    stationId,
     kotChildId,
     productId,
     shortDescription,
@@ -157,9 +160,9 @@ export async function insertSalesChild(client, row) {
         tax_1_amount, tax_2_amount, tax_3_amount,
         tax_1_rate, tax_2_rate, tax_3_rate,
         subtotal_amount, modifier, created_by, modified_by,
-        quotation_id, do_id
+        quotation_id, do_id, station_id
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27
       )`,
     [
       companyId,
@@ -188,6 +191,7 @@ export async function insertSalesChild(client, row) {
       modifiedBy,
       qid,
       did,
+      stationId ?? branchId,
     ]
   );
 }

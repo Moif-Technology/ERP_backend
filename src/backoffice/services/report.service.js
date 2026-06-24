@@ -47,10 +47,20 @@ function fmtDate(v) {
 /* ───────────── SALES ───────────── */
 
 export async function dailySales(pool, authStaff, query) {
-  const { companyId, branchId } = resolveScope(authStaff, query);
+  const companyId = Number(authStaff.company_id);
+  let branchId;
+  if (query.branchId === 'all') {
+    branchId = null;
+  } else {
+    branchId = parseBranchId(query.branchId);
+    if (branchId == null) branchId = parseBranchId(authStaff.branch_id);
+    if (branchId == null) branchId = 1;
+  }
   const { dateFrom, dateTo } = resolveDates(query);
   const rows = await reportRepo.dailySales(pool, companyId, branchId, dateFrom, dateTo);
   return rows.map((r) => ({
+    salesId: Number(r.sales_id),
+    invoiceNo: r.invoice_no || String(r.bill_no),
     billNo: r.bill_no,
     date: fmtDate(r.bill_date),
     customer: r.customer,

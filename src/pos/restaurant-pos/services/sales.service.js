@@ -1,7 +1,6 @@
 import { withTransaction } from '../../../config/db.js';
 import * as salesRepo from '../repositories/sales.repository.js';
 import * as kotRepo from '../repositories/kot.repository.js';
-import * as branchRepo from '../../../shared/repositories/branch.repository.js';
 import { auditStaffId } from '../lib/staffAudit.js';
 
 function num(v, d = 0) {
@@ -121,21 +120,25 @@ function lineKotChildId(it) {
  */
 export async function settleSale(pool, body, authStaff) {
   const companyId = Number(authStaff.company_id);
-  const branchId = num(
-    String(body.stationId ?? body.StationID ?? authStaff.branch_id ?? '').trim(),
+  const stationId = num(
+    String(body.stationId ?? body.StationID ?? authStaff.station_id ?? authStaff.branch_id ?? '').trim(),
     0
   );
-  if (branchId < 1) {
+  if (stationId < 1) {
     const err = new Error('stationId / branch is required');
     err.status = 400;
     throw err;
   }
-  const okBranch = await branchRepo.branchBelongsToCompany(pool, companyId, branchId);
-  if (!okBranch) {
-    const err = new Error('Invalid branch for this company');
+  const { rows: stnRows } = await pool.query(
+    `SELECT 1 FROM core.station_master WHERE company_id = $1 AND station_id = $2 AND is_deleted = FALSE LIMIT 1`,
+    [companyId, stationId]
+  );
+  if (!stnRows.length) {
+    const err = new Error('Invalid station for this company');
     err.status = 400;
     throw err;
   }
+  const branchId = Number(authStaff.branch_id);
 
   const kotMasterId = num(body.kotId ?? body.kotMasterId ?? body.KotMasterID, 0);
   if (kotMasterId < 1) {
@@ -182,7 +185,7 @@ export async function settleSale(pool, body, authStaff) {
       err.status = 404;
       throw err;
     }
-    if (Number(kot.branch_id) !== branchId) {
+    if (Number(kot.station_id ?? kot.branch_id) !== stationId) {
       const err = new Error('KOT belongs to a different branch');
       err.status = 400;
       throw err;
@@ -200,7 +203,7 @@ export async function settleSale(pool, body, authStaff) {
     }
 
     const salesId = await salesRepo.nextSalesId(client, companyId);
-    const billNo = await salesRepo.nextBillNo(client, companyId, branchId);
+    const billNo = await salesRepo.nextBillNo(client, companyId, stationId);
     const counterNo = num(body.counterNo, 1);
 
     const subTotal = num(body.subTotal ?? body.subTotalM, 0);
@@ -228,6 +231,7 @@ export async function settleSale(pool, body, authStaff) {
       companyId,
       salesId,
       branchId,
+      stationId,
       kotMasterId,
       counterNo,
       billNo,
@@ -297,6 +301,7 @@ export async function settleSale(pool, body, authStaff) {
         salesChildId,
         salesId,
         branchId,
+        stationId,
         kotChildId,
         productId: Math.trunc(productId),
         shortDescription: desc,

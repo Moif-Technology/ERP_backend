@@ -8,14 +8,23 @@ export const DEFAULT_ROLE_IDS = {
   cashier: 3,
   inventory: 4,
   accountant: 5,
+  vanSalesMan: 6,
+  restaurantPosWaiter: 7,
+  counterPosCashier: 8,
 };
 
 const DEFAULT_ROLES = [
-  [DEFAULT_ROLE_IDS.admin, 'Admin', 100],
-  [DEFAULT_ROLE_IDS.staff, 'Staff', 0],
-  [DEFAULT_ROLE_IDS.cashier, 'Cashier', 0],
-  [DEFAULT_ROLE_IDS.inventory, 'Inventory', 0],
-  [DEFAULT_ROLE_IDS.accountant, 'Accountant', 0],
+  // ERP roles
+  [DEFAULT_ROLE_IDS.admin,              'Admin',        100, 'ERP'],
+  [DEFAULT_ROLE_IDS.staff,              'Staff',        0,   'ERP'],
+  [DEFAULT_ROLE_IDS.cashier,            'Cashier',      0,   'ERP'],
+  [DEFAULT_ROLE_IDS.inventory,          'Inventory',    0,   'ERP'],
+  [DEFAULT_ROLE_IDS.accountant,         'Accountant',   0,   'ERP'],
+  // Van
+  [DEFAULT_ROLE_IDS.vanSalesMan,        'Van Sales Man',0,   'VAN'],
+  // POS roles
+  [DEFAULT_ROLE_IDS.restaurantPosWaiter,'Waiter',       0,   'RESTAURANT-POS'],
+  [DEFAULT_ROLE_IDS.counterPosCashier,  'POS Cashier',  0,   'COUNTER-POS'],
 ];
 
 export async function roleBelongsToCompany(db, companyId, roleId) {
@@ -224,14 +233,14 @@ export async function replaceRolePermissions(db, companyId, roleId, permissionCo
 }
 
 export async function seedDefaultTenantRoles(db, companyId, actor = 'entitlement-seed') {
-  for (const [roleId, roleName, discountPercentAllowed] of DEFAULT_ROLES) {
+  for (const [roleId, roleName, discountPercentAllowed, softwareType] of DEFAULT_ROLES) {
     await db.query(
       `INSERT INTO core.role_master (
         company_id, role_id, role_name, discount_percent_allowed,
         software_type, created_by, modified_by
-      ) VALUES ($1, $2, $3, $4, 'ERP', $5, $5)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $6)
       ON CONFLICT (company_id, role_id) DO NOTHING`,
-      [companyId, roleId, roleName, discountPercentAllowed, actor]
+      [companyId, roleId, roleName, discountPercentAllowed, softwareType, actor]
     );
   }
 
@@ -240,6 +249,8 @@ export async function seedDefaultTenantRoles(db, companyId, actor = 'entitlement
   await seedCashierPermissions(db, companyId);
   await seedInventoryPermissions(db, companyId);
   await seedAccountantPermissions(db, companyId);
+  await seedCounterPosCashierPermissions(db, companyId);
+  await seedRestaurantPosWaiterPermissions(db, companyId);
 }
 
 async function seedAdminPermissions(db, companyId) {
@@ -327,6 +338,33 @@ async function seedAccountantPermissions(db, companyId) {
      DO UPDATE SET is_allowed = TRUE, updated_at = NOW()`,
     [companyId, DEFAULT_ROLE_IDS.accountant]
   );
+}
+
+async function seedCounterPosCashierPermissions(db, companyId) {
+  await seedPermissionList(db, companyId, DEFAULT_ROLE_IDS.counterPosCashier, [
+    'pos.billing.view',
+    'pos.billing.create',
+    'pos.settlement.view',
+    'pos.settlement.create',
+    'pos.product_search.view',
+    'pos.customer_selection.view',
+    'pos.discount.view',
+  ]);
+}
+
+async function seedRestaurantPosWaiterPermissions(db, companyId) {
+  await seedPermissionList(db, companyId, DEFAULT_ROLE_IDS.restaurantPosWaiter, [
+    'pos.billing.view',
+    'pos.billing.create',
+    'pos.kot.view',
+    'pos.kot.create',
+    'pos.tables.view',
+    'pos.settlement.view',
+    'pos.settlement.create',
+    'pos.product_search.view',
+    'pos.customer_selection.view',
+    'pos.discount.view',
+  ]);
 }
 
 async function seedPermissionList(db, companyId, roleId, permissionCodes) {

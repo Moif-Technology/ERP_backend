@@ -2,6 +2,48 @@
  * Back-office sales: quotation / DO refs (029) + receipt ledger (031).
  */
 
+export async function insertSalesMaster(client, row) {
+  const {
+    companyId, salesId, branchId, kotMasterId, counterNo, billNo,
+    customerId, paymentMode, creditCardNo,
+    amount, cashAmount, creditAmount, creditCardAmount, paidAmount, balancePaid, discountAmount,
+    subtotalAmount, taxableAmount,
+    tax1Amount, tax2Amount, tax3Amount,
+    tax1Rate, tax2Rate, tax3Rate,
+    roundOffAdj,
+    waiterId, tableId, areaId, noOfCustomers, staffId, remarks,
+    createdBy, modifiedBy,
+  } = row;
+  await client.query(
+    `INSERT INTO ops.sales_master (
+        company_id, sales_id, branch_id, kot_master_id, counter_no, bill_no,
+        bill_date, bill_time, customer_id, payment_mode, credit_card_no,
+        amount, cash_amount, credit_amount, credit_card_amount, paid_amount, balance_paid, discount_amount,
+        subtotal_amount, taxable_amount,
+        tax_1_amount, tax_2_amount, tax_3_amount,
+        tax_1_rate, tax_2_rate, tax_3_rate,
+        round_off_adjustment,
+        waiter_id, table_id, area_id, no_of_customers, staff_id, remarks,
+        entry_source, created_by, modified_by
+      ) VALUES (
+        $1,$2,$3,$4,$5,$6, NOW(), NOW(), $7,$8,$9,
+        $10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,
+        'ERP',$32,$33
+      )`,
+    [
+      companyId, salesId, branchId, kotMasterId, counterNo, billNo,
+      customerId, paymentMode, creditCardNo,
+      amount, cashAmount, creditAmount, creditCardAmount, paidAmount, balancePaid, discountAmount,
+      subtotalAmount, taxableAmount,
+      tax1Amount, tax2Amount, tax3Amount,
+      tax1Rate, tax2Rate, tax3Rate,
+      roundOffAdj,
+      waiterId, tableId, areaId, noOfCustomers, staffId, remarks,
+      createdBy, modifiedBy,
+    ]
+  );
+}
+
 export async function updateSalesMasterErpFields(client, companyId, salesId, fields) {
   const qid =
     fields.quotationId != null && Number.isFinite(Number(fields.quotationId)) && Number(fields.quotationId) >= 1

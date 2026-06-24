@@ -28,3 +28,30 @@ export async function buildTokensForStaffRow(staffRow) {
     },
   };
 }
+
+/**
+ * Variant for POS device logins.
+ * Encodes stationId in the JWT (`sid` claim) so authMiddleware can inject it
+ * into req.authStaff — overriding the staff-row's default station mapping.
+ * Used when a staff PIN-logs into a specific enrolled device.
+ */
+export async function buildTokensForPOSDevice(staffRow, stationId) {
+  const [access, accessVersion] = await Promise.all([
+    resolveEntitlementsForStaff(staffRow),
+    getEntitlementVersionForStaff(staffRow),
+  ]);
+  const mergedRow = { ...staffRow, station_id: stationId };
+  return {
+    accessToken: signAccessToken({
+      typ: 'access',
+      sub: String(staffRow.id),
+      cid: staffRow.company_id,
+      sid: Number(stationId),
+    }),
+    refreshToken: signRefreshToken({ typ: 'refresh', sub: String(staffRow.id) }),
+    session: {
+      ...buildSessionPayload(mergedRow, access),
+      accessVersion,
+    },
+  };
+}

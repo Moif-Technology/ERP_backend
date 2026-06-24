@@ -11,7 +11,9 @@
 // Daily Sales Summary — one row per bill.
 export async function dailySales(pool, companyId, branchId, dateFrom, dateTo) {
   const { rows } = await pool.query(
-    `SELECT sm.bill_no,
+    `SELECT sm.sales_id,
+            sm.invoice_no,
+            sm.bill_no,
             sm.bill_date,
             COALESCE(cm.customer_name, 'CASH CUSTOMER') AS customer,
             sm.payment_mode,
@@ -22,8 +24,11 @@ export async function dailySales(pool, companyId, branchId, dateFrom, dateTo) {
        FROM ops.sales_master sm
        LEFT JOIN biz.customer_master cm
          ON cm.company_id = sm.company_id AND cm.customer_id = sm.customer_id
-      WHERE sm.company_id = $1 AND sm.branch_id = $2
+      WHERE sm.company_id = $1
+        AND ($2::integer IS NULL OR sm.branch_id = $2::integer)
         AND COALESCE(sm.record_status,'ACTIVE') = 'ACTIVE'
+        AND COALESCE(sm.post_status,'') = 'POSTED'
+        AND sm.entry_source = 'ERP'
         AND sm.bill_date >= $3::date
         AND sm.bill_date <  ($4::date + interval '1 day')
       ORDER BY sm.bill_date ASC, sm.sales_id ASC`,

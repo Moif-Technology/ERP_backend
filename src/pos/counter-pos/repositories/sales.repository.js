@@ -56,6 +56,7 @@ export async function insertSalesMaster(client, m) {
   const creditAmt = m.creditAmount != null ? Number(m.creditAmount) : (m.paymentMode === 'CREDIT' ? paid : 0);
   const cardAmt   = m.cardAmount   != null ? Number(m.cardAmount)   : (isCreditCardBillMode(m.paymentMode) ? paid : 0);
   const osBal = resolveSalesOutstandingBalance(m);
+  const stationId = m.stationId ?? m.branchId;
   try {
     await client.query(
       `INSERT INTO ops.sales_master (
@@ -68,7 +69,7 @@ export async function insertSalesMaster(client, m) {
          cash_amount, credit_amount, credit_card_amount,
          outstanding_balance,
          staff_id, post_status, transaction_type, entry_source,
-         prefix, created_by, counter_close_status, remarks
+         prefix, created_by, counter_close_status, remarks, station_id
        ) VALUES (
          $1,$2,$3,$4,$5,$6,$7,
          $8,$9,
@@ -79,7 +80,7 @@ export async function insertSalesMaster(client, m) {
          $19,$20,$21,
          $22,
          $23,'POSTED',$24,'COUNTER-POS',
-         $25,$26,'PENDING',$27
+         $25,$26,'PENDING',$27,$28
        )`,
       [
         m.companyId, m.salesId, m.branchId, m.counterNo, m.salesId, m.billDate, m.billDate,
@@ -92,7 +93,7 @@ export async function insertSalesMaster(client, m) {
         creditAmt,
         cardAmt,
         osBal,
-        m.staffId, txType, m.prefix ?? 'B-', String(m.staffId), m.remarks ?? null,
+        m.staffId, txType, m.prefix ?? 'B-', String(m.staffId), m.remarks ?? null, stationId,
       ],
     );
   } catch (e) {
@@ -185,8 +186,9 @@ async function resolveSalesChildProductId(client, companyId, { productId, groupI
   throw e;
 }
 
-export async function insertSalesChildren(client, companyId, salesId, branchId, items, childIdBase, staffId) {
+export async function insertSalesChildren(client, companyId, salesId, branchId, items, childIdBase, staffId, stationId = null) {
   const groupProductCache = new Map();
+  const stnId = stationId ?? branchId;
 
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
@@ -222,20 +224,20 @@ export async function insertSalesChildren(client, companyId, salesId, branchId, 
 
     await client.query(
       `INSERT INTO ops.sales_child (
-         company_id, sales_child_id, sales_id, branch_id,
+         company_id, sales_child_id, sales_id, branch_id, station_id,
          product_id, product_code, short_description, group_id,
          qty, unit_price, unit_cost, discount_amount,
          subtotal_amount, tax_1_amount, tax_1_rate, line_total,
          post_status, created_by
        ) VALUES (
-         $1,$2,$3,$4,
-         $5,$6,$7,$8,
-         $9,$10,$11,$12,
-         $13,$14,$15,$16,
-         'POSTED',$17
+         $1,$2,$3,$4,$5,
+         $6,$7,$8,$9,
+         $10,$11,$12,$13,
+         $14,$15,$16,$17,
+         'POSTED',$18
        )`,
       [
-        companyId, childId, salesId, branchId,
+        companyId, childId, salesId, branchId, stnId,
         effectiveProductId, productCode, desc, groupId,
         qty, unitPrice, unitPrice, lineDiscount,
         lineSub,
@@ -253,6 +255,7 @@ export async function insertPendingMaster(client, m) {
   const holdStatus = String(m.holdStatus ?? 'HOLD').toUpperCase();
   const net = Number(m.netAmount ?? 0);
   const deliveryTime = m.deliveryTime ? new Date(m.deliveryTime) : null;
+  const stationId = m.stationId ?? m.branchId;
   const baseParams = [
     m.companyId, m.salesId, m.branchId, m.counterNo, m.salesId, m.billDate, m.billDate,
     m.customerId ?? null, m.paymentMode ?? (holdStatus === 'DELIVERY' ? 'PENDING' : 'CASH'),
@@ -261,7 +264,7 @@ export async function insertPendingMaster(client, m) {
     m.roundOff ?? 0, net,
     0, 0,
     0, 0, 0,
-    m.staffId, String(m.holdNo), txType, m.prefix ?? 'B-', String(m.staffId),
+    m.staffId, String(m.holdNo), txType, m.prefix ?? 'B-', String(m.staffId), stationId,
   ];
   const remarks = m.remarks ?? null;
 
@@ -275,7 +278,7 @@ export async function insertPendingMaster(client, m) {
       'paid_amount', 'balance_paid',
       'cash_amount', 'credit_amount', 'credit_card_amount',
       'staff_id', 'post_status', 'hold_status', 'hold_no',
-      'transaction_type', 'entry_source', 'prefix', 'created_by',
+      'transaction_type', 'entry_source', 'prefix', 'created_by', 'station_id',
     ];
     const vals = [
       '$1,$2,$3,$4,$5,$6,$7',
@@ -286,7 +289,7 @@ export async function insertPendingMaster(client, m) {
       '$17,$18',
       '$19,$20,$21',
       `$22,'HOLD','${holdStatus}',$23`,
-      `$24,'COUNTER-POS',$25,$26`,
+      `$24,'COUNTER-POS',$25,$26,$27`,
     ];
     const params = [...baseParams];
     if (withRemarks) {
@@ -327,7 +330,7 @@ export async function insertDeliveryMaster(client, m) {
 }
 
 /** List all active held bills for company */
-export async function getHeldBills(pool, companyId, branchId) {
+export async function getHeldBills(pool, companyId, stationId) {
   const { rows } = await pool.query(
     `SELECT sm.sales_id, sm.hold_no, sm.bill_date, sm.customer_id,
             sm.amount, sm.payment_mode, sm.staff_id, sm.remarks,
@@ -340,14 +343,14 @@ export async function getHeldBills(pool, companyId, branchId) {
      LEFT JOIN ops.sales_child  sc ON sc.sales_id  = sm.sales_id  AND sc.company_id = sm.company_id
      LEFT JOIN biz.customer_master cm ON cm.customer_id = sm.customer_id AND cm.company_id = sm.company_id
      LEFT JOIN core.staff_master   st ON st.staff_id    = sm.staff_id    AND st.company_id = sm.company_id
-     WHERE sm.company_id = $1 AND sm.branch_id = $2
+     WHERE sm.company_id = $1 AND sm.station_id = $2
        AND sm.hold_status = 'HOLD' AND COALESCE(sm.record_status,'') <> 'CANCELLED'
      GROUP BY sm.sales_id, sm.hold_no, sm.bill_date, sm.customer_id,
               sm.amount, sm.payment_mode, sm.staff_id, sm.remarks,
               cm.customer_code, cm.customer_name, cm.payment_mode, cm.credit_balance,
               st.staff_name, st.staff_code
      ORDER BY sm.hold_no::bigint`,
-    [companyId, branchId],
+    [companyId, stationId],
   );
   return rows;
 }
@@ -398,7 +401,7 @@ export async function deleteHoldBill(client, companyId, salesId) {
 }
 
 /** List active delivery bills */
-export async function getDeliveryBills(pool, companyId, branchId) {
+export async function getDeliveryBills(pool, companyId, stationId) {
   const { rows } = await pool.query(
     `SELECT sm.sales_id, sm.hold_no, sm.bill_date, sm.delivery_time, sm.customer_id,
             sm.amount, sm.payment_mode, sm.staff_id, sm.remarks,
@@ -411,14 +414,14 @@ export async function getDeliveryBills(pool, companyId, branchId) {
      LEFT JOIN ops.sales_child sc ON sc.sales_id = sm.sales_id AND sc.company_id = sm.company_id
      LEFT JOIN biz.customer_master cm ON cm.customer_id = sm.customer_id AND cm.company_id = sm.company_id
      LEFT JOIN core.staff_master st ON st.staff_id = sm.staff_id AND st.company_id = sm.company_id
-     WHERE sm.company_id = $1 AND sm.branch_id = $2
+     WHERE sm.company_id = $1 AND sm.station_id = $2
        AND sm.hold_status = 'DELIVERY' AND COALESCE(sm.record_status, '') <> 'CANCELLED'
      GROUP BY sm.sales_id, sm.hold_no, sm.bill_date, sm.delivery_time, sm.customer_id,
               sm.amount, sm.payment_mode, sm.staff_id, sm.remarks,
               cm.customer_code, cm.customer_name, cm.mobile_no, cm.payment_mode, cm.credit_balance,
               st.staff_name, st.staff_code
      ORDER BY sm.delivery_time NULLS LAST, sm.hold_no::bigint`,
-    [companyId, branchId],
+    [companyId, stationId],
   );
   return rows;
 }
@@ -505,7 +508,7 @@ export async function settleDeliveryMaster(client, m) {
 }
 
 /** Staff-wise sales totals for a pending counter session */
-export async function getStaffWiseSales(pool, { companyId, branchId, counterNo }) {
+export async function getStaffWiseSales(pool, { companyId, stationId, counterNo }) {
   const { rows } = await pool.query(
     `SELECT
        sm.staff_id,
@@ -521,13 +524,13 @@ export async function getStaffWiseSales(pool, { companyId, branchId, counterNo }
      FROM ops.sales_master sm
      LEFT JOIN core.staff_master s ON s.staff_id = sm.staff_id AND s.company_id = sm.company_id
      WHERE sm.company_id  = $1
-       AND sm.branch_id  = $2
-       AND sm.counter_no = $3
+       AND sm.station_id  = $2
+       AND sm.counter_no  = $3
        AND sm.post_status = 'POSTED'
        AND COALESCE(sm.hold_status, '') NOT IN ('HOLD', 'DELIVERY', 'CANCELLED')
      GROUP BY sm.staff_id, s.staff_name
      ORDER BY net_amount DESC`,
-    [companyId, branchId, counterNo],
+    [companyId, stationId, counterNo],
   );
   return rows;
 }
@@ -597,10 +600,10 @@ export async function insertPaymentSplits(client, args) {
 
 /** Posted sales list for counter sales viewer (date + optional customer filter). */
 export async function listPostedSales(pool, {
-  companyId, branchId, counterNo, dateFrom, dateTo, customerId, limit,
+  companyId, stationId, counterNo, dateFrom, dateTo, customerId, limit,
 }) {
   const lim = Math.min(Math.max(Number(limit) || 300, 1), 500);
-  const params = [companyId, branchId, counterNo, dateFrom, dateTo];
+  const params = [companyId, stationId, counterNo, dateFrom, dateTo];
   let customerClause = '';
   if (customerId != null && Number.isFinite(Number(customerId))) {
     params.push(Number(customerId));
@@ -633,7 +636,7 @@ export async function listPostedSales(pool, {
             ELSE NULL
           END
      WHERE sm.company_id = $1
-       AND sm.branch_id  = $2
+       AND sm.station_id = $2
        AND sm.counter_no = $3
        AND sm.post_status = 'POSTED'
        AND COALESCE(sm.hold_status, '') NOT IN ('HOLD', 'DELIVERY', 'CANCELLED')
@@ -648,7 +651,7 @@ export async function listPostedSales(pool, {
 }
 
 /** Single posted bill header + line items for sales viewer detail. */
-export async function getPostedBillDetail(pool, companyId, branchId, salesId) {
+export async function getPostedBillDetail(pool, companyId, stationId, salesId) {
   const { rows: masters } = await pool.query(
     `SELECT
        sm.sales_id,
@@ -703,11 +706,11 @@ export async function getPostedBillDetail(pool, companyId, branchId, salesId) {
             ELSE NULL
           END
      WHERE sm.company_id = $1
-       AND sm.branch_id  = $2
+       AND sm.station_id = $2
        AND sm.sales_id   = $3
        AND sm.post_status = 'POSTED'
        AND COALESCE(sm.hold_status, '') NOT IN ('HOLD', 'DELIVERY', 'CANCELLED')`,
-    [companyId, branchId, salesId],
+    [companyId, stationId, salesId],
   );
   if (!masters[0]) return null;
 

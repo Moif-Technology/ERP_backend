@@ -11,12 +11,17 @@ export function loginCandidatesSql(includeEmail) {
               s.login_name, s.email, s.designation, s.password_hash, s.record_status,
               c.company_name, c.company_address, b.branch_name, r.role_name,
               r.software_type AS role_software_type,
-              st.software_code AS software_type_code
+              st.software_code AS software_type_code,
+              stn.station_id,
+              stn.branch_id AS physical_branch_id,
+              stn.station_type,
+              stn.station_name AS station_name_sm
        FROM core.staff_master s
        JOIN core.company_master c ON c.company_id = s.company_id
        LEFT JOIN core.role_master r ON r.company_id = s.company_id AND r.role_id = s.role_id
        LEFT JOIN core.branch_master b ON b.company_id = s.company_id AND b.branch_id = s.branch_id
        LEFT JOIN core.software_type_master st ON st.software_type_id = c.software_type_id
+       LEFT JOIN core.station_master stn ON stn.company_id = s.company_id AND stn.station_id = s.branch_id AND stn.is_deleted = FALSE
        WHERE LOWER(s.login_name) = LOWER($1)
           ${includeEmail ? 'OR (s.email IS NOT NULL AND LOWER(TRIM(s.email)) = LOWER($1))' : ''}`;
 }
@@ -47,12 +52,17 @@ export async function findStaffSessionByPk(pool, staffPk) {
             s.login_name, s.email, s.designation, r.role_name,
             r.software_type AS role_software_type,
             c.company_name, c.company_address, c.currency, b.branch_name,
-            st.software_code AS software_type_code
+            st.software_code AS software_type_code,
+            stn.station_id,
+            stn.branch_id AS physical_branch_id,
+            stn.station_type,
+            stn.station_name AS station_name_sm
      FROM core.staff_master s
      JOIN core.company_master c ON c.company_id = s.company_id
      LEFT JOIN core.role_master r ON r.company_id = s.company_id AND r.role_id = s.role_id
      LEFT JOIN core.branch_master b ON b.company_id = s.company_id AND b.branch_id = s.branch_id
      LEFT JOIN core.software_type_master st ON st.software_type_id = c.software_type_id
+     LEFT JOIN core.station_master stn ON stn.company_id = s.company_id AND stn.station_id = s.branch_id AND stn.is_deleted = FALSE
      WHERE s.id = $1 AND s.record_status = 'ACTIVE'`,
     [staffPk]
   );
@@ -236,12 +246,17 @@ export async function selectStaffSessionRow(client, companyId, staffId) {
             s.login_name, s.email, s.designation, r.role_name,
             r.software_type AS role_software_type,
             c.company_name, c.company_address, b.branch_name,
-            st.software_code AS software_type_code
+            st.software_code AS software_type_code,
+            stn.station_id,
+            stn.branch_id AS physical_branch_id,
+            stn.station_type,
+            stn.station_name AS station_name_sm
      FROM core.staff_master s
      JOIN core.company_master c ON c.company_id = s.company_id
      LEFT JOIN core.role_master r ON r.company_id = s.company_id AND r.role_id = s.role_id
      LEFT JOIN core.branch_master b ON b.company_id = s.company_id AND b.branch_id = s.branch_id
      LEFT JOIN core.software_type_master st ON st.software_type_id = c.software_type_id
+     LEFT JOIN core.station_master stn ON stn.company_id = s.company_id AND stn.station_id = s.branch_id AND stn.is_deleted = FALSE
      WHERE s.company_id = $1 AND s.staff_id = $2`,
     [companyId, staffId]
   );
@@ -254,12 +269,17 @@ export async function findAllActiveStaffWithPinForCompany(pool, companyId) {
             s.login_name, s.email, s.designation, s.staff_pin, s.record_status,
             c.company_name, c.company_address, b.branch_name, r.role_name,
             r.software_type AS role_software_type,
-            st.software_code AS software_type_code
+            st.software_code AS software_type_code,
+            stn.station_id,
+            stn.branch_id AS physical_branch_id,
+            stn.station_type,
+            stn.station_name AS station_name_sm
      FROM core.staff_master s
      JOIN core.company_master c ON c.company_id = s.company_id
      LEFT JOIN core.role_master r ON r.company_id = s.company_id AND r.role_id = s.role_id
      LEFT JOIN core.branch_master b ON b.company_id = s.company_id AND b.branch_id = s.branch_id
      LEFT JOIN core.software_type_master st ON st.software_type_id = c.software_type_id
+     LEFT JOIN core.station_master stn ON stn.company_id = s.company_id AND stn.station_id = s.branch_id AND stn.is_deleted = FALSE
      WHERE s.company_id = $1
        AND s.record_status = 'ACTIVE'
        AND s.staff_pin IS NOT NULL`,
@@ -275,12 +295,17 @@ export async function findStaffByCodeForCompany(pool, companyId, staffCode) {
     `SELECT s.id, s.staff_id, s.staff_name, s.role_id, s.branch_id, s.company_id,
             s.login_name, s.email, s.designation, s.staff_pin, s.record_status,
             c.company_name, c.company_address, b.branch_name, r.role_name,
-            st.software_code AS software_type_code
+            st.software_code AS software_type_code,
+            stn.station_id,
+            stn.branch_id AS physical_branch_id,
+            stn.station_type,
+            stn.station_name AS station_name_sm
      FROM core.staff_master s
      JOIN core.company_master c ON c.company_id = s.company_id
      LEFT JOIN core.role_master r ON r.company_id = s.company_id AND r.role_id = s.role_id
      LEFT JOIN core.branch_master b ON b.company_id = s.company_id AND b.branch_id = s.branch_id
      LEFT JOIN core.software_type_master st ON st.software_type_id = c.software_type_id
+     LEFT JOIN core.station_master stn ON stn.company_id = s.company_id AND stn.station_id = s.branch_id AND stn.is_deleted = FALSE
      WHERE s.company_id = $1
        AND UPPER(s.staff_code) = UPPER($2)
        AND s.record_status = 'ACTIVE'

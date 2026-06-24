@@ -11,14 +11,24 @@ export function buildSessionPayload(row, access = null) {
     login_name: loginName,
     email,
     designation,
-    branch_id: stationId,
+    branch_id: rawBranchId,
     company_id: companyId,
     company_name: companyName,
     company_address: companyAddress,
     currency,
     branch_name: branchName,
     software_type_code: softwareTypeCode,
+    station_id,
+    physical_branch_id,
+    station_type,
+    station_name_sm,
   } = row;
+
+  // stationId = software station (maps to station_master.station_id)
+  // branchId  = physical location (maps to station_master.branch_id = branch_master.branch_id)
+  // Falls back to rawBranchId for both when station JOIN returned nothing (edge case).
+  const stationId = station_id ?? rawBranchId;
+  const branchId  = physical_branch_id ?? rawBranchId;
 
   const payload = {
     user: {
@@ -30,11 +40,14 @@ export function buildSessionPayload(row, access = null) {
       email: email || null,
       designation: designation || null,
       stationId,
+      branchId,
+      stationType: station_type || null,
     },
     company: {
       companyId,
       companyName,
-      stationName: branchName || 'Head Office',
+      stationName: station_name_sm || branchName || 'Head Office',
+      branchName: branchName || 'Head Office',
       address: companyAddress || '',
       softwareType: softwareTypeCode || 'ERP',
       currency: currency || 'AED',

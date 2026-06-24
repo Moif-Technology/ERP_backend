@@ -47,6 +47,7 @@ import { ensureTable as ensureRolePageTable } from './core/repositories/roleAcce
 import { ensureFeatureCatalog } from './core/repositories/featureCatalogSeed.js';
 import { ensureTenantTables } from './core/repositories/ensureTenantTables.js';
 import { branchRouter } from './core/routes/branch.routes.js';
+import { stationRouter } from './core/routes/station.routes.js';
 import { staffRouter } from './core/routes/staff.routes.js';
 import { systemParameterRouter } from './core/routes/systemParameter.routes.js';
 import { unitRouter } from './core/routes/unit.routes.js';
@@ -167,6 +168,7 @@ app.use('/api/plans', planRouter);
 app.use('/api/pos-devices', posDeviceRouter);
 app.use('/api/roles', roleRouter);
 app.use('/api/branches', branchRouter);
+app.use('/api/stations', stationRouter);
 app.use('/api/staff', staffRouter);
 app.use('/api/groups', groupRouter);
 app.use('/api/areas', areaRouter);

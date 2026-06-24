@@ -21,6 +21,20 @@ export async function enrollDevice(req, res) {
 }
 
 /**
+ * POST /api/counter-pos/device/stations
+ * Body: { adminUsername, adminPassword }
+ * Verifies admin credentials, returns COUNTER_POS stations for that company.
+ */
+export async function listStationsForEnroll(req, res) {
+  try {
+    const result = await authService.listStationsForEnroll(req.body);
+    return res.json(result);
+  } catch (err) {
+    return handleError(res, err, 'Could not load stations');
+  }
+}
+
+/**
  * POST /api/counter-pos/staff-list
  * Body: { deviceToken }
  * Returns the staff picker (id + name only) for the enrolled device's company.

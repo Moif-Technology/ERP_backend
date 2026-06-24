@@ -177,8 +177,8 @@ async function postReceiptVoucher(client, args) {
 /** Settlement receipt history ΓÇö filter by customer and date. */
 export async function listSettlementHistory(authStaff, query = {}) {
   const companyId = Number(authStaff.company_id);
-  const branchId  = Number(authStaff.branch_id);
-  return settlementRepo.listSettlementHistory(pool, companyId, branchId, {
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
+  return settlementRepo.listSettlementHistory(pool, companyId, stationId, {
     customerId: query.customerId || null,
     dateFrom:   query.dateFrom   || null,
     dateTo:     query.dateTo     || null,
@@ -188,9 +188,9 @@ export async function listSettlementHistory(authStaff, query = {}) {
 
 export async function getSettlementReceipt(authStaff, transactionId) {
   const companyId = Number(authStaff.company_id);
-  const branchId  = Number(authStaff.branch_id);
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
   const receipt = await settlementRepo.getSettlementReceipt(
-    pool, companyId, branchId, transactionId,
+    pool, companyId, stationId, transactionId,
   );
   if (!receipt) {
     const e = new Error('Receipt not found'); e.status = 404; throw e;
@@ -203,7 +203,8 @@ export async function getSettlementReceipt(authStaff, transactionId) {
  */
 export async function saveCreditSettlement(authStaff, body) {
   const companyId = Number(authStaff.company_id);
-  const branchId  = Number(authStaff.branch_id);
+  const branchId  = Number(authStaff.branch_id);   // physical — for vouchers/ledgers
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id); // for cash_transaction_master
   const staffId   = Number(authStaff.staff_id);
   const customerId = Number(body.customerId);
   const amount     = num(body.amount);
@@ -259,7 +260,7 @@ export async function saveCreditSettlement(authStaff, body) {
     }
 
     const transactionId = await settlementRepo.nextTransactionId(client, companyId);
-    const transactionNo = await settlementRepo.nextTransactionNo(client, companyId, branchId);
+    const transactionNo = await settlementRepo.nextTransactionNo(client, companyId, stationId);
     const childIdBase = await settlementRepo.nextTransactionChildIdBase(client, companyId, allocations.length);
     const auditBy = String(staffId).slice(0, 50);
 
@@ -278,7 +279,7 @@ export async function saveCreditSettlement(authStaff, body) {
     }
 
     await settlementRepo.insertCashTransactionMaster(client, {
-      companyId, branchId, transactionId, transactionNo,
+      companyId, branchId: stationId, transactionId, transactionNo,
       counterNo, customerId, amount,
       totalCurrentAmount: osAmount,
       totalPaidAmount: amount,
@@ -291,7 +292,7 @@ export async function saveCreditSettlement(authStaff, body) {
     for (let i = 0; i < allocations.length; i++) {
       const a = allocations[i];
       await settlementRepo.insertCashTransactionChild(client, {
-        companyId, branchId,
+        companyId, branchId: stationId,
         transactionChildId: childIdBase + i,
         transactionId,
         billId: a.billId,

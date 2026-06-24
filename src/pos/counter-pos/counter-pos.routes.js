@@ -11,9 +11,10 @@ import { authMiddleware }         from '../../middleware/authMiddleware.js';
 export const counterPosRouter = Router();
 
 // Public — no auth
-counterPosRouter.post('/device/enroll', authController.enrollDevice);
-counterPosRouter.post('/staff-list',    authController.listStaff);
-counterPosRouter.post('/pin-login',     authController.pinLogin);
+counterPosRouter.post('/device/enroll',    authController.enrollDevice);
+counterPosRouter.post('/device/stations',  authController.listStationsForEnroll);
+counterPosRouter.post('/staff-list',       authController.listStaff);
+counterPosRouter.post('/pin-login',        authController.pinLogin);
 
 // Protected — require valid POS access token
 counterPosRouter.get('/groups',             authMiddleware, groupController.listGroups);

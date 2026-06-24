@@ -16,6 +16,22 @@ const OPEN_ACCESS = {
 const SESSION_TTL_SECONDS = 300;
 const sessionKey = (staffPk) => `staffsess:${staffPk}`;
 
+/**
+ * Resolve the effective branch_id and station_id for a request.
+ * - branch_id  → always the PHYSICAL location (from station_master.branch_id)
+ * - station_id → software station; comes from JWT `sid` claim (POS device login)
+ *                or from the station_master JOIN on the staff row (backoffice/restaurant)
+ */
+function resolveStaffContext(staffRow, jwtSid = null) {
+  const physicalBranchId = staffRow.physical_branch_id ?? staffRow.branch_id;
+  const stationId = jwtSid ?? staffRow.station_id ?? staffRow.branch_id;
+  return {
+    ...staffRow,
+    branch_id:  Number(physicalBranchId),
+    station_id: Number(stationId),
+  };
+}
+
 /** Drop a cached session. Call after staff/role/permission changes + logout. */
 export async function invalidateStaffSession(staffPk) {
   if (staffPk == null) return;
@@ -33,12 +49,14 @@ export async function authMiddleware(req, res, next) {
     if (payload.typ !== 'access' || payload.sub == null) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
-    const staffPk = Number(payload.sub);
+    const staffPk  = Number(payload.sub);
+    const jwtSid   = payload.sid != null ? Number(payload.sid) : null; // station_id from POS device JWT
 
     // Fast path: cached session (no DB round-trip). No-op miss when Redis off.
     const cached = await cacheGet(sessionKey(staffPk));
     if (cached) {
-      req.authStaff = JSON.parse(cached);
+      const staffRow = JSON.parse(cached);
+      req.authStaff = resolveStaffContext(staffRow, jwtSid);
       req.access = OPEN_ACCESS;
       return next();
     }
@@ -47,8 +65,9 @@ export async function authMiddleware(req, res, next) {
     if (!rows.length) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
-    req.authStaff = rows[0];
-    await cacheSet(sessionKey(staffPk), JSON.stringify(rows[0]), SESSION_TTL_SECONDS);
+    const staffRow = rows[0];
+    await cacheSet(sessionKey(staffPk), JSON.stringify(staffRow), SESSION_TTL_SECONDS);
+    req.authStaff = resolveStaffContext(staffRow, jwtSid);
     req.access = OPEN_ACCESS;
     next();
   } catch {

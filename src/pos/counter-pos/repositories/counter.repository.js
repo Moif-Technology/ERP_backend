@@ -6,17 +6,17 @@
  * Aggregate all PENDING sales totals for a cashier/counter session.
  * Returns one row with all payment mode totals (always one row, even when no sales).
  */
-export async function getPendingSummary(pool, { companyId, branchId, counterNo, staffId }) {
+export async function getPendingSummary(pool, { companyId, stationId, counterNo, staffId }) {
   const { rows } = await pool.query(
     `WITH sm AS (
        SELECT
-         company_id, sales_id, branch_id, counter_no, staff_id,
+         company_id, sales_id, branch_id, station_id, counter_no, staff_id,
          bill_no, amount, payment_mode,
          discount_amount, round_off_adjustment, tax_1_amount,
          transaction_type, cash_amount, credit_card_amount, credit_amount
        FROM ops.sales_master
        WHERE company_id            = $1
-         AND branch_id             = $2
+         AND station_id            = $2
          AND counter_no            = $3
          AND staff_id              = $4
          AND COALESCE(NULLIF(TRIM(counter_close_status), ''), 'PENDING') = 'PENDING'
@@ -121,7 +121,7 @@ export async function getPendingSummary(pool, { companyId, branchId, counterNo, 
        MIN(CASE WHEN amount > 0 THEN bill_no END)                                           AS start_bill_no,
        MAX(CASE WHEN amount > 0 THEN bill_no END)                                           AS end_bill_no
      FROM sm`,
-    [companyId, branchId, counterNo, staffId],
+    [companyId, stationId, counterNo, staffId],
   );
   return rows[0] ?? {
     total_cash: 0, total_credit: 0, total_card: 0, total_online: 0, total_voucher: 0,
@@ -133,7 +133,7 @@ export async function getPendingSummary(pool, { companyId, branchId, counterNo, 
 }
 
 /** Credit settlement receipts (customer receipt) still pending counter close. */
-export async function getCreditReceiptTotals(pool, { companyId, branchId, counterNo, staffId }) {
+export async function getCreditReceiptTotals(pool, { companyId, stationId, counterNo, staffId }) {
   try {
     const { rows } = await pool.query(
       `SELECT
@@ -154,7 +154,7 @@ export async function getCreditReceiptTotals(pool, { companyId, branchId, counte
            'CUSTOMER RECEIPT', 'CUSTOMER_RECEIPT', 'RECEIPT'
          )
          AND COALESCE(NULLIF(TRIM(counter_close_status), ''), 'PENDING') = 'PENDING'`,
-      [companyId, branchId, counterNo, String(staffId)],
+      [companyId, stationId, counterNo, String(staffId)],
     );
     return rows[0] ?? { receipt_cash: 0, receipt_card: 0, receipt_count: 0 };
   } catch (e) {
@@ -166,7 +166,7 @@ export async function getCreditReceiptTotals(pool, { companyId, branchId, counte
 }
 
 /** Mark pending credit receipts as closed after Z Report. */
-export async function markCreditReceiptsAsClosed(client, { companyId, branchId, counterNo, staffId, closeId }) {
+export async function markCreditReceiptsAsClosed(client, { companyId, stationId, counterNo, staffId, closeId }) {
   try {
     await client.query(
       `UPDATE accounts.cash_transaction_master
@@ -180,7 +180,7 @@ export async function markCreditReceiptsAsClosed(client, { companyId, branchId, 
            'CUSTOMER RECEIPT', 'CUSTOMER_RECEIPT', 'RECEIPT'
          )
          AND COALESCE(NULLIF(TRIM(counter_close_status), ''), 'PENDING') = 'PENDING'`,
-      [String(closeId), companyId, branchId, counterNo, String(staffId)],
+      [String(closeId), companyId, stationId, counterNo, String(staffId)],
     );
   } catch (e) {
     if (e.code !== '42P01' && e.code !== '42703') throw e;
@@ -218,18 +218,18 @@ export async function getCreditReceiptTotalsForClose(pool, companyId, closeId) {
 }
 
 /** SUM of cash in / cash out for this session (PENDING only) */
-export async function getCashInOutTotals(pool, { companyId, branchId, counterNo, staffId }) {
+export async function getCashInOutTotals(pool, { companyId, stationId, counterNo, staffId }) {
   const { rows } = await pool.query(
     `SELECT
        COALESCE(SUM(CASE WHEN transaction_type = 'CASH_IN'  THEN amount ELSE 0 END), 0) AS cash_in,
        COALESCE(SUM(CASE WHEN transaction_type = 'CASH_OUT' THEN amount ELSE 0 END), 0) AS cash_out
      FROM ops.cash_in_out
      WHERE company_id  = $1
-       AND branch_id   = $2
+       AND station_id  = $2
        AND counter_no  = $3
        AND staff_id    = $4
        AND close_status = 'PENDING'`,
-    [companyId, branchId, counterNo, staffId],
+    [companyId, stationId, counterNo, staffId],
   );
   return rows[0];
 }
@@ -266,7 +266,7 @@ export async function getNextCloseSeq(client, companyId) {
 /** Insert a counter close record. Returns the new row id and close_no. */
 export async function insertCounterClose(client, data) {
   const baseParams = [
-    data.companyId, data.branchId, data.counterNo, data.staffId, data.reportType,
+    data.companyId, data.branchId, data.stationId ?? data.branchId, data.counterNo, data.staffId, data.reportType,
     data.totalCash, data.totalCredit, data.totalCard, data.totalDiscount,
     data.totalRefund, data.totalRoundOff, data.totalTax, data.grossAmount,
     data.cashIn, data.cashOut,
@@ -283,7 +283,7 @@ export async function insertCounterClose(client, data) {
     await client.query('SAVEPOINT counter_close_insert');
     const { rows } = await client.query(
       `INSERT INTO ops.counter_close (
-         company_id, branch_id, counter_no, staff_id, report_type, close_date,
+         company_id, branch_id, station_id, counter_no, staff_id, report_type, close_date,
          total_cash, total_credit, total_card, total_discount,
          total_refund, total_round_off, total_tax, gross_amount,
          cash_in, cash_out,
@@ -291,13 +291,13 @@ export async function insertCounterClose(client, data) {
          bill_count, start_bill_no, end_bill_no, close_no,
          credit_receipt_cash, credit_receipt_card, credit_receipt_count
        ) VALUES (
-         $1,$2,$3,$4,$5,NOW(),
-         $6,$7,$8,$9,
-         $10,$11,$12,$13,
-         $14,$15,
-         $16,$17,$18,
-         $19,$20,$21,$22,
-         $23,$24,$25
+         $1,$2,$3,$4,$5,$6,NOW(),
+         $7,$8,$9,$10,
+         $11,$12,$13,$14,
+         $15,$16,
+         $17,$18,$19,
+         $20,$21,$22,$23,
+         $24,$25,$26
        ) RETURNING id, close_no`,
       [...baseParams, ...receiptParams],
     );
@@ -308,19 +308,19 @@ export async function insertCounterClose(client, data) {
     await client.query('ROLLBACK TO SAVEPOINT counter_close_insert');
     const { rows } = await client.query(
       `INSERT INTO ops.counter_close (
-         company_id, branch_id, counter_no, staff_id, report_type, close_date,
+         company_id, branch_id, station_id, counter_no, staff_id, report_type, close_date,
          total_cash, total_credit, total_card, total_discount,
          total_refund, total_round_off, total_tax, gross_amount,
          cash_in, cash_out,
          cash_to_be_collected, collected_cash, cash_difference,
          bill_count, start_bill_no, end_bill_no, close_no
        ) VALUES (
-         $1,$2,$3,$4,$5,NOW(),
-         $6,$7,$8,$9,
-         $10,$11,$12,$13,
-         $14,$15,
-         $16,$17,$18,
-         $19,$20,$21,$22
+         $1,$2,$3,$4,$5,$6,NOW(),
+         $7,$8,$9,$10,
+         $11,$12,$13,$14,
+         $15,$16,
+         $17,$18,$19,
+         $20,$21,$22,$23
        ) RETURNING id, close_no`,
       baseParams,
     );
@@ -329,12 +329,12 @@ export async function insertCounterClose(client, data) {
 }
 
 /** Mark all PENDING sales for this session as closed with the close record id */
-export async function markSalesAsClosed(client, { companyId, branchId, counterNo, staffId, closeId }) {
+export async function markSalesAsClosed(client, { companyId, stationId, counterNo, staffId, closeId }) {
   const sql = `
     UPDATE ops.sales_master
     SET counter_close_status = $1, modified_at = NOW()
     WHERE company_id           = $2
-      AND branch_id            = $3
+      AND station_id           = $3
       AND counter_no           = $4
       AND staff_id             = $5
       AND COALESCE(NULLIF(TRIM(counter_close_status), ''), 'PENDING') = 'PENDING'
@@ -342,7 +342,7 @@ export async function markSalesAsClosed(client, { companyId, branchId, counterNo
        AND UPPER(COALESCE(hold_status, '')) NOT IN ('HOLD', 'DELIVERY')`;
   try {
     await client.query('SAVEPOINT sales_close_update');
-    const { rowCount } = await client.query(sql, [String(closeId), companyId, branchId, counterNo, staffId]);
+    const { rowCount } = await client.query(sql, [String(closeId), companyId, stationId, counterNo, staffId]);
     await client.query('RELEASE SAVEPOINT sales_close_update');
     return rowCount;
   } catch (e) {
@@ -350,35 +350,35 @@ export async function markSalesAsClosed(client, { companyId, branchId, counterNo
     await client.query('ROLLBACK TO SAVEPOINT sales_close_update');
     const { rowCount } = await client.query(
       sql.replace('modified_at', 'modified_on'),
-      [String(closeId), companyId, branchId, counterNo, staffId],
+      [String(closeId), companyId, stationId, counterNo, staffId],
     );
     return rowCount;
   }
 }
 
 /** Mark all PENDING cash in/out entries as closed */
-export async function markCashInOutAsClosed(client, { companyId, branchId, counterNo, staffId, closeId }) {
+export async function markCashInOutAsClosed(client, { companyId, stationId, counterNo, staffId, closeId }) {
   await client.query(
     `UPDATE ops.cash_in_out
      SET close_status = 'CLOSED', counter_close_id = $1
      WHERE company_id  = $2
-       AND branch_id   = $3
+       AND station_id  = $3
        AND counter_no  = $4
        AND staff_id    = $5
        AND close_status = 'PENDING'`,
-    [closeId, companyId, branchId, counterNo, staffId],
+    [closeId, companyId, stationId, counterNo, staffId],
   );
 }
 
 /** Insert a cash in or cash out entry */
-export async function insertCashInOut(pool, { companyId, branchId, counterNo, staffId, transactionType, amount, remarks }) {
+export async function insertCashInOut(pool, { companyId, branchId, stationId, counterNo, staffId, transactionType, amount, remarks }) {
   const { rows } = await pool.query(
     `INSERT INTO ops.cash_in_out (
-       company_id, branch_id, counter_no, staff_id,
+       company_id, branch_id, station_id, counter_no, staff_id,
        transaction_type, amount, remarks
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7)
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
      RETURNING id, transaction_type, amount, remarks, created_at`,
-    [companyId, branchId, counterNo, staffId, transactionType, amount, remarks ?? null],
+    [companyId, branchId, stationId ?? branchId, counterNo, staffId, transactionType, amount, remarks ?? null],
   );
   return rows[0];
 }
@@ -401,17 +401,17 @@ export async function getCashInOutByCloseId(pool, { companyId, closeId }) {
 }
 
 /** List cash in/out for current session */
-export async function getCashInOutList(pool, { companyId, branchId, counterNo, staffId }) {
+export async function getCashInOutList(pool, { companyId, stationId, counterNo, staffId }) {
   const { rows } = await pool.query(
     `SELECT id, transaction_type, amount, remarks, created_at
      FROM ops.cash_in_out
      WHERE company_id  = $1
-       AND branch_id   = $2
+       AND station_id  = $2
        AND counter_no  = $3
        AND staff_id    = $4
        AND close_status = 'PENDING'
      ORDER BY created_at`,
-    [companyId, branchId, counterNo, staffId],
+    [companyId, stationId, counterNo, staffId],
   );
   return rows;
 }
@@ -421,13 +421,13 @@ export async function getCashInOutList(pool, { companyId, branchId, counterNo, s
  * Returns rows + summary totals for the same filter set.
  */
 export async function listCashInOutReport(pool, {
-  companyId, branchId, counterNo, dateFrom, dateTo, closeNo, limit,
+  companyId, stationId, counterNo, dateFrom, dateTo, closeNo, limit,
 }) {
   const lim = Math.min(Math.max(Number(limit) || 500, 1), 1000);
   const today = new Date().toISOString().slice(0, 10);
   const from = dateFrom || today;
   const to = dateTo || today;
-  const params = [companyId, branchId, from, to];
+  const params = [companyId, stationId, from, to];
   let counterClause = '';
   let closeClause = '';
 
@@ -456,7 +456,7 @@ export async function listCashInOutReport(pool, {
     LEFT JOIN core.staff_master st
       ON st.company_id = cio.company_id AND st.staff_id = cio.staff_id
     WHERE cio.company_id = $1
-      AND cio.branch_id  = $2
+      AND cio.station_id = $2
       AND cio.created_at::date >= $3::date
       AND cio.created_at::date <= $4::date
       ${counterClause}
@@ -531,16 +531,16 @@ const RECEIPT_LATERAL_JOIN = `
 
 /** List past counter closes (history) with optional date range. */
 export async function getCloseHistory(pool, {
-  companyId, branchId, counterNo, staffId, dateFrom, dateTo, limit,
+  companyId, stationId, counterNo, staffId, dateFrom, dateTo, limit,
 }) {
   const lim = Math.min(Math.max(Number(limit) || 100, 1), 200);
   const today = new Date().toISOString().slice(0, 10);
   const from = dateFrom || today;
   const to = dateTo || today;
-  const params = [companyId, branchId, counterNo, staffId, from, to, lim];
+  const params = [companyId, stationId, counterNo, staffId, from, to, lim];
   const where = `
      WHERE cc.company_id = $1
-       AND cc.branch_id  = $2
+       AND cc.station_id = $2
        AND cc.counter_no = $3
        AND cc.staff_id   = $4
        AND cc.close_date::date >= $5::date

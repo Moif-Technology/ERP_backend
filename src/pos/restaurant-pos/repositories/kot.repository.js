@@ -20,20 +20,20 @@ export async function nextKotChildId(client, companyId) {
   return Number(rows[0].n);
 }
 
-export async function nextKotNumber(client, companyId, branchId, prefix) {
+export async function nextKotNumber(client, companyId, stationId, prefix) {
   const p = prefix == null ? '' : String(prefix);
   const { rows } = await client.query(
     `SELECT COALESCE(MAX(kot_number), 0) + 1 AS n
      FROM ops.kot_master
-     WHERE company_id = $1 AND branch_id = $2 AND COALESCE(kot_prefix, '') = $3`,
-    [companyId, branchId, p]
+     WHERE company_id = $1 AND station_id = $2 AND COALESCE(kot_prefix, '') = $3`,
+    [companyId, stationId, p]
   );
   return Number(rows[0].n);
 }
 
 export async function findKotMaster(client, companyId, kotMasterId) {
   const { rows } = await client.query(
-    `SELECT kot_master_id, branch_id, kot_number, kot_prefix, area_id, table_id, chair_no
+    `SELECT kot_master_id, branch_id, station_id, kot_number, kot_prefix, area_id, table_id, chair_no
      FROM ops.kot_master
      WHERE company_id = $1 AND kot_master_id = $2`,
     [companyId, kotMasterId]
@@ -45,6 +45,7 @@ export async function insertKotMaster(client, row) {
   const {
     companyId,
     branchId,
+    stationId,
     kotMasterId,
     kotNumber,
     kotPrefix,
@@ -77,10 +78,10 @@ export async function insertKotMaster(client, row) {
         tax1_amount_m, tax2_amount_m, tax3_amount_m,
         tax1_rate_m, tax2_rate_m, tax3_rate_m,
         round_off_adj, nof_customer, remarks,
-        created_by, modified_by
+        created_by, modified_by, station_id
       ) VALUES (
         $1,$2,$3,$4,$5,$6, NOW(), NOW(), $7,$8,$9,$10,$11,
-        $12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25
+        $12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
       )`,
     [
       companyId,
@@ -108,6 +109,7 @@ export async function insertKotMaster(client, row) {
       remarks,
       createdBy,
       modifiedBy,
+      stationId ?? branchId,
     ]
   );
 }
@@ -142,6 +144,7 @@ export async function insertKotChild(client, row) {
   const {
     companyId,
     branchId,
+    stationId,
     kotChildId,
     kotMasterId,
     productId,
@@ -180,9 +183,9 @@ export async function insertKotChild(client, row) {
         tax_1_amount, tax_2_amount, tax_3_amount,
         tax_1_rate, tax_2_rate, tax_3_rate,
         group_id, modifier, kot_display_status,
-        created_by, modified_by
+        created_by, modified_by, station_id
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27
       )`,
     [
       companyId,
@@ -211,6 +214,7 @@ export async function insertKotChild(client, row) {
       kotDisplayStatus,
       createdBy,
       modifiedBy,
+      stationId ?? branchId,
     ]
   );
 }
@@ -219,7 +223,7 @@ export async function insertKotChild(client, row) {
 export async function findKotMasterSettlement(client, companyId, kotMasterId) {
   try {
     const { rows } = await client.query(
-      `SELECT kot_master_id, branch_id, kot_status, bill_id
+      `SELECT kot_master_id, branch_id, station_id, kot_status, bill_id
        FROM ops.kot_master
        WHERE company_id = $1 AND kot_master_id = $2`,
       [companyId, kotMasterId]
@@ -228,7 +232,7 @@ export async function findKotMasterSettlement(client, companyId, kotMasterId) {
   } catch (e) {
     if (e.code === '42703') {
       const { rows } = await client.query(
-        `SELECT kot_master_id, branch_id, kot_status, NULL::bigint AS bill_id
+        `SELECT kot_master_id, branch_id, NULL::bigint AS station_id, kot_status, NULL::bigint AS bill_id
          FROM ops.kot_master
          WHERE company_id = $1 AND kot_master_id = $2`,
         [companyId, kotMasterId]
@@ -270,11 +274,11 @@ export async function updateKotMasterSettled(client, companyId, kotMasterId, sal
  * List open (unsettled) KOT headers for the order list.
  * Optional filters: areaId (number), kotNumberSearch (string).
  */
-export async function listOpenKots(executor, companyId, branchId, { areaId, kotNumberSearch } = {}) {
-  const params = [companyId, branchId];
+export async function listOpenKots(executor, companyId, stationId, { areaId, kotNumberSearch } = {}) {
+  const params = [companyId, stationId];
   const clauses = [
     `km.company_id = $1`,
-    `km.branch_id = $2`,
+    `km.station_id = $2`,
     `km.kot_status != 'SETTLED'`,
   ];
 
@@ -304,11 +308,11 @@ export async function listOpenKots(executor, companyId, branchId, { areaId, kotN
      FROM ops.kot_master km
      LEFT JOIN core.area_master am
        ON am.company_id = km.company_id
-      AND am.branch_id = km.branch_id
+      AND am.branch_id = COALESCE(km.station_id, km.branch_id)
       AND am.area_id = km.area_id
      LEFT JOIN core.table_master tm
        ON tm.company_id = km.company_id
-      AND tm.branch_id = km.branch_id
+      AND tm.branch_id = COALESCE(km.station_id, km.branch_id)
       AND tm.table_id = km.table_id
      WHERE ${clauses.join(' AND ')}
      ORDER BY km.kot_time DESC NULLS LAST, km.kot_master_id DESC`,
@@ -344,7 +348,7 @@ export async function listKotDetailRows(executor, companyId, kotMasterId) {
      FROM ops.kot_master km
      LEFT JOIN core.area_master am
        ON am.company_id = km.company_id
-      AND am.branch_id = km.branch_id
+      AND am.branch_id = COALESCE(km.station_id, km.branch_id)
       AND am.area_id = km.area_id
      JOIN ops.kot_child kc
        ON kc.company_id = km.company_id

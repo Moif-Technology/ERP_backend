@@ -88,7 +88,7 @@ const DEFAULT_PARAMETERS = [
   ['ReceiptVoucherNameCustomer', null, 9, 'Receipt Voucher'],
 ];
 
-const SEED_STATION_ID = 10;
+const SEED_STATION_ID = null;
 
 async function insertChartAccount(client, companyId, row, actor) {
   const [

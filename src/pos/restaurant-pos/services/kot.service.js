@@ -106,15 +106,19 @@ async function areaKotPrefix(client, companyId, branchId, areaId) {
  */
 export async function saveKot(pool, body, authStaff, access = null) {
   const companyId = Number(authStaff.company_id);
-  const branchId = num(body.StationID ?? body.branchId ?? authStaff.branch_id, 0);
-  if (branchId < 1) {
+  const branchId  = Number(authStaff.branch_id);
+  const stationId = num(body.StationID ?? body.branchId ?? authStaff.station_id ?? authStaff.branch_id, 0);
+  if (stationId < 1) {
     const err = new Error('StationID / branchId is required');
     err.status = 400;
     throw err;
   }
-  const okBranch = await branchRepo.branchBelongsToCompany(pool, companyId, branchId);
-  if (!okBranch) {
-    const err = new Error('Invalid branch for this company');
+  const { rows: stnRows } = await pool.query(
+    `SELECT 1 FROM core.station_master WHERE company_id = $1 AND station_id = $2 AND is_deleted = FALSE LIMIT 1`,
+    [companyId, stationId]
+  );
+  if (!stnRows.length) {
+    const err = new Error('Invalid station for this company');
     err.status = 400;
     throw err;
   }
@@ -172,7 +176,7 @@ export async function saveKot(pool, body, authStaff, access = null) {
         err.status = 404;
         throw err;
       }
-      if (Number(master.branch_id) !== branchId) {
+      if (Number(master.station_id ?? master.branch_id) !== stationId) {
         const err = new Error('KOT belongs to a different branch');
         err.status = 400;
         throw err;
@@ -193,6 +197,7 @@ export async function saveKot(pool, body, authStaff, access = null) {
         await kotRepo.insertKotChild(client, {
           companyId,
           branchId,
+          stationId,
           kotChildId,
           kotMasterId,
           productId: parseLong(it.ProductID ?? it.productID),
@@ -227,13 +232,14 @@ export async function saveKot(pool, body, authStaff, access = null) {
 
       let prefix = (body.mfKotPrefix ?? '').toString().trim();
       if (!prefix) {
-        prefix = await areaKotPrefix(client, companyId, branchId, areaId);
+        prefix = await areaKotPrefix(client, companyId, stationId, areaId);
       }
-      const kotNumber = await kotRepo.nextKotNumber(client, companyId, branchId, prefix);
+      const kotNumber = await kotRepo.nextKotNumber(client, companyId, stationId, prefix);
 
       await kotRepo.insertKotMaster(client, {
         companyId,
         branchId,
+        stationId,
         kotMasterId,
         kotNumber,
         kotPrefix: prefix.slice(0, 50),
@@ -272,6 +278,7 @@ export async function saveKot(pool, body, authStaff, access = null) {
         await kotRepo.insertKotChild(client, {
           companyId,
           branchId,
+          stationId,
           kotChildId,
           kotMasterId,
           productId: parseLong(it.ProductID ?? it.productID),
@@ -317,11 +324,11 @@ export async function saveKot(pool, body, authStaff, access = null) {
 
 export async function listKots(pool, authStaff, query = {}) {
   const companyId = Number(authStaff.company_id);
-  const branchId = Number(authStaff.branch_id);
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
   const areaId = query.areaId != null ? Number(query.areaId) : null;
   const kotNumberSearch = query.search ?? null;
 
-  const rows = await kotRepo.listOpenKots(pool, companyId, branchId, { areaId, kotNumberSearch });
+  const rows = await kotRepo.listOpenKots(pool, companyId, stationId, { areaId, kotNumberSearch });
   const data = rows.map((r) => ({
     kotMasterID: String(r.kot_master_id),
     KotMasterID: String(r.kot_master_id),

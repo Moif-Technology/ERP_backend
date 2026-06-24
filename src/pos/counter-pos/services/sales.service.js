@@ -240,6 +240,7 @@ async function postCreditSaleVoucher(client, args) {
 export async function holdBill(authStaff, body) {
   const companyId = Number(authStaff.company_id);
   const branchId  = Number(authStaff.branch_id);
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
   const staffId   = Number(authStaff.staff_id);
   const counterNo = Number(body.counterNo ?? 1);
   const { cartItems, recalledHoldSalesId } = body;
@@ -269,7 +270,7 @@ export async function holdBill(authStaff, body) {
     }
 
     await repo.insertHoldMaster(client, {
-      companyId, salesId, branchId, counterNo,
+      companyId, salesId, branchId, stationId, counterNo,
       billDate: now,
       customerId: payload.customerId ?? null,
       paymentMode: normalizeBillPaymentMode(payload.paymentMode ?? PM.CASH),
@@ -287,7 +288,7 @@ export async function holdBill(authStaff, body) {
     });
 
     await repo.insertSalesChildren(
-      client, companyId, salesId, branchId, lines, childIdBase, staffId,
+      client, companyId, salesId, branchId, lines, childIdBase, staffId, stationId,
     );
 
     await client.query('COMMIT');
@@ -315,6 +316,7 @@ function buildDeliveryRemarks(body, baseRemark) {
 export async function saveDeliveryBill(authStaff, body) {
   const companyId = Number(authStaff.company_id);
   const branchId  = Number(authStaff.branch_id);
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
   const staffId   = Number(authStaff.staff_id);
   const counterNo = Number(body.counterNo ?? 1);
   const { cartItems, recalledDeliverySalesId } = body;
@@ -352,7 +354,7 @@ export async function saveDeliveryBill(authStaff, body) {
     }
 
     await repo.insertDeliveryMaster(client, {
-      companyId, salesId, branchId, counterNo,
+      companyId, salesId, branchId, stationId, counterNo,
       billDate: now,
       customerId: payload.customerId,
       paymentMode: 'PENDING',
@@ -371,7 +373,7 @@ export async function saveDeliveryBill(authStaff, body) {
     });
 
     await repo.insertSalesChildren(
-      client, companyId, salesId, branchId, lines, childIdBase, staffId,
+      client, companyId, salesId, branchId, lines, childIdBase, staffId, stationId,
     );
 
     await client.query('COMMIT');
@@ -386,8 +388,8 @@ export async function saveDeliveryBill(authStaff, body) {
 
 export async function getDeliveryBills(authStaff) {
   const companyId = Number(authStaff.company_id);
-  const branchId  = Number(authStaff.branch_id);
-  return repo.getDeliveryBills(pool, companyId, branchId);
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
+  return repo.getDeliveryBills(pool, companyId, stationId);
 }
 
 export async function recallDeliveryBill(authStaff, salesId) {
@@ -573,11 +575,11 @@ export async function settleDeliveryBulk(authStaff, body) {
   }
 }
 
-/** List all active held bills for this branch */
+/** List all active held bills for this station */
 export async function getHeldBills(authStaff) {
   const companyId = Number(authStaff.company_id);
-  const branchId  = Number(authStaff.branch_id);
-  return repo.getHeldBills(pool, companyId, branchId);
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
+  return repo.getHeldBills(pool, companyId, stationId);
 }
 
 /** Get master + items for one held bill */
@@ -612,10 +614,10 @@ function resolveCounterCloseNo(row) {
   return st;
 }
 
-/** Sales viewer ΓÇö posted bills for counter with date/customer filters */
+/** Sales viewer — posted bills for counter with date/customer filters */
 export async function listSalesViewer(authStaff, query) {
   const companyId = Number(authStaff.company_id);
-  const branchId  = Number(authStaff.branch_id);
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
   const counterNo = Number(query.counterNo ?? 1);
   const today     = new Date().toISOString().slice(0, 10);
   const dateFrom  = query.dateFrom || today;
@@ -626,7 +628,7 @@ export async function listSalesViewer(authStaff, query) {
 
   const rows = await repo.listPostedSales(pool, {
     companyId,
-    branchId,
+    stationId,
     counterNo,
     dateFrom,
     dateTo,
@@ -650,11 +652,12 @@ export async function listSalesViewer(authStaff, query) {
   }));
 }
 
-/** Sales viewer ΓÇö single bill with line items */
+/** Sales viewer — single bill with line items */
 export async function getSalesViewerBill(authStaff, salesId) {
   const companyId = Number(authStaff.company_id);
   const branchId  = Number(authStaff.branch_id);
-  const detail = await repo.getPostedBillDetail(pool, companyId, branchId, Number(salesId));
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
+  const detail = await repo.getPostedBillDetail(pool, companyId, stationId, Number(salesId));
   if (!detail) {
     const e = new Error('Bill not found');
     e.status = 404;
@@ -741,9 +744,9 @@ export async function getSalesViewerBill(authStaff, salesId) {
 /** Staff-wise sales report for the current pending counter session */
 export async function getStaffWiseReport(authStaff, query) {
   const companyId = Number(authStaff.company_id);
-  const branchId  = Number(authStaff.branch_id);
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
   const counterNo = Number(query.counterNo ?? 1);
-  const rows = await repo.getStaffWiseSales(pool, { companyId, branchId, counterNo });
+  const rows = await repo.getStaffWiseSales(pool, { companyId, stationId, counterNo });
   return rows.map(r => ({
     staffId:      r.staff_id,
     staffName:    r.staff_name ?? `Staff #${r.staff_id}`,
@@ -782,6 +785,7 @@ export async function getNextBillNo(authStaff) {
 export async function saveBill(authStaff, body) {
   const companyId = Number(authStaff.company_id);
   const branchId  = Number(authStaff.branch_id);
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
   const staffId   = Number(authStaff.staff_id);
   const counterNo = Number(body.counterNo ?? 1);
 
@@ -837,7 +841,7 @@ export async function saveBill(authStaff, body) {
       const taxRate = items[0]?.vatPer ?? 0;
 
       await repo.insertSalesMaster(client, {
-        companyId, salesId, branchId, counterNo,
+        companyId, salesId, branchId, stationId, counterNo,
         billDate: now,
         customerId: customerId ?? null,
         paymentMode: billPaymentMode,
@@ -861,13 +865,12 @@ export async function saveBill(authStaff, body) {
 
       await repo.insertSalesChildren(
         client, companyId, salesId, branchId,
-        items, childIdBase, staffId,
+        items, childIdBase, staffId, stationId,
       );
 
       if (isMultiPaymentBillMode(billPaymentMode) && splits.length > 0) {
         await repo.insertPaymentSplits(client, {
-          companyId, salesId, branchId, counterNo, staffId, billDate: now,
-          splits,
+          companyId, salesId, branchId, counterNo, staffId, billDate: now, splits,
         });
       }
 

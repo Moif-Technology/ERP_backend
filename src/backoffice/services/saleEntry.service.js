@@ -383,7 +383,7 @@ export async function createSale(pool, body, authStaff, { salesChannel = 'ERP' }
     throw err;
   }
 
-  const counterNo = Math.max(1, Math.trunc(num(body.counterNo, 1)));
+  const counterNo = 99;
 
   const cashAmount = paymentMode === 'CASH' ? paid : 0;
   const creditAmount = paymentMode === 'CREDIT' ? netClient : 0;
@@ -413,7 +413,7 @@ export async function createSale(pool, body, authStaff, { salesChannel = 'ERP' }
       fiscalYear: new Date().getFullYear(),
     });
 
-    await salesRepo.insertSalesMaster(client, {
+    await saleEntryRepo.insertSalesMaster(client, {
       companyId,
       salesId,
       branchId,
