@@ -51,9 +51,9 @@ export async function getCustomerOutstandingBills(authStaff, customerId) {
     const e = new Error('Customer not found'); e.status = 404; throw e;
   }
 
-  const ledgerOs = await customerRepo.getCustomerOsBalance(pool, companyId, cid);
+  const ledgerOs = await customerRepo.getCustomerOsBalance(pool, companyId, cid, { postedOnly: true });
   const rawBills = await settlementRepo.getOutstandingBills(pool, companyId, cid);
-  const bills = settlementRepo.reconcileBillsWithLedger(rawBills, ledgerOs, cid);
+  const bills = settlementRepo.reconcilePostedBills(rawBills);
   const billsSum = bills.reduce((s, b) => s + num(b.currentAmount), 0);
 
   return {
@@ -61,9 +61,9 @@ export async function getCustomerOutstandingBills(authStaff, customerId) {
     customerCode: customer.customer_code,
     customerName: customer.customer_name,
     ledgerOs,
-    billsTotal:   Math.max(ledgerOs, 0),
+    billsTotal:   billsSum,
     billsSum,
-    osAmount:     Math.max(ledgerOs, 0),
+    osAmount:     billsSum > 0.005 ? billsSum : Math.max(ledgerOs, 0),
     bills,
   };
 }
@@ -229,13 +229,15 @@ export async function saveCreditSettlement(authStaff, body) {
   try {
     await client.query('BEGIN');
 
-    const osAmount = await customerRepo.getCustomerOsBalance(client, companyId, customerId);
+    const osAmount = await customerRepo.getCustomerOsBalance(client, companyId, customerId, { postedOnly: true });
     const rawBills = await settlementRepo.getOutstandingBills(client, companyId, customerId);
-    const bills = settlementRepo.reconcileBillsWithLedger(rawBills, osAmount, customerId);
-    const payableTotal = resolvePayableTotal(bills, osAmount);
+    const bills = settlementRepo.reconcilePostedBills(rawBills);
+    const payableTotal = bills.reduce((s, b) => s + num(b.currentAmount), 0);
 
     if (!bills.length) {
-      const e = new Error('No outstanding bills found for this customer'); e.status = 400; throw e;
+      const e = new Error('No posted outstanding bills found for this customer — post the sale first');
+      e.status = 400;
+      throw e;
     }
     if (amount > payableTotal + 0.02) {
       const e = new Error(`Amount cannot exceed outstanding (${payableTotal.toFixed(3)})`);
@@ -247,6 +249,7 @@ export async function saveCreditSettlement(authStaff, body) {
     if (!allocations.length) {
       const e = new Error('Could not allocate payment to any bill'); e.status = 400; throw e;
     }
+    await settlementRepo.assertPostedBillAllocations(client, companyId, allocations);
 
     const customerLedgerId = await ensureCustomerLedgerForId(client, companyId, branchId, customerId);
     if (!customerLedgerId) {

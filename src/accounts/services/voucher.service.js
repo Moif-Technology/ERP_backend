@@ -406,6 +406,84 @@ export async function getAgingSummary(pool, authStaff, query) {
   };
 }
 
+export async function getAgingDetail(pool, authStaff, accountIdParam, query) {
+  const companyId = Number(authStaff.company_id);
+  const accountId = Math.trunc(Number(accountIdParam));
+  if (!Number.isFinite(accountId) || accountId < 1) {
+    const err = new Error('Invalid accountId');
+    err.status = 400;
+    throw err;
+  }
+
+  const summaryType = query.summaryType === 'payable' ? 'payable' : 'receivable';
+  const branchId = parseOptionalBranchId(query.branchId);
+  const rows = await voucherRepo.getAgingDetail(pool, companyId, accountId, {
+    branchId,
+    summaryType,
+    postStatus: query.postStatus || undefined,
+    dateFrom: query.dateFrom || undefined,
+    dateTo: query.dateTo || undefined,
+  });
+
+  const isPayable = summaryType === 'payable';
+  let totalOutstanding = 0;
+  let totalBillAmount = 0;
+  let totalPaid = 0;
+
+  const bills = rows.map((r) => {
+    const debit = Number(r.debit_amount) || 0;
+    const credit = Number(r.credit_amount) || 0;
+    const outstanding = Number(r.outstanding) || 0;
+    const billAmount = isPayable ? credit : debit;
+    const paidAmount = Math.max(0, round2(billAmount - outstanding));
+    totalOutstanding += outstanding;
+    totalBillAmount += billAmount;
+    totalPaid += paidAmount;
+
+    const prefix = r.voucher_prefix || '';
+    const autoNo = r.auto_voucher_no != null ? String(r.auto_voucher_no) : '';
+    const billNo = `${prefix}${autoNo}`.trim() || r.reference_no || `V-${r.voucher_master_id}`;
+
+    const ageDays = Number(r.age_days) || 0;
+    let ageBucket = '120+';
+    if (ageDays <= 30) ageBucket = '0-30';
+    else if (ageDays <= 60) ageBucket = '30-60';
+    else if (ageDays <= 120) ageBucket = '60-120';
+
+    return {
+      voucherMasterId: Number(r.voucher_master_id),
+      billNo,
+      referenceNo: r.reference_no || null,
+      billDate: r.voucher_date,
+      billAmount: round2(billAmount),
+      paidAmount: round2(paidAmount),
+      outstanding: round2(outstanding),
+      pdcPending: round2(Number(r.pdc_pending) || 0),
+      ageDays,
+      ageBucket,
+      postStatus: r.post_status,
+      voucherName: r.voucher_name || r.voucher_type_code || null,
+      narration: r.narration || null,
+    };
+  });
+
+  return {
+    accountId,
+    summaryType,
+    bills,
+    totals: {
+      billCount: bills.length,
+      billAmount: round2(totalBillAmount),
+      paidAmount: round2(totalPaid),
+      outstanding: round2(totalOutstanding),
+    },
+  };
+}
+
+function round2(n) {
+  return Math.round(Number(n) * 100) / 100;
+}
+
 export async function getTrialBalance(pool, authStaff, query) {
   const companyId = Number(authStaff.company_id);
   const rows = await voucherRepo.getTrialBalance(pool, companyId, {

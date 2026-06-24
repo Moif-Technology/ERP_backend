@@ -14,6 +14,7 @@ voucherRouter.get('/balance-sheet', voucherController.getBalanceSheet);
 voucherRouter.get('/profit-and-loss', voucherController.getProfitAndLoss);
 voucherRouter.get('/party-accounts', voucherController.listPartyAccounts);
 voucherRouter.get('/aging-summary', voucherController.getAgingSummary);
+voucherRouter.get('/aging-detail/:accountId', voucherController.getAgingDetail);
 voucherRouter.get('/ledger/:accountId', voucherController.getLedgerTransactions);
 
 voucherRouter.get('/', voucherController.listVouchers);

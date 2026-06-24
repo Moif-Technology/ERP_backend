@@ -94,10 +94,21 @@ export async function updateCostsOnPurchase(client, companyId, branchId, product
 
 /**
  * Get current stock qty for a product at a branch.
- * Checks stock_balance_entry first, falls back to product_log_entry sum.
+ * Uses product_inventory.qty_on_hand (same as sales UI / privilege checks),
+ * falling back to the latest product_log_entry balance when no inventory row exists.
  */
 export async function getStockQty(client, companyId, branchId, productId) {
   const { rows } = await client.query(
+    `SELECT qty_on_hand
+     FROM core.product_inventory
+     WHERE company_id = $1 AND branch_id = $2 AND product_id = $3
+     LIMIT 1`,
+    [companyId, branchId, productId],
+  );
+  if (rows[0] && rows[0].qty_on_hand != null) {
+    return Number(rows[0].qty_on_hand) || 0;
+  }
+  const { rows: logRows } = await client.query(
     `SELECT COALESCE(
        (SELECT balance_qty FROM ops.product_log_entry
         WHERE company_id = $1 AND branch_id = $2 AND product_id = $3
@@ -106,5 +117,5 @@ export async function getStockQty(client, companyId, branchId, productId) {
      )::numeric AS qty`,
     [companyId, branchId, productId],
   );
-  return Number(rows[0].qty);
+  return Number(logRows[0]?.qty) || 0;
 }

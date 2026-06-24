@@ -215,6 +215,21 @@ export async function getSourcePurchaseForReturn(pool, companyId, branchId, purc
   return rows[0] || null;
 }
 
+export async function getSourcePurchaseByIdForReturn(pool, companyId, branchId, purchaseId) {
+  const pid = Math.trunc(Number(purchaseId));
+  if (!Number.isFinite(pid) || pid < 1) return null;
+  const { rows } = await pool.query(
+    `SELECT p.*
+     FROM ops.purchase_master p
+     WHERE p.company_id = $1 AND p.branch_id = $2 AND p.purchase_id = $3
+       AND ${purchaseOnlyFilter('p')}
+       AND (p.record_status IS NULL OR p.record_status IN ('ACTIVE', 'CANCELLED'))
+     LIMIT 1`,
+    [companyId, branchId, pid],
+  );
+  return rows[0] || null;
+}
+
 export const listPurchaseLines = purchaseEntryRepo.listPurchaseLines;
 export const softDeletePurchaseChildren = purchaseEntryRepo.softDeletePurchaseChildren;
 export const insertPurchaseChild = purchaseEntryRepo.insertPurchaseChild;
