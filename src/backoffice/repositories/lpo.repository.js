@@ -60,9 +60,10 @@ export async function insertLpoMaster(client, row) {
        company_id, lpo_master_id, branch_id, lpo_no, lpo_date, supplier_id,
        lpo_amount, discount_amount, sub_total, status, record_status,
        order_form_no, supplier_display_name, supplier_quotation_no, discount_mode,
-       by_supplier, list_items, use_disc_pct, lpo_terms
+       by_supplier, list_items, use_disc_pct, lpo_terms,
+       created_by, modified_by
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
      )`,
     [
       row.companyId,
@@ -83,7 +84,9 @@ export async function insertLpoMaster(client, row) {
       row.bySupplier,
       row.listItems,
       row.useDiscPct,
-      row.lpoTerms,
+      row.lpoTerms ?? '',
+      row.createdBy ?? 0,
+      row.modifiedBy ?? 0,
     ],
   );
 }
@@ -96,9 +99,9 @@ export async function insertLpoChild(client, row) {
        qty, unit_price, discount, sub_total, uom, barcode, description,
        foc_qty, pack_qty, own_ref_no, base_cost, disc_percent, vat_percent, vat_amount,
        input_tax_1_amount, input_tax_1_rate,
-       record_status
+       record_status, created_by, modified_by
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
      )`,
     [
       row.companyId,
@@ -111,8 +114,8 @@ export async function insertLpoChild(client, row) {
       row.itemDiscount,
       row.subtotalAmount,
       row.uom,
-      row.barcode,
-      row.description,
+      row.barcode ?? '',
+      row.description ?? '',
       row.focQty,
       row.packQty,
       ownRefForDb(row.ownRefNo),
@@ -123,6 +126,8 @@ export async function insertLpoChild(client, row) {
       row.vatAmount,
       row.vatPercent,
       row.recordStatus || 'ACTIVE',
+      row.createdBy ?? 0,
+      row.modifiedBy ?? 0,
     ],
   );
 }

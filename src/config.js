@@ -44,6 +44,9 @@ export const config = {
   jwtPlatformAccessExpires: process.env.JWT_PLATFORM_ACCESS_EXPIRES || '30m',
   jwtPlatformRefreshExpires: process.env.JWT_PLATFORM_REFRESH_EXPIRES || '1d',
   corsOrigins: parseOrigins(process.env.CORS_ORIGINS),
+  resendApiKey: process.env.RESEND_API_KEY || '',
+  emailFrom: process.env.EMAIL_FROM || 'noreply@moifone.com',
+  frontendUrl: (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, ''),
 };
 
 export function assertConfig() {

@@ -91,6 +91,7 @@ export async function createCustomer(pool, body, authStaff) {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
       `biz.customer_master:${companyId}`,
     ]);
+    const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
     await assertLimitAvailable({
       companyId,
       limitCode: 'customers',
@@ -106,7 +107,6 @@ export async function createCustomer(pool, body, authStaff) {
       throw err;
     }
     const customerId = await customerRepo.nextCustomerId(client, companyId);
-    const branchId = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
     const parentAccId = body.parentAccId ?? body.customerParentAccId ?? null;
 
     const created = await customerRepo.insertCustomer(client, {

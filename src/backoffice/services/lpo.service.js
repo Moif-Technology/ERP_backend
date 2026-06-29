@@ -3,6 +3,7 @@ import * as branchRepo from '../../shared/repositories/branch.repository.js';
 import * as lpoRepo from '../repositories/lpo.repository.js';
 import * as supplierRepo from '../repositories/supplier.repository.js';
 import { nextDocNo } from '../../shared/services/docSequence.service.js';
+import { actorStaffPk } from '../../utils/actorStaff.js';
 
 function parseBranchId(raw) {
   const n = Number(raw);
@@ -216,7 +217,7 @@ function normalizeLpoLines(bodyLines) {
 }
 
 function buildMasterPayload(body, ctx) {
-  const { companyId, branchId, lpoMasterId, supplierId, lpoDate, sumSub, sumLineTotal } = ctx;
+  const { companyId, branchId, lpoMasterId, supplierId, lpoDate, sumSub, sumLineTotal, staffId } = ctx;
 
   const headerDisc = round2(num(body.discountAmount ?? body.headerDiscount, 0));
   const expectedAfterHeader = round2(sumLineTotal - headerDisc);
@@ -262,6 +263,8 @@ function buildMasterPayload(body, ctx) {
     listItems: Boolean(body.listItem ?? body.listItems ?? body.list_items),
     useDiscPct: Boolean(body.useDiscPct ?? body.use_disc_pct),
     lpoTerms: body.lpoTerms != null ? String(body.lpoTerms).trim().slice(0, 2000) : '',
+    createdBy: staffId,
+    modifiedBy: staffId,
   };
 }
 
@@ -318,6 +321,7 @@ export async function createLpo(pool, body, authStaff) {
       sequenceCode: 'LPO',
       fiscalYear: new Date().getFullYear(),
     });
+    const staffId = actorStaffPk(authStaff) ?? 0;
     const masterRow = buildMasterPayload(body, {
       companyId,
       branchId,
@@ -326,6 +330,7 @@ export async function createLpo(pool, body, authStaff) {
       lpoDate,
       sumSub,
       sumLineTotal,
+      staffId,
     });
     // Use auto-generated lpo_no unless caller explicitly provided one.
     const callerLpoNo = (String(body.lpoNo ?? body.lpo_no ?? '')).trim().replace(/\D/g, '');
@@ -375,6 +380,8 @@ export async function createLpo(pool, body, authStaff) {
         discPercent: L.discPercent,
         vatPercent: L.vatPercent,
         vatAmount: L.vatAmount,
+        createdBy: staffId,
+        modifiedBy: staffId,
       });
     }
 
@@ -451,6 +458,7 @@ export async function updateLpo(pool, body, authStaff, lpoMasterIdParam) {
       }
     }
 
+    const staffId = actorStaffPk(authStaff) ?? 0;
     const masterRow = buildMasterPayload(body, {
       companyId,
       branchId,
@@ -459,6 +467,7 @@ export async function updateLpo(pool, body, authStaff, lpoMasterIdParam) {
       lpoDate,
       sumSub,
       sumLineTotal,
+      staffId,
     });
 
     try {
@@ -505,6 +514,8 @@ export async function updateLpo(pool, body, authStaff, lpoMasterIdParam) {
         discPercent: L.discPercent,
         vatPercent: L.vatPercent,
         vatAmount: L.vatAmount,
+        createdBy: staffId,
+        modifiedBy: staffId,
       });
     }
 

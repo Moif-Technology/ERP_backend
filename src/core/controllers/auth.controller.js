@@ -1,5 +1,6 @@
 import * as authService from '../services/auth.service.js';
 import * as passwordResetService from '../services/passwordReset.service.js';
+import * as emailVerifyService from '../services/emailVerify.service.js';
 import { pool } from '../../config/db.js';
 import * as staffRepo from '../repositories/staff.repository.js';
 import { invalidateStaffSession } from '../../middleware/authMiddleware.js';
@@ -50,11 +51,28 @@ function handleAuthError(res, err, fallbackMessage) {
 export async function register(req, res) {
   try {
     const result = await authService.registerAccount(req.body);
-    const { status, accessToken, refreshToken, session } = result;
-    res.cookie(REFRESH_COOKIE, refreshToken, REFRESH_COOKIE_OPTS);
-    return res.status(status).json({ accessToken, session });
+    return res.status(result.status).json({ ok: result.ok, message: result.message });
   } catch (err) {
     return handleAuthError(res, err, 'Registration failed');
+  }
+}
+
+export async function verifyEmail(req, res) {
+  try {
+    const token = String(req.query.token || req.body?.token || '');
+    const result = await emailVerifyService.verifyEmailToken(token);
+    return res.json(result);
+  } catch (err) {
+    return handleAuthError(res, err, 'Email verification failed');
+  }
+}
+
+export async function resendVerification(req, res) {
+  try {
+    const result = await emailVerifyService.resendVerification(req.body?.email);
+    return res.json(result);
+  } catch (err) {
+    return handleAuthError(res, err, 'Could not resend verification email');
   }
 }
 

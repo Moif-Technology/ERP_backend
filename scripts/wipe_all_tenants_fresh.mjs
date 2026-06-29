@@ -78,10 +78,13 @@ async function main() {
 
   // Discover all tables that carry a company_id column (tenant-scoped).
   const { rows: scoped } = await client.query(`
-    SELECT table_schema || '.' || table_name AS tbl
-    FROM information_schema.columns
-    WHERE column_name = 'company_id'
-      AND table_schema NOT IN ('pg_catalog', 'information_schema')
+    SELECT c.table_schema || '.' || c.table_name AS tbl
+    FROM information_schema.columns c
+    JOIN information_schema.tables t
+      ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+    WHERE c.column_name = 'company_id'
+      AND c.table_schema NOT IN ('pg_catalog', 'information_schema')
+      AND t.table_type = 'BASE TABLE'
     ORDER BY 1
   `);
   const tenantTables = scoped

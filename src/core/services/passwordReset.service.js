@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { pool, withTransaction } from '../../config/db.js';
 import * as staffRepo from '../repositories/staff.repository.js';
 import * as passwordResetRepo from '../repositories/passwordReset.repository.js';
+import { sendPasswordResetEmail } from './email.service.js';
 
 const OTP_TTL_MS = 15 * 60 * 1000;
 const MIN_PASSWORD_LEN = 8;
@@ -54,13 +55,19 @@ export async function requestForgotPasswordOtp(body) {
     await passwordResetRepo.insertToken(client, row.id, otpHash, expiresAt);
   });
 
-  const label = row.email?.trim() || row.login_name || `staff #${row.id}`;
-  console.log('');
-  console.log('---------------------------------------------------------');
-  console.log(`  [Password reset] OTP for "${label}" (login: ${row.login_name})`);
-  console.log(`  Code: ${plainOtp}  (expires in ${OTP_TTL_MS / 60000} minutes)`);
-  console.log('---------------------------------------------------------');
-  console.log('');
+  const toEmail = row.email?.trim() || row.login_name;
+  const firstName = (row.staff_name || '').split(' ')[0] || 'there';
+  try {
+    await sendPasswordResetEmail(toEmail, firstName, plainOtp);
+  } catch (emailErr) {
+    // Fallback to console so OTP is never silently lost
+    console.log('');
+    console.log('---------------------------------------------------------');
+    console.log(`  [Password reset] Email failed — OTP for ${toEmail}: ${plainOtp}`);
+    console.log(`  Error: ${emailErr.message}`);
+    console.log('---------------------------------------------------------');
+    console.log('');
+  }
 
   return generic;
 }

@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import * as companyRepo from '../repositories/company.repository.js';
 import * as branchRepo from '../../shared/repositories/branch.repository.js';
@@ -5,6 +6,10 @@ import * as staffRepo from '../repositories/staff.repository.js';
 import * as onboardingRepo from '../repositories/onboarding.repository.js';
 import * as roleRepo from '../repositories/role.repository.js';
 import { seedDefaultTenantAccounts } from '../../accounts/repositories/accountsSeed.repository.js';
+import { sendVerificationEmail } from './email.service.js';
+import { config } from '../../config.js';
+
+const VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
 
 // Maps registration softwareTypeCode → software_type_master.software_type_id
 // Unknown/missing codes → null (legacy: no software-type feature scoping)
@@ -43,7 +48,6 @@ export function validateRegisterBody(body) {
   const businessType = String(body.businessType || '').trim();
   const firstName = String(body.firstName || '').trim();
   const lastName = String(body.lastName || '').trim();
-  const designation = String(body.designation || '').trim();
   const email = normalizeEmail(body.email);
   const password = body.password;
   const selectedPlan = String(body.selectedPlan || body.plan || '')
@@ -55,7 +59,6 @@ export function validateRegisterBody(body) {
   if (!businessType) errors.push('businessType is required');
   if (!firstName) errors.push('firstName is required');
   if (!lastName) errors.push('lastName is required');
-  if (!designation) errors.push('designation is required');
   if (!email) errors.push('email is required');
   else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.push('email is invalid');
   if (!password || String(password).length < 8) errors.push('password must be at least 8 characters');
@@ -69,7 +72,6 @@ export function validateRegisterBody(body) {
       businessType,
       firstName,
       lastName,
-      designation,
       email,
       password: String(password),
       phone: body.phone ? String(body.phone).trim() : null,
@@ -91,7 +93,6 @@ export async function registerCompanyInTransaction(client, input) {
     businessType,
     firstName,
     lastName,
-    designation,
     email,
     password,
     phone,
@@ -154,7 +155,7 @@ export async function registerCompanyInTransaction(client, input) {
     branchId,
     staffCode,
     staffName,
-    designation,
+    designation: null,
     email,
     passwordHash,
     roleId: roleRepo.DEFAULT_ROLE_IDS.admin,
@@ -188,5 +189,20 @@ export async function registerCompanyInTransaction(client, input) {
     trialEndsAt: trialEnds.toISOString(),
   });
 
-  return staffRepo.selectStaffSessionRow(client, companyId, staffId);
+  const staffRow = await staffRepo.selectStaffSessionRow(client, companyId, staffId);
+
+  // Generate verification token and store it within the same transaction
+  const verifyToken = crypto.randomBytes(32).toString('hex');
+  const verifyExpiresAt = new Date(Date.now() + VERIFY_TTL_MS);
+  const staffPk = staffRow?.id;
+  if (staffPk) {
+    await staffRepo.storeVerifyToken(client, staffPk, verifyToken, verifyExpiresAt);
+  }
+
+  return { staffRow, verifyToken, firstName };
+}
+
+export async function sendRegistrationVerificationEmail(email, firstName, verifyToken) {
+  const verifyUrl = `${config.frontendUrl}/verify-email?token=${verifyToken}`;
+  await sendVerificationEmail(email, firstName, verifyUrl);
 }

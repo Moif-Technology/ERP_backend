@@ -10,6 +10,7 @@ import {
 import {
   validateRegisterBody,
   registerCompanyInTransaction,
+  sendRegistrationVerificationEmail,
 } from './registration.service.js';
 import * as planService from './plan.service.js';
 import { buildWelcomeForSession } from './welcome.service.js';
@@ -43,18 +44,33 @@ export async function registerAccount(body) {
     parsed.data.selectedPlan
   );
 
-  const staffRow = await withTransaction((client) =>
+  const result = await withTransaction((client) =>
     registerCompanyInTransaction(client, {
       ...parsed.data,
       trialDays: planRow.trial_days,
     })
   );
 
-  if (!staffRow) {
+  if (!result?.staffRow) {
     throw new Error('Registration incomplete');
   }
 
-  return { status: 201, ...(await tokensForStaffRowWithWelcome(pool, staffRow)) };
+  // Send verification email outside the transaction (non-blocking on failure)
+  try {
+    await sendRegistrationVerificationEmail(
+      parsed.data.email,
+      result.firstName,
+      result.verifyToken
+    );
+  } catch (emailErr) {
+    console.error('[Registration] Failed to send verification email:', emailErr.message);
+  }
+
+  return {
+    status: 201,
+    ok: true,
+    message: 'Account created. Check your email to verify your address before signing in.',
+  };
 }
 
 export async function loginWithCredentials(username, password) {
@@ -77,6 +93,14 @@ export async function loginWithCredentials(username, password) {
   if (!ok) {
     const err = new Error('Invalid username or password');
     err.status = 401;
+    throw err;
+  }
+
+  // Strict false check: undefined means pre-migration schema — let through
+  if (row.email_verified === false) {
+    const err = new Error('Please verify your email before signing in. Check your inbox for the verification link.');
+    err.status = 403;
+    err.code = 'EMAIL_NOT_VERIFIED';
     throw err;
   }
 

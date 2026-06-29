@@ -6,9 +6,10 @@
 export const REGISTRATION_SYNC_STATUS = 'PENDING';
 export const REGISTRATION_SERVER_STATUS = 'PENDING';
 
-export function loginCandidatesSql(includeEmail) {
+function _loginSql(includeEmail, includeEmailVerified) {
   return `SELECT s.id, s.staff_id, s.staff_name, s.role_id, s.branch_id, s.company_id,
               s.login_name, s.email, s.designation, s.password_hash, s.record_status,
+              ${includeEmailVerified ? 's.email_verified,' : ''}
               c.company_name, c.company_address, b.branch_name, r.role_name,
               r.software_type AS role_software_type,
               st.software_code AS software_type_code,
@@ -26,15 +27,25 @@ export function loginCandidatesSql(includeEmail) {
           ${includeEmail ? 'OR (s.email IS NOT NULL AND LOWER(TRIM(s.email)) = LOWER($1))' : ''}`;
 }
 
+export function loginCandidatesSql(includeEmail) {
+  return _loginSql(includeEmail, true);
+}
+
 export async function findLoginCandidates(pool, username) {
+  // Try with email clause + email_verified column (post-migration-094 schema)
   try {
-    return await pool.query(loginCandidatesSql(true), [username]);
-  } catch (e) {
-    if (e.code === '42703') {
-      return pool.query(loginCandidatesSql(false), [username]);
-    }
-    throw e;
+    return await pool.query(_loginSql(true, true), [username]);
+  } catch (e1) {
+    if (e1.code !== '42703') throw e1;
   }
+  // Fallback: email clause but no email_verified (migration 094 not yet run)
+  try {
+    return await pool.query(_loginSql(true, false), [username]);
+  } catch (e2) {
+    if (e2.code !== '42703') throw e2;
+  }
+  // Last resort: no email clause, no email_verified (oldest schema)
+  return pool.query(_loginSql(false, false), [username]);
 }
 
 /** Resolve the internal PK (core.staff_master.id) from company + business staff_id. */
@@ -344,4 +355,48 @@ export async function updatePasswordHashByStaffPk(client, staffPk, passwordHash)
     [staffPk, passwordHash]
   );
   return rowCount === 1;
+}
+
+// ── Email verification ────────────────────────────────────────────────────────
+
+export async function storeVerifyToken(client, staffPk, token, expiresAt) {
+  await client.query(
+    `UPDATE core.staff_master
+     SET email_verify_token = $2, email_verify_expires = $3, modified_at = NOW()
+     WHERE id = $1`,
+    [staffPk, token, expiresAt]
+  );
+}
+
+export async function findByVerifyToken(pool, token) {
+  const { rows } = await pool.query(
+    `SELECT id, staff_name, email, email_verified, email_verify_expires
+     FROM core.staff_master
+     WHERE email_verify_token = $1
+     LIMIT 1`,
+    [token]
+  );
+  return rows[0] ?? null;
+}
+
+export async function markEmailVerified(client, staffPk) {
+  await client.query(
+    `UPDATE core.staff_master
+     SET email_verified = true, email_verify_token = NULL, email_verify_expires = NULL,
+         modified_at = NOW()
+     WHERE id = $1`,
+    [staffPk]
+  );
+}
+
+export async function findUnverifiedByEmail(pool, email) {
+  const { rows } = await pool.query(
+    `SELECT id, staff_name, email, email_verified
+     FROM core.staff_master
+     WHERE LOWER(TRIM(email)) = LOWER($1)
+       AND record_status = 'ACTIVE'
+     LIMIT 1`,
+    [email]
+  );
+  return rows[0] ?? null;
 }
