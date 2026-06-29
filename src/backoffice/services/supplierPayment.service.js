@@ -1,9 +1,8 @@
 import { pool } from '../../config/db.js';
 import * as settlementRepo from '../../pos/counter-pos/repositories/settlement.repository.js';
-import * as customerRepo from '../../pos/counter-pos/repositories/customer.repository.js';
+import * as supplierPaymentRepo from '../repositories/supplierPayment.repository.js';
 import * as voucherRepo from '../../accounts/repositories/voucher.repository.js';
-import { ensureCustomerLedgerForId } from './partyLedger.service.js';
-import { getCustomerOutstandingBills } from '../../pos/counter-pos/services/settlement.service.js';
+import { ensureSupplierLedgerForId } from './partyLedger.service.js';
 
 function num(v, d = 0) {
   const n = Number(v);
@@ -46,17 +45,17 @@ function appendBankReconRemarks(remarks, bankStatementDate, bankReference) {
   return merged.slice(0, 200);
 }
 
-function mapReceiptStatusFields(receipt) {
-  const receiptStatus = String(receipt.status || 'ACTIVE').toUpperCase();
-  const postDatedCheque = Boolean(receipt.postDatedCheque)
-    || String(receipt.paymentMode || '').toUpperCase() === 'CHEQUE';
-  const bankRecon = parseBankReconFromRemarks(receipt.remarks);
+function mapPaymentStatusFields(payment) {
+  const paymentStatus = String(payment.status || 'ACTIVE').toUpperCase();
+  const postDatedCheque = Boolean(payment.postDatedCheque)
+    || String(payment.paymentMode || '').toUpperCase() === 'CHEQUE';
+  const bankRecon = parseBankReconFromRemarks(payment.remarks);
   return {
-    receiptStatus,
+    paymentStatus,
     postDatedCheque,
-    pdcPending: postDatedCheque && isPdcPendingStatus(receiptStatus),
-    pdcCleared: postDatedCheque && !isPdcPendingStatus(receiptStatus),
-    bankReconciled: isBankReconciledStatus(receiptStatus),
+    pdcPending: postDatedCheque && isPdcPendingStatus(paymentStatus),
+    pdcCleared: postDatedCheque && !isPdcPendingStatus(paymentStatus),
+    bankReconciled: isBankReconciledStatus(paymentStatus),
     bankStatementDate: bankRecon.bankStatementDate,
     bankReference: bankRecon.bankReference,
   };
@@ -110,7 +109,7 @@ function buildBillAllocations(bills, body) {
 
   const total = round3(body.totalAmount ?? body.amount);
   if (total <= 0) {
-    const err = new Error('Receipt amount must be greater than zero');
+    const err = new Error('Payment amount must be greater than zero');
     err.status = 400;
     throw err;
   }
@@ -151,22 +150,22 @@ function parsePaymentLines(body) {
   return { paymentLines, paymentTotal };
 }
 
-async function insertCustomerReceiptVoucher(client, args) {
+async function insertSupplierPaymentVoucher(client, args) {
   const {
-    companyId, branchId, transactionId, customerLedgerId, paymentLines,
-    amount, staffId, customerCode, receiptDate, remarks, referenceNo,
+    companyId, branchId, transactionId, supplierLedgerId, paymentLines,
+    amount, staffId, supplierCode, paymentDate, remarks, referenceNo,
     postStatus = 'PENDING', voucherMasterId: existingVoucherMasterId,
   } = args;
 
   const voucherTypeId =
-    (await voucherRepo.getVoucherTypeId(client, companyId, 'ReceiptVoucherNameCustomer', branchId)) ?? 9;
+    (await voucherRepo.getVoucherTypeId(client, companyId, 'PaymentVoucherNameSupplier', branchId)) ?? 4;
   const voucherPrefix =
-    (await voucherRepo.getVoucherPrefix(client, companyId, voucherTypeId)) || 'RCV';
+    (await voucherRepo.getVoucherPrefix(client, companyId, voucherTypeId)) || 'PAY';
 
   const voucherMasterId = existingVoucherMasterId
     ?? await voucherRepo.nextVoucherMasterId(client, companyId, branchId);
   const auditBy = String(staffId ?? 'BACKOFFICE').slice(0, 50);
-  const ref = referenceNo ? String(referenceNo).trim().slice(0, 100) : `RCT-${transactionId}`;
+  const ref = referenceNo ? String(referenceNo).trim().slice(0, 100) : `PMT-${transactionId}`;
   const detailPostStatus = postStatus;
 
   if (!existingVoucherMasterId) {
@@ -178,10 +177,10 @@ async function insertCustomerReceiptVoucher(client, args) {
       autoVoucherNo: transactionId,
       manualVoucherNo: ref,
       voucherPrefix,
-      voucherDate: receiptDate || new Date(),
+      voucherDate: paymentDate || new Date(),
       referenceNo: ref,
       voucherAmount: amount,
-      remarks: remarks || `Customer receipt ${customerCode} ${ref}`,
+      remarks: remarks || `Supplier payment ${supplierCode} ${ref}`,
       postStatus,
       creationMode: 'BACKOFFICE',
       voucherPostedId: transactionId,
@@ -191,10 +190,10 @@ async function insertCustomerReceiptVoucher(client, args) {
     });
   } else {
     await voucherRepo.updateVoucherMaster(client, companyId, branchId, voucherMasterId, {
-      voucherDate: receiptDate || new Date(),
+      voucherDate: paymentDate || new Date(),
       referenceNo: ref,
       voucherAmount: amount,
-      remarks: remarks || `Customer receipt ${customerCode} ${ref}`,
+      remarks: remarks || `Supplier payment ${supplierCode} ${ref}`,
     });
     await voucherRepo.deleteVoucherDetails(client, companyId, branchId, voucherMasterId);
   }
@@ -208,8 +207,8 @@ async function insertCustomerReceiptVoucher(client, args) {
       voucherDetailId: detailSeq++,
       voucherMasterId,
       accountId: line.ledgerId,
-      debitAmount: line.amount,
-      creditAmount: 0,
+      debitAmount: 0,
+      creditAmount: line.amount,
       outstandingBalance: 0,
       narration: line.narration || ref,
       postStatus: detailPostStatus,
@@ -223,9 +222,9 @@ async function insertCustomerReceiptVoucher(client, args) {
     branchId,
     voucherDetailId: detailSeq++,
     voucherMasterId,
-    accountId: customerLedgerId,
-    debitAmount: 0,
-    creditAmount: amount,
+    accountId: supplierLedgerId,
+    debitAmount: amount,
+    creditAmount: 0,
     outstandingBalance: 0,
     narration: ref,
     postStatus: detailPostStatus,
@@ -236,40 +235,34 @@ async function insertCustomerReceiptVoucher(client, args) {
   return voucherMasterId;
 }
 
-async function applyBillAllocations(client, companyId, allocations, customerLedgerId, postDatedCheque) {
+async function applyBillAllocations(client, companyId, branchId, allocations, supplierLedgerId, postDatedCheque) {
   if (postDatedCheque) return;
   for (const a of allocations) {
     if (a.billId > 0) {
-      await settlementRepo.updateSalesOutstanding(client, companyId, a.billId, a.balance);
-      await settlementRepo.reduceSaleVoucherOutstanding(
-        client, companyId, a.billId, customerLedgerId, a.paidAmount,
-      );
-    } else {
-      await settlementRepo.reduceOrphanVoucherOutstanding(
-        client, companyId, a.billId, customerLedgerId, a.paidAmount,
+      await supplierPaymentRepo.updatePurchaseOutstanding(client, companyId, a.billId, branchId, a.balance);
+      await supplierPaymentRepo.reducePurchaseBillOutstanding(
+        client, companyId, branchId, a.billId, supplierLedgerId, a.paidAmount,
       );
     }
   }
 }
 
-async function reverseBillAllocations(client, companyId, allocations, customerLedgerId, postDatedCheque) {
+async function reverseBillAllocations(client, companyId, branchId, allocations, supplierLedgerId, postDatedCheque) {
   if (postDatedCheque) return;
   for (const a of allocations) {
     if (a.billId > 0) {
-      const currentOs = await settlementRepo.getSalesOutstandingBalance(client, companyId, a.billId);
-      await settlementRepo.updateSalesOutstanding(client, companyId, a.billId, round3(currentOs + a.paidAmount));
-      await settlementRepo.restoreSaleVoucherOutstanding(
-        client, companyId, a.billId, customerLedgerId, a.paidAmount,
+      const currentOs = await supplierPaymentRepo.getPurchaseOutstandingBalance(client, companyId, a.billId, branchId);
+      await supplierPaymentRepo.updatePurchaseOutstanding(
+        client, companyId, a.billId, branchId, round3(currentOs + a.paidAmount),
       );
-    } else {
-      await settlementRepo.restoreOrphanVoucherOutstanding(
-        client, companyId, a.billId, customerLedgerId, a.paidAmount,
+      await supplierPaymentRepo.restorePurchaseBillOutstanding(
+        client, companyId, branchId, a.billId, supplierLedgerId, a.paidAmount,
       );
     }
   }
 }
 
-async function loadReceiptAllocations(client, companyId, transactionId) {
+async function loadPaymentAllocations(client, companyId, transactionId) {
   const { rows } = await client.query(
     `SELECT bill_id, bill_date, invoice_no, invoice_amount, current_amount, paid_amount, balance, ledger_id
      FROM accounts.cash_transaction_child
@@ -289,15 +282,15 @@ async function loadReceiptAllocations(client, companyId, transactionId) {
   }));
 }
 
-function mapReceiptResponse(args) {
+function mapPaymentResponse(args) {
   const {
     transactionId, transactionNo, voucherMasterId, voucherPrefix, autoVoucherNo,
-    postStatus, customerId, customer, paymentTotal, paymentMode, postDatedCheque,
-    osAmount, newOsInTxn, allocations, paymentLines, referenceNo, receiptDate, remarks,
+    postStatus, supplierId, supplier, paymentTotal, paymentMode, postDatedCheque,
+    osAmount, newOsInTxn, allocations, paymentLines, referenceNo, paymentDate, remarks,
     chequeDetails, chequeDate, branchId, message,
   } = args;
   const voucherNo = voucherMasterId
-    ? `${voucherPrefix || 'RCV'}${autoVoucherNo ?? transactionNo ?? transactionId}`
+    ? `${voucherPrefix || 'PAY'}${autoVoucherNo ?? transactionNo ?? transactionId}`
     : null;
   return {
     transactionId,
@@ -306,11 +299,11 @@ function mapReceiptResponse(args) {
     voucherNo,
     postStatus: postStatus || 'PENDING',
     branchId,
-    customerId,
-    customerCode: customer.customer_code,
-    customerName: customer.customer_name,
+    supplierId,
+    supplierCode: supplier.supplier_code,
+    supplierName: supplier.supplier_name,
     referenceNo: referenceNo || null,
-    receiptDate,
+    paymentDate,
     remarks,
     amount: paymentTotal,
     paymentMode,
@@ -333,24 +326,24 @@ function mapReceiptResponse(args) {
   };
 }
 
-async function assertReceiptEditable(db, companyId, branchId, transactionId) {
-  const receipt = await settlementRepo.getSettlementReceipt(db, companyId, branchId, transactionId);
-  if (!receipt) {
-    const err = new Error('Receipt not found');
+async function assertPaymentEditable(db, companyId, branchId, transactionId) {
+  const payment = await supplierPaymentRepo.getSettlementPayment(db, companyId, branchId, transactionId);
+  if (!payment) {
+    const err = new Error('Payment not found');
     err.status = 404;
     throw err;
   }
-  if (receipt.voucher?.postStatus === 'POSTED') {
-    const err = new Error('Receipt is posted — unpost before editing');
+  if (payment.voucher?.postStatus === 'POSTED') {
+    const err = new Error('Payment is posted — unpost before editing');
     err.status = 409;
     throw err;
   }
-  return receipt;
+  return payment;
 }
 
-async function persistReceiptChildren(client, args) {
+async function persistPaymentChildren(client, args) {
   const {
-    companyId, branchId, transactionId, allocations, customerLedgerId,
+    companyId, branchId, transactionId, allocations, supplierLedgerId,
     postDatedCheque, auditBy,
   } = args;
   await settlementRepo.deleteCashTransactionChildren(client, companyId, transactionId);
@@ -369,28 +362,63 @@ async function persistReceiptChildren(client, args) {
       currentAmount: a.currentAmount,
       paidAmount: a.paidAmount,
       balance: postDatedCheque ? a.currentAmount : a.balance,
-      ledgerId: customerLedgerId,
+      ledgerId: supplierLedgerId,
       createdBy: auditBy,
     });
   }
 }
 
-export async function listCustomerReceiptOutstanding(authStaff, customerId, query = {}) {
-  return getCustomerOutstandingBills(authStaff, customerId, query);
-}
-
-export async function getCustomerReceiptByVoucher(authStaff, voucherMasterId) {
+export async function listSupplierPaymentOutstanding(authStaff, supplierId, query = {}) {
   const companyId = Number(authStaff.company_id);
-  const row = await settlementRepo.getCashTransactionByVoucherMasterId(pool, companyId, voucherMasterId);
-  if (!row) {
-    const err = new Error('Customer receipt not found for this voucher');
+  const sid = Number(supplierId);
+  const branchId = parseBranchId(query.branchId) ?? parseBranchId(authStaff.branch_id);
+  if (!Number.isFinite(sid) || sid < 1) {
+    const err = new Error('Invalid supplier');
+    err.status = 400;
+    throw err;
+  }
+
+  const supplier = await supplierPaymentRepo.getSupplierById(pool, companyId, sid);
+  if (!supplier) {
+    const err = new Error('Supplier not found');
     err.status = 404;
     throw err;
   }
-  return getCustomerReceipt(authStaff, row.transaction_id, Number(row.branch_id));
+
+  const ledgerOs = await supplierPaymentRepo.getSupplierOsBalance(pool, companyId, sid, { postedOnly: true, branchId });
+  const rawBills = await supplierPaymentRepo.getOutstandingPurchaseBills(pool, companyId, sid, { branchId });
+  const bills = supplierPaymentRepo.reconcilePostedBills(rawBills);
+  const billsSum = bills.reduce((sum, b) => sum + num(b.currentAmount), 0);
+
+  return {
+    supplierId: sid,
+    supplierCode: supplier.supplier_code,
+    supplierName: supplier.supplier_name,
+    ledgerOs,
+    billsTotal: billsSum,
+    billsSum,
+    osAmount: billsSum > 0.005 ? billsSum : Math.max(ledgerOs, 0),
+    bills,
+  };
 }
 
-export async function getCustomerReceipt(authStaff, transactionId, branchIdOverride) {
+export async function getSupplierPaymentByVoucher(authStaff, voucherMasterId) {
+  const companyId = Number(authStaff.company_id);
+  const row = await settlementRepo.getCashTransactionByVoucherMasterId(pool, companyId, voucherMasterId);
+  if (row && row.supplier_id == null && row.customer_id != null) {
+    const err = new Error('Supplier payment not found for this voucher');
+    err.status = 404;
+    throw err;
+  }
+  if (!row) {
+    const err = new Error('Supplier payment not found for this voucher');
+    err.status = 404;
+    throw err;
+  }
+  return getSupplierPayment(authStaff, row.transaction_id, Number(row.branch_id));
+}
+
+export async function getSupplierPayment(authStaff, transactionId, branchIdOverride) {
   const companyId = Number(authStaff.company_id);
   let branchId = parseBranchId(branchIdOverride) ?? parseBranchId(authStaff.branch_id);
   if (!branchId) {
@@ -407,55 +435,55 @@ export async function getCustomerReceipt(authStaff, transactionId, branchIdOverr
     throw err;
   }
 
-  const receipt = await settlementRepo.getSettlementReceipt(pool, companyId, branchId, transactionId);
-  if (!receipt) {
-    const err = new Error('Receipt not found');
+  const payment = await supplierPaymentRepo.getSettlementPayment(pool, companyId, branchId, transactionId);
+  if (!payment) {
+    const err = new Error('Payment not found');
     err.status = 404;
     throw err;
   }
 
   let paymentLines = [];
-  if (receipt.voucher?.voucherMasterId) {
+  if (payment.voucher?.voucherMasterId) {
     const voucher = await voucherRepo.getVoucherWithDetails(
-      pool, companyId, branchId, receipt.voucher.voucherMasterId,
+      pool, companyId, branchId, payment.voucher.voucherMasterId,
     );
     paymentLines = (voucher?.details || [])
-      .filter((d) => num(d.debit_amount) > 0)
+      .filter((d) => num(d.credit_amount) > 0)
       .map((d) => ({
         ledgerId: Number(d.account_id),
-        amount: num(d.debit_amount),
+        amount: num(d.credit_amount),
         accountNo: d.account_no,
         accountHead: d.account_head,
       }));
   }
 
-  const postDatedCheque = Boolean(receipt.postDatedCheque)
-    || String(receipt.paymentMode || '').toUpperCase() === 'CHEQUE';
-  const statusFields = mapReceiptStatusFields(receipt);
+  const postDatedCheque = Boolean(payment.postDatedCheque)
+    || String(payment.paymentMode || '').toUpperCase() === 'CHEQUE';
+  const statusFields = mapPaymentStatusFields(payment);
   return {
-    transactionId: receipt.transactionId,
-    transactionNo: receipt.transactionNo,
-    voucherMasterId: receipt.voucher?.voucherMasterId ?? null,
-    voucherNo: receipt.voucher
-      ? `${receipt.voucher.voucherPrefix || 'RCV'}${receipt.voucher.autoVoucherNo || receipt.transactionNo}`
-      : receipt.receiptNo,
-    postStatus: receipt.voucher?.postStatus || 'PENDING',
+    transactionId: payment.transactionId,
+    transactionNo: payment.transactionNo,
+    voucherMasterId: payment.voucher?.voucherMasterId ?? null,
+    voucherNo: payment.voucher
+      ? `${payment.voucher.voucherPrefix || 'PAY'}${payment.voucher.autoVoucherNo || payment.transactionNo}`
+      : payment.paymentNo,
+    postStatus: payment.voucher?.postStatus || 'PENDING',
     branchId,
-    customerId: receipt.customerId,
-    customerCode: receipt.customerCode,
-    customerName: receipt.customerName,
-    referenceNo: receipt.voucher?.referenceNo || null,
-    receiptDate: receipt.transactionDate,
-    remarks: receipt.remarks,
-    amount: receipt.paidAmount,
-    paymentMode: receipt.paymentMode,
+    supplierId: payment.supplierId,
+    supplierCode: payment.supplierCode,
+    supplierName: payment.supplierName,
+    referenceNo: payment.voucher?.referenceNo || null,
+    paymentDate: payment.transactionDate,
+    remarks: payment.remarks,
+    amount: payment.paidAmount,
+    paymentMode: payment.paymentMode,
     postDatedCheque,
-    chequeDetails: receipt.chequeDetails ?? null,
-    chequeDate: receipt.chequeDate ?? null,
+    chequeDetails: payment.chequeDetails ?? null,
+    chequeDate: payment.chequeDate ?? null,
     ...statusFields,
-    osBefore: receipt.osBefore,
-    osAfter: receipt.osAfter,
-    billAllocations: (receipt.clearedBills || []).map((b) => ({
+    osBefore: payment.osBefore,
+    osAfter: payment.osAfter,
+    billAllocations: (payment.clearedBills || []).map((b) => ({
       billId: b.billId,
       invoiceNo: b.invoiceNo,
       billDate: b.billDate,
@@ -468,7 +496,7 @@ export async function getCustomerReceipt(authStaff, transactionId, branchIdOverr
   };
 }
 
-export async function saveCustomerReceipt(authStaff, body) {
+export async function saveSupplierPayment(authStaff, body) {
   const companyId = Number(authStaff.company_id);
   const branchId = parseBranchId(body.branchId) ?? parseBranchId(authStaff.branch_id);
   if (!branchId) {
@@ -477,26 +505,26 @@ export async function saveCustomerReceipt(authStaff, body) {
     throw err;
   }
 
-  const customerId = Number(body.customerId);
+  const supplierId = Number(body.supplierId);
   const staffId = Number(authStaff.staff_id ?? authStaff.id);
   const postDatedCheque = Boolean(body.postDatedCheque);
   const chequeDetails = body.chequeDetails ? String(body.chequeDetails).trim().slice(0, 200) : null;
   const chequeDate = body.chequeDate || null;
-  const receiptDate = body.receiptDate ? new Date(body.receiptDate) : new Date();
+  const paymentDate = body.paymentDate ? new Date(body.paymentDate) : new Date();
   const remarks = body.remarks ? String(body.remarks).trim().slice(0, 200) : null;
   const referenceNo = body.referenceNo ? String(body.referenceNo).trim().slice(0, 100) : null;
 
-  if (!Number.isFinite(customerId) || customerId < 1) {
-    const err = new Error('Customer is required');
+  if (!Number.isFinite(supplierId) || supplierId < 1) {
+    const err = new Error('Supplier is required');
     err.status = 400;
     throw err;
   }
 
   const { paymentLines, paymentTotal } = parsePaymentLines(body);
 
-  const customer = await settlementRepo.getCustomerById(pool, companyId, customerId);
-  if (!customer) {
-    const err = new Error('Customer not found');
+  const supplier = await supplierPaymentRepo.getSupplierById(pool, companyId, supplierId);
+  if (!supplier) {
+    const err = new Error('Supplier not found');
     err.status = 404;
     throw err;
   }
@@ -505,18 +533,18 @@ export async function saveCustomerReceipt(authStaff, body) {
   try {
     await client.query('BEGIN');
 
-    const osAmount = await customerRepo.getCustomerOsBalance(client, companyId, customerId, { postedOnly: true, branchId });
-    const rawBills = await settlementRepo.getOutstandingBills(client, companyId, customerId, { branchId });
-    const bills = settlementRepo.reconcilePostedBills(rawBills);
+    const osAmount = await supplierPaymentRepo.getSupplierOsBalance(client, companyId, supplierId, { postedOnly: true, branchId });
+    const rawBills = await supplierPaymentRepo.getOutstandingPurchaseBills(client, companyId, supplierId, { branchId });
+    const bills = supplierPaymentRepo.reconcilePostedBills(rawBills);
 
     if (!bills.length) {
-      const err = new Error('No posted outstanding bills found for this customer — post the sale first');
+      const err = new Error('No posted outstanding bills found for this supplier — post the purchase first');
       err.status = 400;
       throw err;
     }
 
     const allocations = buildBillAllocations(bills, body);
-    await settlementRepo.assertPostedBillAllocations(client, companyId, allocations);
+    await supplierPaymentRepo.assertPostedPurchaseAllocations(client, companyId, allocations);
     const billPaidTotal = round3(allocations.reduce((s, a) => s + num(a.paidAmount), 0));
 
     if (Math.abs(billPaidTotal - paymentTotal) > 0.05) {
@@ -529,14 +557,14 @@ export async function saveCustomerReceipt(authStaff, body) {
 
     const payableTotal = bills.reduce((s, b) => s + num(b.currentAmount), 0);
     if (billPaidTotal > payableTotal + 0.05) {
-      const err = new Error(`Amount cannot exceed customer outstanding (${payableTotal.toFixed(2)})`);
+      const err = new Error(`Amount cannot exceed supplier outstanding (${payableTotal.toFixed(2)})`);
       err.status = 400;
       throw err;
     }
 
-    const customerLedgerId = await ensureCustomerLedgerForId(client, companyId, branchId, customerId);
-    if (!customerLedgerId) {
-      const err = new Error('Customer receivable ledger not found — create customer ledger first');
+    const supplierLedgerId = await ensureSupplierLedgerForId(client, companyId, branchId, supplierId);
+    if (!supplierLedgerId) {
+      const err = new Error('Supplier payable ledger not found — create supplier ledger first');
       err.status = 400;
       throw err;
     }
@@ -549,44 +577,44 @@ export async function saveCustomerReceipt(authStaff, body) {
       : (body.paymentMode ? String(body.paymentMode).toUpperCase() : 'CASH');
 
     let voucherMasterId = null;
-    let voucherPrefix = 'RCV';
+    let voucherPrefix = 'PAY';
     let autoVoucherNo = transactionId;
     try {
-      await client.query('SAVEPOINT customer_receipt_voucher');
-      voucherMasterId = await insertCustomerReceiptVoucher(client, {
+      await client.query('SAVEPOINT supplier_payment_voucher');
+      voucherMasterId = await insertSupplierPaymentVoucher(client, {
         companyId,
         branchId,
         transactionId,
-        customerLedgerId,
+        supplierLedgerId,
         paymentLines,
         amount: paymentTotal,
         staffId,
-        customerCode: customer.customer_code,
-        receiptDate,
+        supplierCode: supplier.supplier_code,
+        paymentDate,
         remarks,
         referenceNo,
         postStatus: 'PENDING',
       });
       voucherPrefix = (await voucherRepo.getVoucherPrefix(
         client, companyId,
-        (await voucherRepo.getVoucherTypeId(client, companyId, 'ReceiptVoucherNameCustomer', branchId)) ?? 9,
-      )) || 'RCV';
+        (await voucherRepo.getVoucherTypeId(client, companyId, 'PaymentVoucherNameSupplier', branchId)) ?? 4,
+      )) || 'PAY';
       autoVoucherNo = transactionId;
-      await client.query('RELEASE SAVEPOINT customer_receipt_voucher');
+      await client.query('RELEASE SAVEPOINT supplier_payment_voucher');
     } catch (vErr) {
-      await client.query('ROLLBACK TO SAVEPOINT customer_receipt_voucher').catch(() => {});
+      await client.query('ROLLBACK TO SAVEPOINT supplier_payment_voucher').catch(() => {});
       if (vErr.code !== '42P01' && vErr.code !== '42703') throw vErr;
-      console.warn('[backoffice] Customer receipt voucher skipped:', vErr.message);
+      console.warn('[backoffice] Supplier payment voucher skipped:', vErr.message);
     }
 
-    await settlementRepo.insertCashTransactionMaster(client, {
+    await supplierPaymentRepo.insertSupplierPaymentMaster(client, {
       companyId,
       branchId,
       transactionId,
       transactionNo,
-      transactionDate: receiptDate,
+      transactionDate: paymentDate,
       counterNo: num(body.counterNo, 0) || null,
-      customerId,
+      supplierId,
       amount: paymentTotal,
       totalCurrentAmount: osAmount,
       totalPaidAmount: paymentTotal,
@@ -596,25 +624,25 @@ export async function saveCustomerReceipt(authStaff, body) {
       chequeDetails: postDatedCheque ? chequeDetails : null,
       chequeDate: postDatedCheque ? chequeDate : null,
       status: postDatedCheque ? 'PDC_PENDING' : 'DRAFT',
-      remarks: remarks || `Backoffice customer receipt — ${customer.customer_code}${postDatedCheque ? ' [PDC]' : ''}`,
+      remarks: remarks || `Backoffice supplier payment — ${supplier.supplier_code}${postDatedCheque ? ' [PDC]' : ''}`,
       createdBy: auditBy,
     });
 
-    await persistReceiptChildren(client, {
-      companyId, branchId, transactionId, allocations, customerLedgerId, postDatedCheque, auditBy,
+    await persistPaymentChildren(client, {
+      companyId, branchId, transactionId, allocations, supplierLedgerId, postDatedCheque, auditBy,
     });
 
     await client.query('COMMIT');
 
-    return mapReceiptResponse({
+    return mapPaymentResponse({
       transactionId,
       transactionNo,
       voucherMasterId,
       voucherPrefix,
       autoVoucherNo,
       postStatus: 'PENDING',
-      customerId,
-      customer,
+      supplierId,
+      supplier,
       paymentTotal,
       paymentMode,
       postDatedCheque,
@@ -623,12 +651,12 @@ export async function saveCustomerReceipt(authStaff, body) {
       allocations,
       paymentLines,
       referenceNo,
-      receiptDate,
+      paymentDate,
       remarks,
       chequeDetails,
       chequeDate,
       branchId,
-      message: 'Customer receipt saved. Post when ready.',
+      message: 'Supplier payment saved. Post when ready.',
     });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -638,7 +666,7 @@ export async function saveCustomerReceipt(authStaff, body) {
   }
 }
 
-export async function updateCustomerReceipt(authStaff, transactionId, body) {
+export async function updateSupplierPayment(authStaff, transactionId, body) {
   const companyId = Number(authStaff.company_id);
   const branchId = parseBranchId(body.branchId) ?? parseBranchId(authStaff.branch_id);
   if (!branchId) {
@@ -648,12 +676,12 @@ export async function updateCustomerReceipt(authStaff, transactionId, body) {
   }
 
   const tid = Number(transactionId);
-  const customerId = Number(body.customerId);
+  const supplierId = Number(body.supplierId);
   const staffId = Number(authStaff.staff_id ?? authStaff.id);
   const postDatedCheque = Boolean(body.postDatedCheque);
   const chequeDetails = body.chequeDetails ? String(body.chequeDetails).trim().slice(0, 200) : null;
   const chequeDate = body.chequeDate || null;
-  const receiptDate = body.receiptDate ? new Date(body.receiptDate) : new Date();
+  const paymentDate = body.paymentDate ? new Date(body.paymentDate) : new Date();
   const remarks = body.remarks ? String(body.remarks).trim().slice(0, 200) : null;
   const referenceNo = body.referenceNo ? String(body.referenceNo).trim().slice(0, 100) : null;
 
@@ -662,27 +690,27 @@ export async function updateCustomerReceipt(authStaff, transactionId, body) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const existing = await assertReceiptEditable(client, companyId, branchId, tid);
+    const existing = await assertPaymentEditable(client, companyId, branchId, tid);
 
-    const customer = await settlementRepo.getCustomerById(client, companyId, customerId);
-    if (!customer) {
-      const err = new Error('Customer not found');
+    const supplier = await supplierPaymentRepo.getSupplierById(client, companyId, supplierId);
+    if (!supplier) {
+      const err = new Error('Supplier not found');
       err.status = 404;
       throw err;
     }
 
-    const osAmount = await customerRepo.getCustomerOsBalance(client, companyId, customerId, { postedOnly: true, branchId });
-    const rawBills = await settlementRepo.getOutstandingBills(client, companyId, customerId, { branchId });
-    const bills = settlementRepo.reconcilePostedBills(rawBills);
+    const osAmount = await supplierPaymentRepo.getSupplierOsBalance(client, companyId, supplierId, { postedOnly: true, branchId });
+    const rawBills = await supplierPaymentRepo.getOutstandingPurchaseBills(client, companyId, supplierId, { branchId });
+    const bills = supplierPaymentRepo.reconcilePostedBills(rawBills);
 
     if (!bills.length) {
-      const err = new Error('No posted outstanding bills found for this customer — post the sale first');
+      const err = new Error('No posted outstanding bills found for this supplier — post the purchase first');
       err.status = 400;
       throw err;
     }
 
     const allocations = buildBillAllocations(bills, body);
-    await settlementRepo.assertPostedBillAllocations(client, companyId, allocations);
+    await supplierPaymentRepo.assertPostedPurchaseAllocations(client, companyId, allocations);
     const billPaidTotal = round3(allocations.reduce((s, a) => s + num(a.paidAmount), 0));
 
     if (Math.abs(billPaidTotal - paymentTotal) > 0.05) {
@@ -695,27 +723,27 @@ export async function updateCustomerReceipt(authStaff, transactionId, body) {
 
     const payableTotal = bills.reduce((s, b) => s + num(b.currentAmount), 0);
     if (billPaidTotal > payableTotal + 0.05) {
-      const err = new Error(`Amount cannot exceed customer outstanding (${payableTotal.toFixed(2)})`);
+      const err = new Error(`Amount cannot exceed supplier outstanding (${payableTotal.toFixed(2)})`);
       err.status = 400;
       throw err;
     }
 
-    const customerLedgerId = await ensureCustomerLedgerForId(client, companyId, branchId, customerId);
+    const supplierLedgerId = await ensureSupplierLedgerForId(client, companyId, branchId, supplierId);
     const auditBy = String(staffId).slice(0, 50);
     const paymentMode = postDatedCheque ? 'CHEQUE' : (body.paymentMode ? String(body.paymentMode).toUpperCase() : 'CASH');
     const voucherMasterId = existing.voucher?.voucherMasterId ?? null;
 
     if (voucherMasterId) {
-      await insertCustomerReceiptVoucher(client, {
+      await insertSupplierPaymentVoucher(client, {
         companyId,
         branchId,
         transactionId: tid,
-        customerLedgerId,
+        supplierLedgerId,
         paymentLines,
         amount: paymentTotal,
         staffId,
-        customerCode: customer.customer_code,
-        receiptDate,
+        supplierCode: supplier.supplier_code,
+        paymentDate,
         remarks,
         referenceNo,
         postStatus: 'PENDING',
@@ -726,8 +754,8 @@ export async function updateCustomerReceipt(authStaff, transactionId, body) {
     await settlementRepo.updateCashTransactionMaster(client, companyId, branchId, tid, {
       amount: paymentTotal,
       totalCurrentAmount: osAmount,
-      transactionDate: receiptDate,
-      remarks: remarks || `Backoffice customer receipt — ${customer.customer_code}${postDatedCheque ? ' [PDC]' : ''}`,
+      transactionDate: paymentDate,
+      remarks: remarks || `Backoffice supplier payment — ${supplier.supplier_code}${postDatedCheque ? ' [PDC]' : ''}`,
       paymentMode,
       postDatedCheque,
       chequeDetails: postDatedCheque ? chequeDetails : null,
@@ -735,21 +763,21 @@ export async function updateCustomerReceipt(authStaff, transactionId, body) {
       status: postDatedCheque ? 'PDC_PENDING' : 'DRAFT',
     });
 
-    await persistReceiptChildren(client, {
-      companyId, branchId, transactionId: tid, allocations, customerLedgerId, postDatedCheque, auditBy,
+    await persistPaymentChildren(client, {
+      companyId, branchId, transactionId: tid, allocations, supplierLedgerId, postDatedCheque, auditBy,
     });
 
     await client.query('COMMIT');
 
-    return mapReceiptResponse({
+    return mapPaymentResponse({
       transactionId: tid,
       transactionNo: existing.transactionNo,
       voucherMasterId,
-      voucherPrefix: existing.voucher?.voucherPrefix || 'RCV',
+      voucherPrefix: existing.voucher?.voucherPrefix || 'PAY',
       autoVoucherNo: existing.voucher?.autoVoucherNo || existing.transactionNo,
       postStatus: 'PENDING',
-      customerId,
-      customer,
+      supplierId,
+      supplier,
       paymentTotal,
       paymentMode,
       postDatedCheque,
@@ -758,12 +786,12 @@ export async function updateCustomerReceipt(authStaff, transactionId, body) {
       allocations,
       paymentLines,
       referenceNo,
-      receiptDate,
+      paymentDate,
       remarks,
       chequeDetails,
       chequeDate,
       branchId,
-      message: 'Customer receipt updated.',
+      message: 'Supplier payment updated.',
     });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -773,7 +801,7 @@ export async function updateCustomerReceipt(authStaff, transactionId, body) {
   }
 }
 
-export async function postCustomerReceipt(authStaff, transactionId, query = {}) {
+export async function postSupplierPayment(authStaff, transactionId, query = {}) {
   const companyId = Number(authStaff.company_id);
   const branchId = parseBranchId(query.branchId) ?? parseBranchId(authStaff.branch_id);
   if (!branchId) {
@@ -786,29 +814,29 @@ export async function postCustomerReceipt(authStaff, transactionId, query = {}) 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const receipt = await settlementRepo.getSettlementReceipt(client, companyId, branchId, tid);
-    if (!receipt) {
-      const err = new Error('Receipt not found');
+    const payment = await supplierPaymentRepo.getSettlementPayment(client, companyId, branchId, tid);
+    if (!payment) {
+      const err = new Error('Payment not found');
       err.status = 404;
       throw err;
     }
-    if (receipt.voucher?.postStatus === 'POSTED') {
-      const err = new Error('Receipt is already posted');
+    if (payment.voucher?.postStatus === 'POSTED') {
+      const err = new Error('Payment is already posted');
       err.status = 409;
       throw err;
     }
 
-    const customerId = receipt.customerId;
-    const customerLedgerId = await ensureCustomerLedgerForId(client, companyId, branchId, customerId);
-    const allocations = await loadReceiptAllocations(client, companyId, tid);
-    const postDatedCheque = Boolean(receipt.postDatedCheque)
-      || String(receipt.paymentMode || '').toUpperCase() === 'CHEQUE';
+    const supplierId = payment.supplierId;
+    const supplierLedgerId = await ensureSupplierLedgerForId(client, companyId, branchId, supplierId);
+    const allocations = await loadPaymentAllocations(client, companyId, tid);
+    const postDatedCheque = Boolean(payment.postDatedCheque)
+      || String(payment.paymentMode || '').toUpperCase() === 'CHEQUE';
 
-    await applyBillAllocations(client, companyId, allocations, customerLedgerId, postDatedCheque);
+    await applyBillAllocations(client, companyId, branchId, allocations, supplierLedgerId, postDatedCheque);
 
-    if (receipt.voucher?.voucherMasterId) {
+    if (payment.voucher?.voucherMasterId) {
       await voucherRepo.updateVoucherPostStatus(
-        client, companyId, branchId, receipt.voucher.voucherMasterId, 'POSTED',
+        client, companyId, branchId, payment.voucher.voucherMasterId, 'POSTED',
       );
     }
 
@@ -816,21 +844,21 @@ export async function postCustomerReceipt(authStaff, transactionId, query = {}) 
       status: postDatedCheque ? 'PDC_PENDING' : 'ACTIVE',
     });
 
-    const newOsInTxn = await customerRepo.getCustomerOsBalance(client, companyId, customerId);
+    const newOsInTxn = await supplierPaymentRepo.getSupplierOsBalance(client, companyId, supplierId);
     if (newOsInTxn <= 0.005) {
-      await settlementRepo.syncCustomerCreditState(client, companyId, customerId, customerLedgerId);
+      await supplierPaymentRepo.syncSupplierPayableState(client, companyId, supplierId, supplierLedgerId);
     }
 
     await client.query('COMMIT');
 
     return {
       transactionId: tid,
-      voucherMasterId: receipt.voucher?.voucherMasterId ?? null,
+      voucherMasterId: payment.voucher?.voucherMasterId ?? null,
       postStatus: 'POSTED',
       osAfter: newOsInTxn <= 0.005 ? 0 : newOsInTxn,
       message: postDatedCheque
-        ? 'PDC receipt posted — bill O/S clears when cheque is deposited/cleared.'
-        : 'Customer receipt posted.',
+        ? 'PDC payment posted — bill O/S clears when cheque is deposited/cleared.'
+        : 'Supplier payment posted.',
     };
   } catch (err) {
     await client.query('ROLLBACK');
@@ -840,7 +868,7 @@ export async function postCustomerReceipt(authStaff, transactionId, query = {}) 
   }
 }
 
-export async function unpostCustomerReceipt(authStaff, transactionId, query = {}) {
+export async function unpostSupplierPayment(authStaff, transactionId, query = {}) {
   const companyId = Number(authStaff.company_id);
   const branchId = parseBranchId(query.branchId) ?? parseBranchId(authStaff.branch_id);
   if (!branchId) {
@@ -853,35 +881,35 @@ export async function unpostCustomerReceipt(authStaff, transactionId, query = {}
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const receipt = await settlementRepo.getSettlementReceipt(client, companyId, branchId, tid);
-    if (!receipt) {
-      const err = new Error('Receipt not found');
+    const payment = await supplierPaymentRepo.getSettlementPayment(client, companyId, branchId, tid);
+    if (!payment) {
+      const err = new Error('Payment not found');
       err.status = 404;
       throw err;
     }
-    if (receipt.voucher?.postStatus !== 'POSTED') {
-      const err = new Error('Receipt is not posted');
+    if (payment.voucher?.postStatus !== 'POSTED') {
+      const err = new Error('Payment is not posted');
       err.status = 409;
       throw err;
     }
 
-    const customerId = receipt.customerId;
-    const customerLedgerId = await ensureCustomerLedgerForId(client, companyId, branchId, customerId);
-    const allocations = await loadReceiptAllocations(client, companyId, tid);
-    if (isBankReconciledStatus(receipt.status)) {
-      const err = new Error('Bank-reconciled receipt cannot be unposted');
+    const supplierId = payment.supplierId;
+    const supplierLedgerId = await ensureSupplierLedgerForId(client, companyId, branchId, supplierId);
+    const allocations = await loadPaymentAllocations(client, companyId, tid);
+    if (isBankReconciledStatus(payment.status)) {
+      const err = new Error('Bank-reconciled payment cannot be unposted');
       err.status = 409;
       throw err;
     }
-    const pdcPending = isPdcPendingStatus(receipt.status);
-    const postDatedCheque = Boolean(receipt.postDatedCheque)
-      || String(receipt.paymentMode || '').toUpperCase() === 'CHEQUE';
+    const pdcPending = isPdcPendingStatus(payment.status);
+    const postDatedCheque = Boolean(payment.postDatedCheque)
+      || String(payment.paymentMode || '').toUpperCase() === 'CHEQUE';
 
-    await reverseBillAllocations(client, companyId, allocations, customerLedgerId, pdcPending);
+    await reverseBillAllocations(client, companyId, branchId, allocations, supplierLedgerId, pdcPending);
 
-    if (receipt.voucher?.voucherMasterId) {
+    if (payment.voucher?.voucherMasterId) {
       await voucherRepo.updateVoucherPostStatus(
-        client, companyId, branchId, receipt.voucher.voucherMasterId, 'PENDING',
+        client, companyId, branchId, payment.voucher.voucherMasterId, 'PENDING',
       );
     }
 
@@ -893,9 +921,9 @@ export async function unpostCustomerReceipt(authStaff, transactionId, query = {}
 
     return {
       transactionId: tid,
-      voucherMasterId: receipt.voucher?.voucherMasterId ?? null,
+      voucherMasterId: payment.voucher?.voucherMasterId ?? null,
       postStatus: 'PENDING',
-      message: 'Customer receipt unposted — you can edit and post again.',
+      message: 'Supplier payment unposted — you can edit and post again.',
     };
   } catch (err) {
     await client.query('ROLLBACK');
@@ -906,7 +934,7 @@ export async function unpostCustomerReceipt(authStaff, transactionId, query = {}
 }
 
 /** POST /receipts/:id/clear-pdc — cheque deposited; reduce bill O/S. */
-export async function clearPdcCustomerReceipt(authStaff, transactionId, query = {}) {
+export async function clearPdcSupplierPayment(authStaff, transactionId, query = {}) {
   const companyId = Number(authStaff.company_id);
   const branchId = parseBranchId(query.branchId) ?? parseBranchId(authStaff.branch_id);
   if (!branchId) {
@@ -919,47 +947,47 @@ export async function clearPdcCustomerReceipt(authStaff, transactionId, query = 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const receipt = await settlementRepo.getSettlementReceipt(client, companyId, branchId, tid);
-    if (!receipt) {
-      const err = new Error('Receipt not found');
+    const payment = await supplierPaymentRepo.getSettlementPayment(client, companyId, branchId, tid);
+    if (!payment) {
+      const err = new Error('Payment not found');
       err.status = 404;
       throw err;
     }
-    if (receipt.voucher?.postStatus !== 'POSTED') {
-      const err = new Error('Receipt must be posted before clearing PDC');
+    if (payment.voucher?.postStatus !== 'POSTED') {
+      const err = new Error('Payment must be posted before clearing PDC');
       err.status = 409;
       throw err;
     }
-    if (!isPdcPendingStatus(receipt.status)) {
-      const err = new Error('Receipt is not pending PDC clearance');
+    if (!isPdcPendingStatus(payment.status)) {
+      const err = new Error('Payment is not pending PDC clearance');
       err.status = 409;
       throw err;
     }
 
-    const customerId = receipt.customerId;
-    const customerLedgerId = await ensureCustomerLedgerForId(client, companyId, branchId, customerId);
-    const allocations = (await loadReceiptAllocations(client, companyId, tid)).map((a) => ({
+    const supplierId = payment.supplierId;
+    const supplierLedgerId = await ensureSupplierLedgerForId(client, companyId, branchId, supplierId);
+    const allocations = (await loadPaymentAllocations(client, companyId, tid)).map((a) => ({
       ...a,
       balance: round3(Math.max(a.currentAmount - a.paidAmount, 0)),
     }));
 
-    await applyBillAllocations(client, companyId, allocations, customerLedgerId, false);
+    await applyBillAllocations(client, companyId, branchId, allocations, supplierLedgerId, false);
     await settlementRepo.updateCashTransactionChildBalances(client, companyId, tid, allocations);
 
     await settlementRepo.updateCashTransactionMaster(client, companyId, branchId, tid, {
       status: 'ACTIVE',
     });
 
-    const newOsInTxn = await customerRepo.getCustomerOsBalance(client, companyId, customerId);
+    const newOsInTxn = await supplierPaymentRepo.getSupplierOsBalance(client, companyId, supplierId);
     if (newOsInTxn <= 0.005) {
-      await settlementRepo.syncCustomerCreditState(client, companyId, customerId, customerLedgerId);
+      await supplierPaymentRepo.syncSupplierPayableState(client, companyId, supplierId, supplierLedgerId);
     }
 
     await client.query('COMMIT');
 
     return {
       transactionId: tid,
-      receiptStatus: 'ACTIVE',
+      paymentStatus: 'ACTIVE',
       pdcPending: false,
       pdcCleared: true,
       bankReconciled: false,
@@ -975,7 +1003,7 @@ export async function clearPdcCustomerReceipt(authStaff, transactionId, query = 
 }
 
 /** POST /receipts/:id/bank-reconcile — match cleared PDC with bank statement. */
-export async function reconcileBankCustomerReceipt(authStaff, transactionId, body = {}, query = {}) {
+export async function reconcileBankSupplierPayment(authStaff, transactionId, body = {}, query = {}) {
   const companyId = Number(authStaff.company_id);
   const branchId = parseBranchId(query.branchId) ?? parseBranchId(body.branchId) ?? parseBranchId(authStaff.branch_id);
   if (!branchId) {
@@ -996,34 +1024,34 @@ export async function reconcileBankCustomerReceipt(authStaff, transactionId, bod
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const receipt = await settlementRepo.getSettlementReceipt(client, companyId, branchId, tid);
-    if (!receipt) {
-      const err = new Error('Receipt not found');
+    const payment = await supplierPaymentRepo.getSettlementPayment(client, companyId, branchId, tid);
+    if (!payment) {
+      const err = new Error('Payment not found');
       err.status = 404;
       throw err;
     }
-    if (receipt.voucher?.postStatus !== 'POSTED') {
-      const err = new Error('Receipt must be posted before bank reconciliation');
+    if (payment.voucher?.postStatus !== 'POSTED') {
+      const err = new Error('Payment must be posted before bank reconciliation');
       err.status = 409;
       throw err;
     }
-    if (!receipt.postDatedCheque && String(receipt.paymentMode || '').toUpperCase() !== 'CHEQUE') {
-      const err = new Error('Bank reconciliation applies to PDC receipts only');
+    if (!payment.postDatedCheque && String(payment.paymentMode || '').toUpperCase() !== 'CHEQUE') {
+      const err = new Error('Bank reconciliation applies to PDC payments only');
       err.status = 409;
       throw err;
     }
-    if (isPdcPendingStatus(receipt.status)) {
+    if (isPdcPendingStatus(payment.status)) {
       const err = new Error('Clear PDC first before bank reconciliation');
       err.status = 409;
       throw err;
     }
-    if (isBankReconciledStatus(receipt.status)) {
-      const err = new Error('Receipt is already bank-reconciled');
+    if (isBankReconciledStatus(payment.status)) {
+      const err = new Error('Payment is already bank-reconciled');
       err.status = 409;
       throw err;
     }
 
-    const remarks = appendBankReconRemarks(receipt.remarks, bankStatementDate, bankReference);
+    const remarks = appendBankReconRemarks(payment.remarks, bankStatementDate, bankReference);
     await settlementRepo.updateCashTransactionMaster(client, companyId, branchId, tid, {
       status: 'BANK_RECONCILED',
       remarks,
@@ -1033,7 +1061,7 @@ export async function reconcileBankCustomerReceipt(authStaff, transactionId, bod
 
     return {
       transactionId: tid,
-      receiptStatus: 'BANK_RECONCILED',
+      paymentStatus: 'BANK_RECONCILED',
       pdcPending: false,
       pdcCleared: true,
       bankReconciled: true,

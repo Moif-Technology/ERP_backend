@@ -1066,6 +1066,54 @@ async function findPurchaseVouchers(db, companyId, branchId, purchaseId) {
   return { purchaseVoucherTypeId, paymentVoucherTypeId, purchaseVoucher, paymentVoucher };
 }
 
+async function findPurchasePaymentVouchers(db, companyId, branchId, purchaseId) {
+  try {
+    const { rows } = await db.query(
+      `SELECT DISTINCT
+         ctm.voucher_master_id,
+         ctm.transaction_id,
+         ctm.transaction_no,
+         ctm.transaction_date,
+         ctm.status,
+         ctm.payment_mode,
+         ctm.post_dated_cheque,
+         ctm.cheque_details,
+         ctm.cheque_date,
+         ctm.remarks,
+         ctm.modified_at
+       FROM accounts.cash_transaction_child ctc
+       JOIN accounts.cash_transaction_master ctm
+         ON ctm.company_id = ctc.company_id
+        AND ctm.transaction_id = ctc.transaction_id
+       JOIN ops.purchase_master pm
+         ON pm.company_id = ctc.company_id
+        AND pm.branch_id = $2
+        AND pm.purchase_id = ctc.bill_id
+        AND pm.supplier_id = ctm.supplier_id
+       WHERE ctc.company_id = $1
+         AND ctc.bill_id = $3
+         AND ctm.branch_id = $2
+         AND ctm.customer_id IS NULL
+         AND ctm.supplier_id IS NOT NULL
+         AND ctm.voucher_master_id IS NOT NULL
+       ORDER BY ctm.voucher_master_id ASC`,
+      [companyId, branchId, purchaseId],
+    );
+
+    const vouchers = [];
+    for (const row of rows) {
+      const voucher = await voucherRepo.getVoucherWithDetails(
+        db, companyId, branchId, Number(row.voucher_master_id),
+      );
+      if (voucher?.master) vouchers.push({ voucher, payment: row });
+    }
+    return vouchers;
+  } catch (e) {
+    if (e.code === '42P01' || e.code === '42703') return [];
+    throw e;
+  }
+}
+
 async function syncPurchaseAccountsVoucher(client, companyId, branchId, purchaseId, auditBy) {
   const existing = await purchaseEntryRepo.getPurchaseMaster(client, companyId, purchaseId);
   if (!existing) return null;
@@ -1652,9 +1700,17 @@ export async function getPurchaseAccounts(pool, authStaff, purchaseId, query) {
 
   const { purchaseVoucher, paymentVoucher } =
     await findPurchaseVouchers(pool, companyId, branchId, pid);
+  const allocatedPaymentVouchers = await findPurchasePaymentVouchers(pool, companyId, branchId, pid);
 
   let mappedPurchase = purchaseVoucher ? mapVoucherToApi(purchaseVoucher) : null;
-  const mappedPayment = paymentVoucher ? mapVoucherToApi(paymentVoucher) : null;
+  const directPayment = paymentVoucher ? mapPaymentVoucherToApi(paymentVoucher) : null;
+  const allocatedPayments = allocatedPaymentVouchers.map(mapPaymentVoucherToApi).filter(Boolean);
+  const paymentMap = new Map();
+  for (const p of [directPayment, ...allocatedPayments].filter(Boolean)) {
+    paymentMap.set(Number(p.voucherMasterId), p);
+  }
+  const paymentVouchers = [...paymentMap.values()];
+  const mappedPayment = paymentVouchers[0] ?? null;
 
   let outstandingBalance = num(masterRow.outstanding_balance, num(masterRow.invoice_amount, 0));
   const fromVoucher = supplierOutstandingFromVoucher(mappedPurchase, null);
@@ -1670,11 +1726,51 @@ export async function getPurchaseAccounts(pool, authStaff, purchaseId, query) {
     invoiceAmount: masterRow.invoice_amount != null ? String(masterRow.invoice_amount) : '0',
     paymentMode: masterRow.payment_mode ?? null,
     outstandingBalance: outstandingBalance.toFixed(2),
-    paymentDone: mappedPayment != null && mappedPayment.postStatus === 'POSTED',
+    paymentDone: paymentVouchers.some((p) => p.postStatus === 'POSTED'),
     purchasePosted: mappedPurchase != null && mappedPurchase.postStatus === 'POSTED',
     purchaseVoucher: mappedPurchase,
     paymentVoucher: mappedPayment,
+    paymentVouchers,
     accountsPosted: mappedPurchase != null,
+  };
+}
+
+function parseBankReconFromRemarks(remarks) {
+  const text = String(remarks || '');
+  return {
+    bankStatementDate: text.match(/\[BR_DATE:([^\]]+)\]/)?.[1] || null,
+    bankReference: text.match(/\[BR_REF:([^\]]+)\]/)?.[1] || null,
+  };
+}
+
+function mapPaymentVoucherToApi(record) {
+  const voucher = record?.voucher ?? record;
+  const mapped = mapVoucherToApi(voucher);
+  if (!mapped) return null;
+  const payment = record?.payment ?? null;
+  if (!payment) return mapped;
+  const paymentStatus = String(payment.status || 'ACTIVE').toUpperCase();
+  const postDatedCheque = Boolean(payment.post_dated_cheque)
+    || String(payment.payment_mode || '').toUpperCase() === 'CHEQUE';
+  const bankRecon = parseBankReconFromRemarks(payment.remarks);
+  const pdcPending = postDatedCheque && paymentStatus === 'PDC_PENDING';
+  const bankReconciled = paymentStatus === 'BANK_RECONCILED';
+  return {
+    ...mapped,
+    transactionId: payment.transaction_id != null ? Number(payment.transaction_id) : null,
+    transactionNo: payment.transaction_no != null ? Number(payment.transaction_no) : null,
+    paymentStatus,
+    paymentMode: payment.payment_mode || mapped.voucherTypeCode || '',
+    paymentDate: payment.transaction_date || mapped.voucherDate,
+    postDatedCheque,
+    chequeDetails: payment.cheque_details || null,
+    chequeDate: payment.cheque_date || null,
+    pdcPending,
+    pdcCleared: postDatedCheque && !pdcPending,
+    bankReconciled,
+    bankStatementDate: bankRecon.bankStatementDate,
+    bankReference: bankRecon.bankReference,
+    pdcStatusDate: payment.modified_at || null,
   };
 }
 

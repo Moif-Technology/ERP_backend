@@ -34,6 +34,8 @@ const CLEARED_PAID_SUBQUERY = `
       ON ctm.company_id = ctc.company_id AND ctm.transaction_id = ctc.transaction_id
     WHERE ctc.company_id = sm.company_id
       AND ctc.bill_id = sm.sales_id
+      AND ctm.customer_id = sm.customer_id
+      AND ctm.supplier_id IS NULL
       AND NOT (${PDC_PENDING_MASTER_SQL})
   ), 0)`;
 
@@ -46,6 +48,8 @@ const PDC_PAID_SUBQUERY = `
       ON ctm.company_id = ctc.company_id AND ctm.transaction_id = ctc.transaction_id
     WHERE ctc.company_id = sm.company_id
       AND ctc.bill_id = sm.sales_id
+      AND ctm.customer_id = sm.customer_id
+      AND ctm.supplier_id IS NULL
       AND (${PDC_PENDING_MASTER_SQL})
   ), 0)`;
 
@@ -66,7 +70,6 @@ const POSTED_VOUCHER_STATUS_SQL = `AND UPPER(COALESCE(vm.post_status, 'PENDING')
 const BASE_DUE_EXPR = `
   GREATEST(
     COALESCE(
-      NULLIF(sm.outstanding_balance::numeric, 0),
       NULLIF(sm.credit_amount::numeric, 0),
       CASE WHEN UPPER(TRIM(COALESCE(sm.payment_mode, ''))) = 'CREDIT' THEN sm.amount::numeric ELSE 0 END
     ) - ${CLEARED_PAID_SUBQUERY},
@@ -87,6 +90,7 @@ const SALES_OUTSTANDING_SQL = `
   FROM ops.sales_master sm
   WHERE sm.company_id = $1
     AND sm.customer_id = $2
+    AND ($3::int IS NULL OR sm.branch_id = $3::int)
     AND sm.amount > 0
     AND ${CREDIT_BILL_MODE_SQL}
     AND COALESCE(UPPER(sm.transaction_type), 'SALE') NOT IN ('RETURN', 'REFUND')
@@ -102,20 +106,44 @@ const VOUCHER_OUTSTANDING_SQL = `
     COALESCE(sm.bill_no, vm.voucher_posted_id) AS bill_no,
     COALESCE(sm.bill_date, vm.voucher_date) AS bill_date,
     COALESCE(sm.amount, vm.voucher_amount)::numeric AS invoice_amount,
-    GREATEST(
-      COALESCE(NULLIF(vd.outstanding_balance, 0), vd.debit_amount, 0)::numeric
-      - COALESCE((
+    CASE
+      WHEN sm.sales_id IS NOT NULL THEN GREATEST(
+        COALESCE(
+          NULLIF(sm.credit_amount::numeric, 0),
+          CASE WHEN UPPER(TRIM(COALESCE(sm.payment_mode, ''))) = 'CREDIT' THEN sm.amount::numeric ELSE 0 END
+        ) - COALESCE((
+          SELECT SUM(ctc.paid_amount)::numeric
+          FROM accounts.cash_transaction_child ctc
+          LEFT JOIN accounts.cash_transaction_master ctm
+            ON ctm.company_id = ctc.company_id AND ctm.transaction_id = ctc.transaction_id
+          WHERE ctc.company_id = sm.company_id
+            AND ctc.bill_id = sm.sales_id
+            AND ctm.customer_id = sm.customer_id
+            AND ctm.supplier_id IS NULL
+            AND NOT (
+              COALESCE(ctm.post_dated_cheque, false) = true
+              AND UPPER(COALESCE(ctm.status, '')) = 'PDC_PENDING'
+            )
+        ), 0),
+        0
+      )
+      WHEN COALESCE(vd.outstanding_balance, 0) > 0.005 THEN COALESCE(vd.outstanding_balance, 0)
+      ELSE GREATEST(COALESCE(vd.debit_amount, 0)::numeric - COALESCE((
         SELECT SUM(ctc.paid_amount)::numeric
         FROM accounts.cash_transaction_child ctc
+        LEFT JOIN accounts.cash_transaction_master ctm
+          ON ctm.company_id = ctc.company_id AND ctm.transaction_id = ctc.transaction_id
         WHERE ctc.company_id = vd.company_id
           AND ctc.bill_id = vm.voucher_posted_id
-      ), 0),
-      0
-    ) AS current_amount,
+          AND ctm.customer_id = cm.customer_id
+          AND ctm.supplier_id IS NULL
+      ), 0), 0)
+    END AS current_amount,
     TRIM(COALESCE(vm.voucher_prefix, 'SV-') || COALESCE(vm.auto_voucher_no, vm.voucher_posted_id)::text) AS invoice_no
   FROM accounts.voucher_detail vd
   INNER JOIN accounts.voucher_master vm
     ON vm.company_id = vd.company_id
+   AND vm.branch_id = vd.branch_id
    AND vm.voucher_master_id = vd.voucher_master_id
   INNER JOIN biz.customer_master cm
     ON cm.company_id = $1
@@ -126,24 +154,49 @@ const VOUCHER_OUTSTANDING_SQL = `
    AND (ah.record_status IS NULL OR TRIM(UPPER(ah.record_status)) = 'ACTIVE')
   LEFT JOIN ops.sales_master sm
     ON sm.company_id = vm.company_id
+   AND sm.branch_id = vm.branch_id
    AND sm.sales_id = vm.voucher_posted_id
   WHERE vd.company_id = $1
     AND vd.account_id = ah.account_id
+    AND ($3::int IS NULL OR vd.branch_id = $3::int)
     AND vd.debit_amount > 0
     AND vm.voucher_posted_id IS NOT NULL
     AND (vd.record_status IS NULL OR TRIM(UPPER(vd.record_status)) = 'ACTIVE')
     ${POSTED_VOUCHER_STATUS_SQL}
     AND (sm.sales_id IS NULL OR UPPER(COALESCE(sm.post_status, 'PENDING')) = 'POSTED')
-    AND GREATEST(
-      COALESCE(NULLIF(vd.outstanding_balance, 0), vd.debit_amount, 0)::numeric
-      - COALESCE((
+    AND (CASE
+      WHEN sm.sales_id IS NOT NULL THEN GREATEST(
+        COALESCE(
+          NULLIF(sm.credit_amount::numeric, 0),
+          CASE WHEN UPPER(TRIM(COALESCE(sm.payment_mode, ''))) = 'CREDIT' THEN sm.amount::numeric ELSE 0 END
+        ) - COALESCE((
+          SELECT SUM(ctc.paid_amount)::numeric
+          FROM accounts.cash_transaction_child ctc
+          LEFT JOIN accounts.cash_transaction_master ctm
+            ON ctm.company_id = ctc.company_id AND ctm.transaction_id = ctc.transaction_id
+          WHERE ctc.company_id = sm.company_id
+            AND ctc.bill_id = sm.sales_id
+            AND ctm.customer_id = sm.customer_id
+            AND ctm.supplier_id IS NULL
+            AND NOT (
+              COALESCE(ctm.post_dated_cheque, false) = true
+              AND UPPER(COALESCE(ctm.status, '')) = 'PDC_PENDING'
+            )
+        ), 0),
+        0
+      )
+      WHEN COALESCE(vd.outstanding_balance, 0) > 0.005 THEN COALESCE(vd.outstanding_balance, 0)
+      ELSE GREATEST(COALESCE(vd.debit_amount, 0)::numeric - COALESCE((
         SELECT SUM(ctc.paid_amount)::numeric
         FROM accounts.cash_transaction_child ctc
+        LEFT JOIN accounts.cash_transaction_master ctm
+          ON ctm.company_id = ctc.company_id AND ctm.transaction_id = ctc.transaction_id
         WHERE ctc.company_id = vd.company_id
           AND ctc.bill_id = vm.voucher_posted_id
-      ), 0),
-      0
-    ) > 0.005
+          AND ctm.customer_id = cm.customer_id
+          AND ctm.supplier_id IS NULL
+      ), 0), 0)
+    END) > 0.005
   ORDER BY COALESCE(sm.bill_date, vm.voucher_date) ASC, vm.voucher_posted_id ASC`;
 
 /** First source wins — voucher rows before sales (avoids double-count / inflated MAX). */
@@ -188,6 +241,7 @@ const CREDIT_CUSTOMER_SALES_SQL = `
    AND cm.customer_id = sm.customer_id
   WHERE sm.company_id = $1
     AND sm.customer_id = $2
+    AND ($3::int IS NULL OR sm.branch_id = $3::int)
     AND UPPER(TRIM(COALESCE(cm.payment_mode, ''))) IN ('CREDIT', 'CREDITCARD')
     AND sm.amount > 0
     AND COALESCE(UPPER(sm.transaction_type), 'SALE') NOT IN ('RETURN', 'REFUND')
@@ -203,20 +257,24 @@ const VOUCHER_ORPHAN_OUTSTANDING_SQL = `
     vm.voucher_master_id AS bill_no,
     vm.voucher_date AS bill_date,
     vd.debit_amount::numeric AS invoice_amount,
-    GREATEST(
-      COALESCE(NULLIF(vd.outstanding_balance, 0), vd.debit_amount, 0)::numeric
-      - COALESCE((
+    CASE
+      WHEN COALESCE(vd.outstanding_balance, 0) > 0.005 THEN COALESCE(vd.outstanding_balance, 0)
+      ELSE GREATEST(COALESCE(vd.debit_amount, 0)::numeric - COALESCE((
         SELECT SUM(ctc.paid_amount)::numeric
         FROM accounts.cash_transaction_child ctc
+        LEFT JOIN accounts.cash_transaction_master ctm
+          ON ctm.company_id = ctc.company_id AND ctm.transaction_id = ctc.transaction_id
         WHERE ctc.company_id = vd.company_id
           AND ctc.bill_id = (-vm.voucher_master_id)::bigint
-      ), 0),
-      0
-    ) AS current_amount,
+          AND ctm.customer_id = cm.customer_id
+          AND ctm.supplier_id IS NULL
+      ), 0), 0)
+    END AS current_amount,
     TRIM(COALESCE(vm.voucher_prefix, 'JV-') || vm.manual_voucher_no::text) AS invoice_no
   FROM accounts.voucher_detail vd
   INNER JOIN accounts.voucher_master vm
     ON vm.company_id = vd.company_id
+   AND vm.branch_id = vd.branch_id
    AND vm.voucher_master_id = vd.voucher_master_id
   INNER JOIN biz.customer_master cm
     ON cm.company_id = $1
@@ -227,20 +285,24 @@ const VOUCHER_ORPHAN_OUTSTANDING_SQL = `
    AND (ah.record_status IS NULL OR TRIM(UPPER(ah.record_status)) = 'ACTIVE')
   WHERE vd.company_id = $1
     AND vd.account_id = ah.account_id
+    AND ($3::int IS NULL OR vd.branch_id = $3::int)
     AND vd.debit_amount > 0
     AND vm.voucher_posted_id IS NULL
     AND (vd.record_status IS NULL OR TRIM(UPPER(vd.record_status)) = 'ACTIVE')
     ${POSTED_VOUCHER_STATUS_SQL}
-    AND GREATEST(
-      COALESCE(NULLIF(vd.outstanding_balance, 0), vd.debit_amount, 0)::numeric
-      - COALESCE((
+    AND (CASE
+      WHEN COALESCE(vd.outstanding_balance, 0) > 0.005 THEN COALESCE(vd.outstanding_balance, 0)
+      ELSE GREATEST(COALESCE(vd.debit_amount, 0)::numeric - COALESCE((
         SELECT SUM(ctc.paid_amount)::numeric
         FROM accounts.cash_transaction_child ctc
+        LEFT JOIN accounts.cash_transaction_master ctm
+          ON ctm.company_id = ctc.company_id AND ctm.transaction_id = ctc.transaction_id
         WHERE ctc.company_id = vd.company_id
           AND ctc.bill_id = (-vm.voucher_master_id)::bigint
-      ), 0),
-      0
-    ) > 0.005
+          AND ctm.customer_id = cm.customer_id
+          AND ctm.supplier_id IS NULL
+      ), 0), 0)
+    END) > 0.005
   ORDER BY vm.voucher_date ASC, vm.voucher_master_id ASC`;
 
 /**
@@ -299,9 +361,9 @@ export function reconcileBillsWithLedger(bills, ledgerOs, customerId) {
   return reconciled;
 }
 
-async function querySalesBills(db, companyId, customerId) {
+async function querySalesBills(db, companyId, customerId, branchId = null) {
   try {
-    const { rows } = await db.query(SALES_OUTSTANDING_SQL, [companyId, customerId]);
+    const { rows } = await db.query(SALES_OUTSTANDING_SQL, [companyId, customerId, branchId]);
     return rows.map(mapBillRow);
   } catch (e) {
     if (e.code === '42P01' || e.code === '42703') return trySalesBillsLegacy(db, companyId, customerId);
@@ -350,9 +412,9 @@ async function trySalesBillsLegacy(db, companyId, customerId) {
   }
 }
 
-async function queryVoucherBills(db, companyId, customerId) {
+async function queryVoucherBills(db, companyId, customerId, branchId = null) {
   try {
-    const { rows } = await db.query(VOUCHER_OUTSTANDING_SQL, [companyId, customerId]);
+    const { rows } = await db.query(VOUCHER_OUTSTANDING_SQL, [companyId, customerId, branchId]);
     return rows.map(mapBillRow);
   } catch (e) {
     if (e.code === '42P01' || e.code === '42703') return [];
@@ -360,9 +422,9 @@ async function queryVoucherBills(db, companyId, customerId) {
   }
 }
 
-async function queryCreditCustomerSales(db, companyId, customerId) {
+async function queryCreditCustomerSales(db, companyId, customerId, branchId = null) {
   try {
-    const { rows } = await db.query(CREDIT_CUSTOMER_SALES_SQL, [companyId, customerId]);
+    const { rows } = await db.query(CREDIT_CUSTOMER_SALES_SQL, [companyId, customerId, branchId]);
     return rows.map(mapBillRow);
   } catch (e) {
     if (e.code === '42P01' || e.code === '42703') return [];
@@ -370,9 +432,9 @@ async function queryCreditCustomerSales(db, companyId, customerId) {
   }
 }
 
-async function queryOrphanVoucherBills(db, companyId, customerId) {
+async function queryOrphanVoucherBills(db, companyId, customerId, branchId = null) {
   try {
-    const { rows } = await db.query(VOUCHER_ORPHAN_OUTSTANDING_SQL, [companyId, customerId]);
+    const { rows } = await db.query(VOUCHER_ORPHAN_OUTSTANDING_SQL, [companyId, customerId, branchId]);
     return rows.map(mapBillRow);
   } catch (e) {
     if (e.code === '42P01' || e.code === '42703') return [];
@@ -481,13 +543,13 @@ export async function assertPostedBillAllocations(db, companyId, allocations) {
   }
 }
 
-export async function getOutstandingBills(db, companyId, customerId) {
+export async function getOutstandingBills(db, companyId, customerId, { branchId = null } = {}) {
   await repairNonCreditSalesOutstanding(db, companyId, customerId);
 
   const [voucherBills, orphanBills, salesBills] = await Promise.all([
-    queryVoucherBills(db, companyId, customerId),
-    queryOrphanVoucherBills(db, companyId, customerId),
-    querySalesBills(db, companyId, customerId),
+    queryVoucherBills(db, companyId, customerId, branchId),
+    queryOrphanVoucherBills(db, companyId, customerId, branchId),
+    querySalesBills(db, companyId, customerId, branchId),
   ]);
   return mergeOutstandingBills(voucherBills, orphanBills, salesBills);
 }
