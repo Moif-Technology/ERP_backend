@@ -15,6 +15,7 @@ export async function login(req, res) {
       username: req.body?.login ?? req.body?.username,
       password: req.body?.password,
     });
+    req.systemLogContext = { companyId: result.companyId, actor: result.staffName, message: 'Van login completed' };
     return res.json(result);
   } catch (err) {
     return handleError(res, err, 'Login failed');

@@ -1,6 +1,7 @@
 import { pool } from '../../config/db.js';
 import * as voucherService from '../services/voucher.service.js';
 import * as financialReportService from '../services/financialReport.service.js';
+import * as accountsDashboardService from '../services/accountsDashboard.service.js';
 
 function handleError(res, err, fallbackMsg) {
   if (err.status) return res.status(err.status).json({ message: err.message });
@@ -13,6 +14,14 @@ export async function listVouchers(req, res) {
   try {
     return res.json(await voucherService.listVouchers(pool, req.authStaff, req.query));
   } catch (err) { return handleError(res, err, 'Could not load vouchers'); }
+}
+
+export async function getAccountsDashboard(req, res) {
+  try {
+    return res.json({
+      dashboard: await accountsDashboardService.getAccountsDashboard(pool, req.authStaff, req.query),
+    });
+  } catch (err) { return handleError(res, err, 'Could not load accounts dashboard'); }
 }
 
 export async function getVoucher(req, res) {

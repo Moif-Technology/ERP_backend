@@ -6,8 +6,14 @@ import { requireAnyFeature } from '../../middleware/entitlementMiddleware.js';
 export const voucherRouter = Router();
 
 voucherRouter.use(authMiddleware);
-voucherRouter.use(requireAnyFeature(['backoffice.accounts', 'backoffice.vouchers']));
 
+voucherRouter.get(
+  '/dashboard',
+  requireAnyFeature(['accounts.dashboard', 'accounts', 'backoffice.accounts', 'backoffice.vouchers']),
+  voucherController.getAccountsDashboard,
+);
+
+voucherRouter.use(requireAnyFeature(['backoffice.accounts', 'backoffice.vouchers', 'accounts', 'accounts.vouchers', 'accounts.ledger']));
 voucherRouter.get('/types', voucherController.listVoucherTypes);
 voucherRouter.get('/trial-balance', voucherController.getTrialBalance);
 voucherRouter.get('/balance-sheet', voucherController.getBalanceSheet);

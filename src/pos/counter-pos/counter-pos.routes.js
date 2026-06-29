@@ -34,6 +34,7 @@ counterPosRouter.post('/sales/save',             authMiddleware, salesController
 counterPosRouter.post('/sales/hold',             authMiddleware, salesController.holdBill);
 counterPosRouter.get('/sales/held',              authMiddleware, salesController.getHeldBills);
 counterPosRouter.get('/sales/held/:salesId',     authMiddleware, salesController.recallBill);
+counterPosRouter.post('/sales/held/:salesId/recall', authMiddleware, salesController.recallBill);
 counterPosRouter.delete('/sales/held/:salesId',  authMiddleware, salesController.cancelHold);
 counterPosRouter.post('/sales/delivery',                    authMiddleware, salesController.saveDelivery);
 counterPosRouter.get('/sales/delivery',                     authMiddleware, salesController.getDeliveryBills);

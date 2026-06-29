@@ -7,6 +7,13 @@ export function signAccessToken(payload) {
   });
 }
 
+/** POS-scoped token: longer lifetime (8h) + `scope: 'pos'` claim so authMiddleware can block POS tokens on ERP routes. */
+export function signPosAccessToken(payload) {
+  return jwt.sign({ ...payload, scope: 'pos' }, config.jwtAccessSecret, {
+    expiresIn: config.jwtPosAccessExpires,
+  });
+}
+
 export function signRefreshToken(payload) {
   return jwt.sign(payload, config.jwtRefreshSecret, {
     expiresIn: config.jwtRefreshExpires,

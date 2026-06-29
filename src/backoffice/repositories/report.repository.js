@@ -12,23 +12,23 @@
 export async function dailySales(pool, companyId, branchId, dateFrom, dateTo) {
   const { rows } = await pool.query(
     `SELECT sm.sales_id,
-            sm.invoice_no,
+            COALESCE(sm.invoice_no, sm.bill_no::text, sm.sales_id::text) AS invoice_no,
             sm.bill_no,
             sm.bill_date,
             COALESCE(cm.customer_name, 'CASH CUSTOMER') AS customer,
-            sm.payment_mode,
-            sm.subtotal_amount,
+            COALESCE(sm.payment_mode, 'CASH') AS payment_mode,
+            COALESCE(sm.subtotal_amount, 0) AS subtotal_amount,
             COALESCE(sm.tax_1_amount,0)+COALESCE(sm.tax_2_amount,0)+COALESCE(sm.tax_3_amount,0) AS tax_amount,
-            sm.discount_amount,
-            sm.amount
+            COALESCE(sm.discount_amount, 0) AS discount_amount,
+            COALESCE(sm.amount, 0) AS amount,
+            COALESCE(sm.post_status, 'DRAFT') AS post_status
        FROM ops.sales_master sm
        LEFT JOIN biz.customer_master cm
          ON cm.company_id = sm.company_id AND cm.customer_id = sm.customer_id
       WHERE sm.company_id = $1
         AND ($2::integer IS NULL OR sm.branch_id = $2::integer)
-        AND COALESCE(sm.record_status,'ACTIVE') = 'ACTIVE'
-        AND COALESCE(sm.post_status,'') = 'POSTED'
-        AND sm.entry_source = 'ERP'
+        AND UPPER(COALESCE(sm.record_status, 'ACTIVE')) <> 'CANCELLED'
+        AND UPPER(COALESCE(TRIM(sm.transaction_type), '')) NOT IN ('RETURN', 'SALES RETURN')
         AND sm.bill_date >= $3::date
         AND sm.bill_date <  ($4::date + interval '1 day')
       ORDER BY sm.bill_date ASC, sm.sales_id ASC`,
@@ -190,6 +190,89 @@ export async function supplierWisePurchase(pool, companyId, branchId, dateFrom, 
   return rows;
 }
 
+// Purchase By Product — grouped per product from purchase_child.
+export async function purchaseByProduct(pool, companyId, branchId, dateFrom, dateTo) {
+  const { rows } = await pool.query(
+    `SELECT pm.product_code AS code,
+            COALESCE(pm.product_name, pc.own_ref_no, 'UNKNOWN') AS product,
+            COALESCE(g.group_description, '') AS grp,
+            COALESCE(SUM(pc.qty),0) AS qty,
+            CASE WHEN COALESCE(SUM(pc.qty),0) > 0
+                 THEN COALESCE(SUM(pc.line_amount),0) / SUM(pc.qty)
+                 ELSE 0 END AS rate,
+            COALESCE(SUM(pc.subtotal_amount),0) AS sub,
+            COALESCE(SUM(pc.discount_amount),0) AS disc,
+            COALESCE(SUM(pc.line_amount),0) AS net
+       FROM ops.purchase_child pc
+       JOIN ops.purchase_master p
+         ON p.company_id = pc.company_id AND p.purchase_id = pc.purchase_id
+       LEFT JOIN core.product_master pm
+         ON pm.company_id = pc.company_id AND pm.product_id = pc.product_id
+       LEFT JOIN biz.group_master g
+         ON g.company_id = pm.company_id AND g.group_id = pm.group_id
+      WHERE pc.company_id = $1 AND p.branch_id = $2
+        AND COALESCE(p.record_status,'ACTIVE') = 'ACTIVE'
+        AND (p.transaction_type IS NULL OR p.transaction_type != 'RETURN')
+        AND p.purchase_date >= $3::date
+        AND p.purchase_date <  ($4::date + interval '1 day')
+      GROUP BY pm.product_code, COALESCE(pm.product_name, pc.own_ref_no, 'UNKNOWN'), COALESCE(g.group_description,'')
+      ORDER BY net DESC`,
+    [companyId, branchId, dateFrom, dateTo],
+  );
+  return rows;
+}
+
+// Purchase Return — supplier returns (transaction_type = 'RETURN').
+export async function purchaseReturn(pool, companyId, branchId, dateFrom, dateTo) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(p.return_no, p.purchase_no) AS bill_no,
+            p.purchase_date,
+            COALESCE(sp.supplier_name, 'UNKNOWN') AS supplier,
+            (SELECT COUNT(*)::int FROM ops.purchase_child pc
+              WHERE pc.company_id = p.company_id AND pc.purchase_id = p.purchase_id) AS items,
+            COALESCE(p.subtotal_amount,0) AS sub,
+            COALESCE(p.input_tax_1_amount,0)+COALESCE(p.input_tax_2_amount,0)+COALESCE(p.input_tax_3_amount,0) AS tax,
+            COALESCE(p.discount_amount,0) AS disc,
+            ABS(COALESCE(p.invoice_amount,0)) AS net
+       FROM ops.purchase_master p
+       LEFT JOIN biz.supplier_master sp
+         ON sp.company_id = p.company_id AND sp.supplier_id = p.supplier_id
+      WHERE p.company_id = $1 AND p.branch_id = $2
+        AND p.transaction_type = 'RETURN'
+        AND COALESCE(p.record_status,'ACTIVE') = 'ACTIVE'
+        AND p.purchase_date >= $3::date
+        AND p.purchase_date <  ($4::date + interval '1 day')
+      ORDER BY p.purchase_date ASC, p.purchase_id ASC`,
+    [companyId, branchId, dateFrom, dateTo],
+  );
+  return rows;
+}
+
+// Outstanding LPO — open / partial LPOs not yet closed or received.
+export async function outstandingLPO(pool, companyId, branchId) {
+  const { rows } = await pool.query(
+    `SELECT lm.lpo_no,
+            lm.lpo_date,
+            COALESCE(sp.supplier_name, lm.supplier_display_name, 'UNKNOWN') AS supplier,
+            lm.status,
+            (SELECT COUNT(*)::int FROM ops.lpo_child lc
+              WHERE lc.company_id = lm.company_id AND lc.lpo_master_id = lm.lpo_master_id
+                AND (lc.record_status IS NULL OR lc.record_status = 'ACTIVE')) AS items,
+            COALESCE(lm.sub_total,0) AS sub,
+            COALESCE(lm.discount_amount,0) AS disc,
+            COALESCE(lm.lpo_amount,0) AS net
+       FROM ops.lpo_master lm
+       LEFT JOIN biz.supplier_master sp
+         ON sp.company_id = lm.company_id AND sp.supplier_id = lm.supplier_id
+      WHERE lm.company_id = $1 AND lm.branch_id = $2
+        AND (lm.record_status IS NULL OR lm.record_status = 'ACTIVE')
+        AND lm.status NOT IN ('CLOSED', 'RECEIVED')
+      ORDER BY lm.lpo_date DESC, lm.lpo_master_id DESC`,
+    [companyId, branchId],
+  );
+  return rows;
+}
+
 /* ───────────────────────── STOCK ───────────────────────── */
 
 // Stock Summary — current on-hand + value, with in/out within period.
@@ -308,6 +391,54 @@ export async function cashBankMovement(pool, companyId, branchId, dateFrom, date
         AND vm.voucher_date >= $3::date
         AND vm.voucher_date < ($4::date + interval '1 day')
       ORDER BY vm.voucher_date ASC, vd.voucher_detail_id ASC`,
+    [companyId, branchId, dateFrom, dateTo],
+  );
+  return rows;
+}
+
+/* ──────────────────────── HR ──────────────────────── */
+
+export async function attendanceReport(pool, companyId, branchId, dateFrom, dateTo) {
+  const { rows } = await pool.query(
+    `SELECT ad.work_date,
+            em.employee_code,
+            em.employee_name,
+            COALESCE(em.department, '') AS department,
+            COALESCE(ad.first_in::text, '') AS first_in,
+            COALESCE(ad.last_out::text, '') AS last_out,
+            COALESCE(ad.ot_hours, 0) AS ot_hours,
+            COALESCE(ad.attendance_status, '') AS status
+       FROM hr.attendance_daily ad
+       JOIN hr.employee_master em
+         ON em.company_id = ad.company_id AND em.branch_id = ad.branch_id AND em.employee_id = ad.employee_id
+      WHERE ad.company_id = $1 AND ad.branch_id = $2
+        AND ad.work_date >= $3::date
+        AND ad.work_date < ($4::date + interval '1 day')
+      ORDER BY ad.work_date DESC, em.employee_name ASC`,
+    [companyId, branchId, dateFrom, dateTo],
+  );
+  return rows;
+}
+
+export async function leaveReport(pool, companyId, branchId, dateFrom, dateTo) {
+  const { rows } = await pool.query(
+    `SELECT em.employee_code,
+            em.employee_name,
+            COALESCE(em.department, '') AS department,
+            COALESCE(ltm.leave_name, '') AS leave_type,
+            lr.from_date,
+            lr.to_date,
+            COALESCE(lr.total_days, 0) AS total_days,
+            COALESCE(lr.request_status, '') AS status
+       FROM hr.leave_request lr
+       JOIN hr.employee_master em
+         ON em.company_id = lr.company_id AND em.branch_id = lr.branch_id AND em.employee_id = lr.employee_id
+       LEFT JOIN hr.leave_type_master ltm
+         ON ltm.company_id = lr.company_id AND ltm.branch_id = lr.branch_id AND ltm.leave_type_id = lr.leave_type_id
+      WHERE lr.company_id = $1 AND lr.branch_id = $2
+        AND lr.from_date >= $3::date
+        AND lr.from_date < ($4::date + interval '1 day')
+      ORDER BY lr.from_date DESC, em.employee_name ASC`,
     [companyId, branchId, dateFrom, dateTo],
   );
   return rows;

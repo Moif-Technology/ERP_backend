@@ -1,6 +1,11 @@
 import pg from 'pg';
 import { config } from '../config.js';
 
+// DATE columns (OID 1082) come back as postgres-date Date objects using local-time
+// constructor, which shifts the day when the server runs in a UTC+ timezone.
+// Return the raw 'YYYY-MM-DD' string instead so no timezone conversion occurs.
+pg.types.setTypeParser(1082, (val) => val);
+
 const { Pool } = pg;
 
 const basePoolOptions = {

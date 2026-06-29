@@ -1,5 +1,6 @@
 import * as tenantService from '../services/tenant.service.js';
 import { pool } from '../../config/db.js';
+import { invalidateStaffSession } from '../../middleware/authMiddleware.js';
 
 function actorId(req) {
   return req.platformUser?.platformUserId || null;
@@ -219,6 +220,67 @@ export async function audit(req, res) {
       offset: req.query.offset ? Number(req.query.offset) : undefined,
     });
     return res.json({ entries: rows });
+  } catch (err) {
+    return handle(err, res);
+  }
+}
+
+export async function sessions(req, res) {
+  try {
+    const companyId = Number(req.params.companyId);
+    const [activeRes, eventsRes] = await Promise.all([
+      pool.query(
+        `SELECT staff_pk, session_type, created_at, expires_at
+         FROM core.active_session
+         WHERE company_id = $1 AND expires_at > NOW()
+         ORDER BY created_at DESC`,
+        [companyId]
+      ),
+      pool.query(
+        `SELECT id, staff_pk, event_type, ip_address, metadata, created_at
+         FROM core.auth_event_log
+         WHERE company_id = $1
+         ORDER BY created_at DESC
+         LIMIT 50`,
+        [companyId]
+      ),
+    ]);
+    return res.json({ activeSessions: activeRes.rows, authEvents: eventsRes.rows });
+  } catch (err) {
+    return handle(err, res);
+  }
+}
+
+export async function killSession(req, res) {
+  try {
+    const companyId = Number(req.params.companyId);
+    const staffPk   = Number(req.params.staffPk);
+    const { sessionType } = req.params;
+
+    const { rowCount } = await pool.query(
+      'DELETE FROM core.active_session WHERE staff_pk = $1 AND session_type = $2 AND company_id = $3',
+      [staffPk, sessionType, companyId]
+    );
+    if (rowCount === 0) {
+      return res.status(404).json({ message: 'Session not found or already expired' });
+    }
+    await invalidateStaffSession(staffPk);
+    return res.json({ ok: true });
+  } catch (err) {
+    return handle(err, res);
+  }
+}
+
+export async function killAllSessions(req, res) {
+  try {
+    const companyId = Number(req.params.companyId);
+
+    const { rows } = await pool.query(
+      'DELETE FROM core.active_session WHERE company_id = $1 RETURNING staff_pk',
+      [companyId]
+    );
+    await Promise.all(rows.map((r) => invalidateStaffSession(r.staff_pk)));
+    return res.json({ ok: true, killed: rows.length });
   } catch (err) {
     return handle(err, res);
   }

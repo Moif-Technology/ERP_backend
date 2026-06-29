@@ -15,6 +15,7 @@ async function nextId(client, table, idCol, companyId, branchId) {
 
 export const nextEmployeeId = (c, co, br) => nextId(c, 'employee_master', 'employee_id', co, br);
 export const nextShiftId = (c, co, br) => nextId(c, 'shift_master', 'shift_id', co, br);
+export const nextDeptId = (c, co, br) => nextId(c, 'department_master', 'dept_id', co, br);
 export const nextLeaveTypeId = (c, co, br) => nextId(c, 'leave_type_master', 'leave_type_id', co, br);
 export const nextLeaveRequestId = (c, co, br) => nextId(c, 'leave_request', 'leave_request_id', co, br);
 export const nextDailyId = (c, co, br) => nextId(c, 'attendance_daily', 'daily_id', co, br);
@@ -290,6 +291,23 @@ export async function insertAttendance(client, d) {
   return { dailyId: Number(r.daily_id), employeeId: Number(r.employee_id), workDate: r.work_date, attendanceStatus: r.attendance_status };
 }
 
+export async function updateAttendanceRecord(client, d) {
+  const { rows } = await client.query(
+    `UPDATE hr.attendance_daily
+     SET first_in          = COALESCE($3, first_in),
+         last_out          = COALESCE($4, last_out),
+         shift_id          = COALESCE($5, shift_id),
+         ot_hours          = COALESCE($6, ot_hours),
+         attendance_status = COALESCE($7, attendance_status)
+     WHERE company_id=$1 AND branch_id=$2 AND daily_id=$8
+     RETURNING daily_id, employee_id, work_date, first_in, last_out, ot_hours, attendance_status`,
+    [d.companyId, d.branchId, d.firstIn ?? null, d.lastOut ?? null, d.shiftId ?? null, d.otHours ?? null, d.attendanceStatus ?? null, d.dailyId],
+  );
+  if (!rows[0]) return null;
+  const r = rows[0];
+  return { dailyId: Number(r.daily_id), employeeId: Number(r.employee_id), workDate: r.work_date, checkIn: r.first_in, checkOut: r.last_out, attendanceStatus: r.attendance_status };
+}
+
 // ── Document Type ─────────────────────────────────────
 function mapDocTypeRow(r) {
   return {
@@ -358,21 +376,76 @@ export async function deleteDocument(pool, companyId, branchId, attachmentId) {
   await pool.query(`DELETE FROM hr.attachment_master WHERE company_id=$1 AND branch_id=$2 AND attachment_id=$3`, [companyId, branchId, attachmentId]);
 }
 
+export async function listExpiringDocuments(pool, companyId, branchId, withinDays = 60) {
+  const { rows } = await pool.query(
+    `SELECT a.attachment_id,
+            em.employee_name,
+            COALESCE(dt.document_type_name, a.title) AS document_type_name,
+            a.title,
+            a.expiry_date,
+            (a.expiry_date - CURRENT_DATE)::int AS days_left
+     FROM hr.attachment_master a
+     LEFT JOIN hr.employee_master em
+       ON em.company_id = a.company_id AND em.branch_id = a.branch_id
+       AND a.reference_table = 'hr.employee_master'
+       AND em.employee_id = a.reference_id::int
+     LEFT JOIN hr.document_type_master dt
+       ON dt.company_id = a.company_id AND dt.branch_id = a.branch_id AND dt.document_type_id = a.document_type_id
+     WHERE a.company_id = $1 AND a.branch_id = $2
+       AND a.expiry_date IS NOT NULL
+       AND a.expiry_date <= (CURRENT_DATE + ($3 || ' day')::interval)
+     ORDER BY a.expiry_date ASC
+     LIMIT 50`,
+    [companyId, branchId, withinDays],
+  );
+  return rows.map((r) => ({
+    id: String(r.attachment_id),
+    employeeName: r.employee_name || 'Unknown',
+    type: r.document_type_name || 'Document',
+    title: r.title,
+    expiryDate: r.expiry_date,
+    daysLeft: Number(r.days_left),
+    severity: Number(r.days_left) <= 30 ? 'High' : 'Medium',
+  }));
+}
+
 // ── Leave Balance ─────────────────────────────────────
 export async function listLeaveBalances(pool, companyId, branchId, employeeId, year) {
   const { rows } = await pool.query(
-    `SELECT lb.leave_type_id, ltm.leave_name, lb.entitled_days, lb.used_days, lb.carried_forward, lb.remaining_days
-     FROM hr.leave_balance lb
-     LEFT JOIN hr.leave_type_master ltm ON ltm.company_id=lb.company_id AND ltm.branch_id=lb.branch_id AND ltm.leave_type_id=lb.leave_type_id
-     WHERE lb.company_id=$1 AND lb.branch_id=$2 AND lb.employee_id=$3 AND lb.year=$4
+    `SELECT
+       ltm.leave_type_id,
+       ltm.leave_name,
+       ltm.max_days_per_year AS entitled_days,
+       COALESCE(SUM(lr.total_days) FILTER (
+         WHERE lr.request_status = 'Approved'
+           AND EXTRACT(YEAR FROM lr.from_date) = $4
+       ), 0)::int AS used_days,
+       COALESCE(lb.carried_forward, 0)::int AS carried_forward
+     FROM hr.leave_type_master ltm
+     LEFT JOIN hr.leave_request lr
+       ON lr.company_id = $1 AND lr.branch_id = $2
+       AND lr.employee_id = $3 AND lr.leave_type_id = ltm.leave_type_id
+     LEFT JOIN hr.leave_balance lb
+       ON lb.company_id = $1 AND lb.branch_id = $2
+       AND lb.employee_id = $3 AND lb.leave_type_id = ltm.leave_type_id AND lb.year = $4
+     WHERE ltm.company_id = $1 AND ltm.branch_id = $2
+     GROUP BY ltm.leave_type_id, ltm.leave_name, ltm.max_days_per_year, lb.carried_forward
      ORDER BY ltm.leave_name ASC`,
     [companyId, branchId, employeeId, year],
   );
-  return rows.map((r) => ({
-    leaveTypeId: Number(r.leave_type_id), leaveName: r.leave_name ?? `Type #${r.leave_type_id}`,
-    entitledDays: Number(r.entitled_days), usedDays: Number(r.used_days),
-    carriedForward: Number(r.carried_forward), remainingDays: Number(r.remaining_days),
-  }));
+  return rows.map((r) => {
+    const entitled = Number(r.entitled_days);
+    const used = Number(r.used_days);
+    const carried = Number(r.carried_forward);
+    return {
+      leaveTypeId: Number(r.leave_type_id),
+      leaveName: r.leave_name ?? `Type #${r.leave_type_id}`,
+      entitledDays: entitled,
+      usedDays: used,
+      carriedForward: carried,
+      remainingDays: Math.max(0, entitled + carried - used),
+    };
+  });
 }
 
 // ── Loans ─────────────────────────────────────────────
@@ -389,6 +462,31 @@ export async function listLoans(pool, companyId, branchId, employeeId) {
     deduction: Number(r.deduction), deductionLabel: r.deduction_label,
     loanStatus: r.loan_status,
   }));
+}
+
+// ── Department Master ─────────────────────────────────
+export async function listDepartments(pool, companyId, branchId) {
+  const { rows } = await pool.query(
+    `SELECT dept_id, dept_name FROM hr.department_master WHERE company_id=$1 AND branch_id=$2 ORDER BY dept_name ASC`,
+    [companyId, branchId],
+  );
+  return rows.map((r) => ({ deptId: Number(r.dept_id), deptName: r.dept_name }));
+}
+
+export async function insertDepartment(client, d) {
+  const { rows } = await client.query(
+    `INSERT INTO hr.department_master (company_id, branch_id, dept_id, dept_name)
+     VALUES ($1, $2, $3, $4) RETURNING dept_id, dept_name`,
+    [d.companyId, d.branchId, d.deptId, d.deptName],
+  );
+  return { deptId: Number(rows[0].dept_id), deptName: rows[0].dept_name };
+}
+
+export async function deleteDepartment(pool, companyId, branchId, deptId) {
+  await pool.query(
+    `DELETE FROM hr.department_master WHERE company_id=$1 AND branch_id=$2 AND dept_id=$3`,
+    [companyId, branchId, deptId],
+  );
 }
 
 // ── Dashboard Summary ─────────────────────────────────

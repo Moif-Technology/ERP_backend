@@ -12,7 +12,10 @@ tenantAdminRouter.use(requirePlatformAuth);
 tenantAdminRouter.get('/', requireCapability('tenant.read'), ctrl.list);
 tenantAdminRouter.get('/:companyId', requireCapability('tenant.read'), ctrl.detail);
 tenantAdminRouter.get('/:companyId/features', requireCapability('tenant.read'), ctrl.getFeatures);
-tenantAdminRouter.get('/:companyId/audit', requireCapability('audit.read'), ctrl.audit);
+tenantAdminRouter.get('/:companyId/audit',    requireCapability('audit.read'),           ctrl.audit);
+tenantAdminRouter.get('/:companyId/sessions', requireCapability('tenant.read'),          ctrl.sessions);
+tenantAdminRouter.delete('/:companyId/sessions',                         requireCapability('tenant.suspend'), ctrl.killAllSessions);
+tenantAdminRouter.delete('/:companyId/sessions/:staffPk/:sessionType',   requireCapability('tenant.suspend'), ctrl.killSession);
 
 tenantAdminRouter.patch(
   '/:companyId/subscription',

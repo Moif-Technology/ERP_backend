@@ -326,10 +326,24 @@ export async function updateStaffMemberRole(pool, staffIdRaw, body, authStaff) {
     throw err;
   }
 
+  // Prevent staff from changing their own role (privilege escalation).
+  if (Number(authStaff.staff_id) === staffId) {
+    const err = new Error('Cannot change your own role');
+    err.status = 403;
+    throw err;
+  }
+
   const roleId = Number(body?.roleId);
   if (!Number.isFinite(roleId) || roleId < 1) {
     const err = new Error('roleId is required');
     err.status = 400;
+    throw err;
+  }
+
+  // Only admins (role_id = 1) can assign the admin role to others.
+  if (roleId === roleRepo.DEFAULT_ROLE_IDS.admin && Number(authStaff.role_id) !== roleRepo.DEFAULT_ROLE_IDS.admin) {
+    const err = new Error('Only admins can assign the admin role');
+    err.status = 403;
     throw err;
   }
 

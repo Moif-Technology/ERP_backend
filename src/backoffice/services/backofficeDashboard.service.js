@@ -6,7 +6,14 @@ function money(value) {
   return Number(num(value).toFixed(3));
 }
 
-export async function getBackofficeDashboard(pool, authStaff) {
+function parseDate(value, fallback) {
+  const text = String(value || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return fallback;
+  const date = new Date(`${text}T00:00:00Z`);
+  return Number.isNaN(date.getTime()) ? fallback : text;
+}
+
+export async function getBackofficeDashboard(pool, authStaff, query = {}) {
   const companyId = Number(authStaff.company_id);
   const branchId = Number(authStaff.branch_id);
   if (!Number.isFinite(companyId) || companyId < 1) {
@@ -15,15 +22,35 @@ export async function getBackofficeDashboard(pool, authStaff) {
     throw err;
   }
 
+  const today = new Date();
+  const defaultTo = today.toISOString().slice(0, 10);
+  const fromDate = new Date(today);
+  fromDate.setUTCDate(fromDate.getUTCDate() - 29);
+  const defaultFrom = fromDate.toISOString().slice(0, 10);
+  const dateFrom = parseDate(query.dateFrom || query.from, defaultFrom);
+  const dateTo = parseDate(query.dateTo || query.to, defaultTo);
+  if (dateFrom > dateTo) {
+    const err = new Error('dateFrom cannot be after dateTo');
+    err.status = 400;
+    throw err;
+  }
+  const daySpan = Math.floor((new Date(`${dateTo}T00:00:00Z`) - new Date(`${dateFrom}T00:00:00Z`)) / 86400000) + 1;
+  if (daySpan > 366) {
+    const err = new Error('Dashboard date range cannot exceed 366 days');
+    err.status = 400;
+    throw err;
+  }
+
   const [summary, recentRows, monthlyRows, topProductRows, weeklyRows] = await Promise.all([
-    repo.getSummary(pool, { companyId, branchId }),
-    repo.getRecentSales(pool, { companyId, branchId, limit: 5 }),
-    repo.getMonthlySalesTrend(pool, { companyId, branchId, months: 6 }),
-    repo.getTopProducts(pool, { companyId, branchId, limit: 5 }),
-    repo.getWeeklySalesTrend(pool, { companyId, branchId }),
+    repo.getSummary(pool, { companyId, branchId, dateFrom, dateTo }),
+    repo.getRecentSales(pool, { companyId, branchId, dateFrom, dateTo, limit: 5 }),
+    repo.getSalesTrend(pool, { companyId, branchId, dateFrom, dateTo }),
+    repo.getTopProducts(pool, { companyId, branchId, dateFrom, dateTo, limit: 5 }),
+    repo.getDailySalesTrend(pool, { companyId, branchId, dateFrom, dateTo }),
   ]);
 
   return {
+    period: { dateFrom, dateTo, days: daySpan },
     today: {
       billCount: num(summary.todaySales.bill_count),
       netSales: money(summary.todaySales.net_sales),
@@ -72,8 +99,10 @@ export async function getBackofficeDashboard(pool, authStaff) {
     })),
     weeklySales: weeklyRows.map((row) => ({
       label: row.label,
+      date: row.day,
       bills: num(row.bills),
       sales: money(row.sales),
+      returns: money(row.returns),
     })),
   };
 }

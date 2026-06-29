@@ -48,6 +48,7 @@ hrRouter.patch('/leave-requests/:leaveRequestId/status', hrController.updateLeav
 // Attendance
 hrRouter.get('/attendance/daily', hrController.listAttendanceDaily);
 hrRouter.post('/attendance/daily', hrController.createAttendance);
+hrRouter.patch('/attendance/daily/:dailyId', hrController.updateAttendance);
 
 // Document Types
 hrRouter.get('/document-types', hrController.listDocumentTypes);
@@ -56,3 +57,14 @@ hrRouter.delete('/document-types/:documentTypeId', hrController.deleteDocumentTy
 
 // Documents (standalone)
 hrRouter.delete('/documents/:attachmentId', hrController.deleteDocument);
+
+// Expiring Documents
+hrRouter.get('/expiring-documents', hrController.getExpiringDocuments);
+
+// Branches (read-only, for dropdowns)
+hrRouter.get('/branches', hrController.listBranches);
+
+// Departments
+hrRouter.get('/departments', hrController.listDepartments);
+hrRouter.post('/departments', hrController.createDepartment);
+hrRouter.delete('/departments/:deptId', hrController.deleteDepartment);

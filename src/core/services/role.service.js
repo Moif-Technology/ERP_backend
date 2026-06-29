@@ -1,5 +1,7 @@
 import { withTransaction } from '../../config/db.js';
 import * as roleRepo from '../repositories/role.repository.js';
+import * as staffRepo from '../repositories/staff.repository.js';
+import { invalidateStaffSession } from '../../middleware/authMiddleware.js';
 import { resolveEntitlementsForStaff } from './entitlement.service.js';
 
 const PROTECTED_ROLE_IDS = new Set(Object.values(roleRepo.DEFAULT_ROLE_IDS));
@@ -263,6 +265,12 @@ export async function updateRolePermissions(_db, authStaff, roleIdRaw, body) {
       .filter((row) => permissionFeatureEnabled(row.feature_code, enabledSet))
       .map((row) => row.permission_code);
     await roleRepo.replaceRolePermissions(client, companyId, roleId, validCodes);
+
+    // Invalidate cached sessions for all staff currently assigned this role
+    // so their new permissions take effect without requiring re-login.
+    const staffPks = await staffRepo.findStaffPksByRole(client, companyId, roleId);
+    await Promise.all(staffPks.map((pk) => invalidateStaffSession(pk)));
+
     const rows = await roleRepo.listRolePermissions(client, companyId, roleId);
     return {
       roleId,

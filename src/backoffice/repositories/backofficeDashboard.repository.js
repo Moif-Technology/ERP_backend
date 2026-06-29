@@ -3,10 +3,13 @@ async function one(pool, sql, params) {
   return rows[0] ?? {};
 }
 
-export async function getSummary(pool, { companyId, branchId }) {
+export async function getSummary(pool, { companyId, branchId, dateFrom, dateTo }) {
   const branchFilter = Number.isFinite(branchId) && branchId > 0;
   const branchSql = branchFilter ? 'AND branch_id = $2' : '';
-  const params = branchFilter ? [companyId, branchId] : [companyId];
+  const baseParams = branchFilter ? [companyId, branchId] : [companyId];
+  const periodParams = branchFilter ? [companyId, branchId, dateFrom, dateTo] : [companyId, dateFrom, dateTo];
+  const fromParam = branchFilter ? '$3' : '$2';
+  const toParam = branchFilter ? '$4' : '$3';
 
   const [
     products,
@@ -59,8 +62,8 @@ export async function getSummary(pool, { companyId, branchId }) {
         ${branchSql}
         AND post_status = 'POSTED'
         AND COALESCE(hold_status, '') NOT IN ('HOLD', 'CANCELLED')
-        AND bill_date::date = CURRENT_DATE
-    `, params),
+        AND bill_date::date BETWEEN ${fromParam}::date AND ${toParam}::date
+    `, periodParams),
     one(pool, `
       SELECT
         COUNT(*)::int AS pending_bills,
@@ -71,7 +74,7 @@ export async function getSummary(pool, { companyId, branchId }) {
         AND post_status = 'POSTED'
         AND COALESCE(hold_status, '') NOT IN ('HOLD', 'CANCELLED')
         AND COALESCE(counter_close_status, 'PENDING') = 'PENDING'
-    `, params),
+    `, baseParams),
     one(pool, `
       SELECT close_date, close_no, counter_no, collected_cash, cash_difference
       FROM ops.counter_close
@@ -80,7 +83,7 @@ export async function getSummary(pool, { companyId, branchId }) {
         AND report_type = 'Z'
       ORDER BY close_date DESC
       LIMIT 1
-    `, params),
+    `, baseParams),
     one(pool, `
       SELECT COUNT(*)::int AS low_stock_items
       FROM core.product_inventory inv
@@ -93,7 +96,7 @@ export async function getSummary(pool, { companyId, branchId }) {
         AND COALESCE(p.record_status, 'ACTIVE') = 'ACTIVE'
         AND inv.reorder_level > 0
         AND inv.qty_on_hand <= inv.reorder_level
-    `, params),
+    `, baseParams),
   ]);
 
   return {
@@ -108,11 +111,13 @@ export async function getSummary(pool, { companyId, branchId }) {
   };
 }
 
-export async function getRecentSales(pool, { companyId, branchId, limit = 5 }) {
+export async function getRecentSales(pool, { companyId, branchId, dateFrom, dateTo, limit = 5 }) {
   const branchFilter = Number.isFinite(branchId) && branchId > 0;
-  const params = branchFilter ? [companyId, branchId, limit] : [companyId, limit];
+  const params = branchFilter ? [companyId, branchId, dateFrom, dateTo, limit] : [companyId, dateFrom, dateTo, limit];
   const branchSql = branchFilter ? 'AND sm.branch_id = $2' : '';
-  const limitParam = branchFilter ? '$3' : '$2';
+  const fromParam = branchFilter ? '$3' : '$2';
+  const toParam = branchFilter ? '$4' : '$3';
+  const limitParam = branchFilter ? '$5' : '$4';
 
   const { rows } = await pool.query(`
     SELECT
@@ -132,61 +137,79 @@ export async function getRecentSales(pool, { companyId, branchId, limit = 5 }) {
       ${branchSql}
       AND sm.post_status = 'POSTED'
       AND COALESCE(sm.hold_status, '') NOT IN ('HOLD', 'CANCELLED')
+      AND sm.bill_date::date BETWEEN ${fromParam}::date AND ${toParam}::date
     ORDER BY sm.bill_date DESC, sm.sales_id DESC
     LIMIT ${limitParam}
   `, params);
   return rows;
 }
 
-export async function getMonthlySalesTrend(pool, { companyId, branchId, months = 6 }) {
+export async function getSalesTrend(pool, { companyId, branchId, dateFrom, dateTo }) {
   const branchFilter = Number.isFinite(branchId) && branchId > 0;
-  const params = branchFilter ? [companyId, branchId, months] : [companyId, months];
-  const branchSql = branchFilter ? 'AND branch_id = $2' : '';
-  const monthsParam = branchFilter ? '$3' : '$2';
+  const params = branchFilter ? [companyId, branchId, dateFrom, dateTo] : [companyId, dateFrom, dateTo];
+  const branchSql = branchFilter ? 'AND sm.branch_id = $2' : '';
+  const fromParam = branchFilter ? '$3' : '$2';
+  const toParam = branchFilter ? '$4' : '$3';
 
   const { rows } = await pool.query(`
-    WITH month_series AS (
+    WITH bounds AS (
+      SELECT ${fromParam}::date AS date_from, ${toParam}::date AS date_to
+    ),
+    grain AS (
+      SELECT CASE WHEN date_to - date_from <= 45 THEN 'day' ELSE 'month' END AS value
+      FROM bounds
+    ),
+    period_series AS (
       SELECT generate_series(
-        date_trunc('month', CURRENT_DATE) - (($${branchFilter ? '3' : '2'}::int - 1) * interval '1 month'),
-        date_trunc('month', CURRENT_DATE),
-        interval '1 month'
-      ) AS month_start
+        CASE WHEN grain.value = 'day' THEN bounds.date_from::timestamp ELSE date_trunc('month', bounds.date_from) END,
+        CASE WHEN grain.value = 'day' THEN bounds.date_to::timestamp ELSE date_trunc('month', bounds.date_to) END,
+        CASE WHEN grain.value = 'day' THEN interval '1 day' ELSE interval '1 month' END
+      ) AS period_start,
+      grain.value AS grain
+      FROM bounds CROSS JOIN grain
     )
     SELECT
-      to_char(ms.month_start, 'Mon') AS label,
+      CASE WHEN ps.grain = 'day' THEN to_char(ps.period_start, 'DD Mon') ELSE to_char(ps.period_start, 'Mon YY') END AS label,
       COALESCE(COUNT(sm.sales_id), 0)::int AS bills,
       COALESCE(SUM(sm.amount), 0)::numeric AS sales
-    FROM month_series ms
+    FROM period_series ps
     LEFT JOIN ops.sales_master sm
       ON sm.company_id = $1
      ${branchSql}
      AND sm.post_status = 'POSTED'
      AND COALESCE(sm.hold_status, '') NOT IN ('HOLD', 'CANCELLED')
-     AND date_trunc('month', sm.bill_date::date) = ms.month_start
-    GROUP BY ms.month_start
-    ORDER BY ms.month_start
+     AND (
+       (ps.grain = 'day' AND sm.bill_date::date = ps.period_start::date)
+       OR
+       (ps.grain = 'month' AND date_trunc('month', sm.bill_date::date) = ps.period_start)
+     )
+    GROUP BY ps.period_start, ps.grain
+    ORDER BY ps.period_start
   `, params);
   return rows;
 }
 
-export async function getWeeklySalesTrend(pool, { companyId, branchId }) {
+export async function getDailySalesTrend(pool, { companyId, branchId, dateFrom, dateTo }) {
   const branchFilter = Number.isFinite(branchId) && branchId > 0;
-  const params = branchFilter ? [companyId, branchId] : [companyId];
+  const params = branchFilter ? [companyId, branchId, dateFrom, dateTo] : [companyId, dateFrom, dateTo];
   const branchSql = branchFilter ? 'AND sm.branch_id = $2' : '';
+  const fromParam = branchFilter ? '$3' : '$2';
+  const toParam = branchFilter ? '$4' : '$3';
 
   const { rows } = await pool.query(`
     WITH day_series AS (
       SELECT generate_series(
-        CURRENT_DATE - interval '6 day',
-        CURRENT_DATE,
+        GREATEST(${fromParam}::date, ${toParam}::date - interval '13 day'),
+        ${toParam}::date,
         interval '1 day'
       )::date AS day
     )
     SELECT
       to_char(ds.day, 'Dy') AS label,
       ds.day,
-      COALESCE(COUNT(sm.sales_id), 0)::int AS bills,
-      COALESCE(SUM(sm.amount), 0)::numeric AS sales
+      COALESCE(COUNT(sm.sales_id) FILTER (WHERE sm.amount >= 0), 0)::int AS bills,
+      COALESCE(SUM(sm.amount) FILTER (WHERE sm.amount >= 0), 0)::numeric AS sales,
+      COALESCE(ABS(SUM(sm.amount) FILTER (WHERE sm.amount < 0)), 0)::numeric AS returns
     FROM day_series ds
     LEFT JOIN ops.sales_master sm
       ON sm.company_id = $1
@@ -200,11 +223,13 @@ export async function getWeeklySalesTrend(pool, { companyId, branchId }) {
   return rows;
 }
 
-export async function getTopProducts(pool, { companyId, branchId, limit = 5 }) {
+export async function getTopProducts(pool, { companyId, branchId, dateFrom, dateTo, limit = 5 }) {
   const branchFilter = Number.isFinite(branchId) && branchId > 0;
-  const params = branchFilter ? [companyId, branchId, limit] : [companyId, limit];
+  const params = branchFilter ? [companyId, branchId, dateFrom, dateTo, limit] : [companyId, dateFrom, dateTo, limit];
   const branchSql = branchFilter ? 'AND sm.branch_id = $2' : '';
-  const limitParam = branchFilter ? '$3' : '$2';
+  const fromParam = branchFilter ? '$3' : '$2';
+  const toParam = branchFilter ? '$4' : '$3';
+  const limitParam = branchFilter ? '$5' : '$4';
 
   const { rows } = await pool.query(`
     SELECT
@@ -219,7 +244,7 @@ export async function getTopProducts(pool, { companyId, branchId, limit = 5 }) {
       ${branchSql}
       AND sm.post_status = 'POSTED'
       AND COALESCE(sm.hold_status, '') NOT IN ('HOLD', 'CANCELLED')
-      AND sm.bill_date::date >= CURRENT_DATE - INTERVAL '30 day'
+      AND sm.bill_date::date BETWEEN ${fromParam}::date AND ${toParam}::date
     GROUP BY COALESCE(sc.short_description, sc.product_code, 'Product')
     ORDER BY amount DESC
     LIMIT ${limitParam}

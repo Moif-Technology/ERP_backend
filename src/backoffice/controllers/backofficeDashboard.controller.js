@@ -4,7 +4,7 @@ import * as unifiedService from '../services/unifiedDashboard.service.js';
 
 export async function getBackofficeDashboard(req, res) {
   try {
-    const dashboard = await service.getBackofficeDashboard(pool, req.authStaff);
+    const dashboard = await service.getBackofficeDashboard(pool, req.authStaff, req.query);
     return res.json({ dashboard });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ message: err.message });

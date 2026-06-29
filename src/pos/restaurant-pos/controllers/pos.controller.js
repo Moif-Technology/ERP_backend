@@ -3,6 +3,12 @@ import * as staffRepo from '../../../core/repositories/staff.repository.js';
 import { pool } from '../../../config/db.js';
 import * as posParameterService from '../services/posParameter.service.js';
 import { resolvePosPrivilegesForStaff } from '../../../core/services/entitlement.service.js';
+import {
+  getSessionLimits,
+  countActiveSessions,
+  registerSession,
+  logAuthEvent,
+} from '../../../core/services/authSession.service.js';
 
 function handlePosError(res, err, fallback) {
   if (err.status) {
@@ -37,6 +43,7 @@ export async function login(req, res) {
     );
     const u = session.user;
     const c = session.company;
+    req.systemLogContext = { companyId: c?.companyId, branchId: u.branchId, actor: u.staffName, message: 'Restaurant POS login completed' };
     return res.json({
       stationId: u.stationId != null ? String(u.stationId) : '',
       staffName: u.staffName ?? '',
@@ -60,10 +67,44 @@ export async function login(req, res) {
  * Body: { pin, companyId }
  */
 export async function pinLogin(req, res) {
+  const clientIp = req.ip ?? req.socket?.remoteAddress;
   try {
     const { accessToken, refreshToken, session } = await authService.loginWithPinForRestaurant(req.body);
     const u = session.user;
     const c = session.company;
+    const companyId = c?.companyId;
+    const staffPk   = u?.staffId;
+
+    // Enforce concurrent POS session limit defined by plan.
+    if (companyId) {
+      const limits  = await getSessionLimits(pool, companyId);
+      const current = await countActiveSessions(pool, companyId, 'pos');
+      if (current >= Number(limits?.max_pos_sessions ?? 1)) {
+        await logAuthEvent(pool, {
+          companyId,
+          staffPk,
+          eventType: 'session_limit_exceeded',
+          ipAddress: clientIp,
+          metadata: { session_type: 'pos', current, limit: limits?.max_pos_sessions },
+        });
+        return res.status(429).json({ message: 'Maximum concurrent POS sessions reached for your plan' });
+      }
+    }
+
+    req.systemLogContext = { companyId, branchId: u.branchId, actor: u.staffName, message: 'Restaurant POS PIN login completed' };
+
+    if (companyId && staffPk) {
+      const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000);
+      await registerSession(pool, staffPk, companyId, 'pos', expiresAt);
+      await logAuthEvent(pool, {
+        companyId,
+        staffPk,
+        eventType: 'login_success',
+        ipAddress: clientIp,
+        metadata: { session_type: 'pos' },
+      });
+    }
+
     return res.json({
       stationId: u.stationId != null ? String(u.stationId) : '',
       staffName: u.staffName ?? '',
@@ -77,6 +118,13 @@ export async function pinLogin(req, res) {
       permissions: session.permissions ?? [],
     });
   } catch (err) {
+    logAuthEvent(pool, {
+      companyId: null,
+      staffPk:   null,
+      eventType: 'login_failed',
+      ipAddress: clientIp,
+      metadata:  { session_type: 'pos' },
+    });
     return handlePosError(res, err, 'PIN login failed');
   }
 }

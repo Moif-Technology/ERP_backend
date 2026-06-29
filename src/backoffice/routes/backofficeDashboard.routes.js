@@ -8,4 +8,4 @@ export const backofficeDashboardRouter = Router();
 backofficeDashboardRouter.use(authMiddleware);
 backofficeDashboardRouter.get('/backoffice', requireAnyFeature(['backoffice.dashboard', 'pos']), controller.getBackofficeDashboard);
 backofficeDashboardRouter.get('/basic', requireAnyFeature(['backoffice.dashboard', 'pos']), controller.getBackofficeDashboard);
-backofficeDashboardRouter.get('/overview', requireAnyFeature(['backoffice.dashboard', 'pos', 'crm.dashboard', 'garage', 'hr.dashboard']), controller.getUnifiedDashboard);
+backofficeDashboardRouter.get('/overview', requireAnyFeature(['backoffice.dashboard', 'pos', 'crm.dashboard', 'garage', 'hr.dashboard', 'accounts.dashboard']), controller.getUnifiedDashboard);

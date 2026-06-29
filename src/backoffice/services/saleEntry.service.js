@@ -157,7 +157,8 @@ export async function getSale(pool, authStaff, salesId, branchId) {
     accountsSummary = null;
   }
 
-  const salesPosted = Boolean(accountsSummary?.salesPosted);
+  const dbPostStatus = String(row.post_status || '').trim().toUpperCase();
+  const salesPosted = Boolean(accountsSummary?.salesPosted) || dbPostStatus === 'POSTED';
   const receiptPosted = Boolean(accountsSummary?.receiptPosted);
 
   return {
@@ -442,7 +443,7 @@ async function prepareSaleDocumentInput(pool, body, authStaff, branchId) {
     baseSub, subAfterDisc, headerDisc, sumTax, roundOff, netClient, effTaxRate,
     paymentMode, receiptLedgerId, customerId, customerLedgerId, customerHasLedger,
     privilegeWarnings, paid,
-    counterNo: Math.max(1, Math.trunc(num(body.counterNo, 1))),
+    counterNo: 99,
     remarks: str(remarksParts.filter(Boolean).join(' | '), 200),
     cashAmount: paymentMode === 'CASH' ? paid : 0,
     creditAmount: paymentMode === 'CREDIT' ? netClient : 0,

@@ -107,7 +107,7 @@ export async function listVouchers(pool, companyId, { branchId, voucherTypeId, p
   if (voucherTypeId) { params.push(voucherTypeId); where += ` AND vm.voucher_type_id = $${params.length}`; }
   if (postStatus) { params.push(postStatus); where += ` AND vm.post_status = $${params.length}`; }
   if (dateFrom) { params.push(dateFrom); where += ` AND vm.voucher_date >= $${params.length}::date`; }
-  if (dateTo) { params.push(dateTo); where += ` AND vm.voucher_date <= ($${params.length}::date + interval '1 day')`; }
+  if (dateTo) { params.push(dateTo); where += ` AND vm.voucher_date < ($${params.length}::date + interval '1 day')`; }
 
   const countSql = `SELECT COUNT(*)::int AS total FROM accounts.voucher_master vm WHERE ${where}`;
   const { rows: cRows } = await pool.query(countSql, params);

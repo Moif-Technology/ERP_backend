@@ -90,6 +90,15 @@ export async function countActiveStaff(db, companyId) {
   return Number(rows[0]?.n || 0);
 }
 
+export async function findStaffPksByRole(db, companyId, roleId) {
+  const { rows } = await db.query(
+    `SELECT id FROM core.staff_master
+     WHERE company_id = $1 AND role_id = $2 AND record_status = 'ACTIVE'`,
+    [companyId, roleId]
+  );
+  return rows.map((r) => Number(r.id));
+}
+
 export async function nextStaffId(client, companyId) {
   const { rows } = await client.query(
     'SELECT COALESCE(MAX(staff_id), 0) + 1 AS staff_id FROM core.staff_master WHERE company_id = $1',

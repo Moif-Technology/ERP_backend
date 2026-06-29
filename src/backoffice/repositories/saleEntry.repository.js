@@ -149,7 +149,7 @@ export async function getSaleById(pool, companyId, branchId, salesId) {
        sm.subtotal_amount, sm.discount_amount,
        COALESCE(sm.tax_1_amount,0)+COALESCE(sm.tax_2_amount,0)+COALESCE(sm.tax_3_amount,0) AS tax_amount,
        sm.round_off_adjustment, sm.amount, sm.remarks,
-       sm.quotation_id, sm.delivery_order_id,
+       sm.quotation_id, sm.delivery_order_id, sm.post_status,
        COALESCE(
          json_agg(
            json_build_object(
@@ -188,7 +188,7 @@ export async function getSaleById(pool, companyId, branchId, salesId) {
        sm.subtotal_amount, sm.discount_amount,
        sm.tax_1_amount, sm.tax_2_amount, sm.tax_3_amount,
        sm.round_off_adjustment, sm.amount, sm.remarks,
-       sm.quotation_id, sm.delivery_order_id`,
+       sm.quotation_id, sm.delivery_order_id, sm.post_status`,
     [companyId, branchId, salesId],
   );
   return rows[0] || null;

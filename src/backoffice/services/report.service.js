@@ -60,8 +60,8 @@ export async function dailySales(pool, authStaff, query) {
   const rows = await reportRepo.dailySales(pool, companyId, branchId, dateFrom, dateTo);
   return rows.map((r) => ({
     salesId: Number(r.sales_id),
-    invoiceNo: r.invoice_no || String(r.bill_no),
-    billNo: r.bill_no,
+    invoiceNo: r.invoice_no || String(r.bill_no || r.sales_id),
+    billNo: r.bill_no || '',
     date: fmtDate(r.bill_date),
     customer: r.customer,
     payment: r.payment_mode || 'CASH',
@@ -69,6 +69,7 @@ export async function dailySales(pool, authStaff, query) {
     tax: num(r.tax_amount),
     disc: num(r.discount_amount),
     net: num(r.amount),
+    postStatus: String(r.post_status || 'DRAFT').toUpperCase(),
   }));
 }
 
@@ -162,6 +163,53 @@ export async function supplierWisePurchase(pool, authStaff, query) {
     tax: num(r.tax),
     disc: num(r.disc),
     net: num(r.net),
+  }));
+}
+
+export async function purchaseByProduct(pool, authStaff, query) {
+  const { companyId, branchId } = resolveScope(authStaff, query);
+  const { dateFrom, dateTo } = resolveDates(query);
+  const rows = await reportRepo.purchaseByProduct(pool, companyId, branchId, dateFrom, dateTo);
+  return rows.map((r) => ({
+    code:    r.code    ?? '',
+    product: r.product ?? '',
+    grp:     r.grp     ?? '',
+    qty:     num(r.qty),
+    rate:    num(r.rate),
+    sub:     num(r.sub),
+    disc:    num(r.disc),
+    net:     num(r.net),
+  }));
+}
+
+export async function purchaseReturn(pool, authStaff, query) {
+  const { companyId, branchId } = resolveScope(authStaff, query);
+  const { dateFrom, dateTo } = resolveDates(query);
+  const rows = await reportRepo.purchaseReturn(pool, companyId, branchId, dateFrom, dateTo);
+  return rows.map((r) => ({
+    billNo:   r.bill_no  ?? '',
+    date:     fmtDate(r.purchase_date),
+    supplier: r.supplier ?? '',
+    items:    num(r.items),
+    sub:      num(r.sub),
+    tax:      num(r.tax),
+    disc:     num(r.disc),
+    net:      num(r.net),
+  }));
+}
+
+export async function outstandingLPO(pool, authStaff, query) {
+  const { companyId, branchId } = resolveScope(authStaff, query);
+  const rows = await reportRepo.outstandingLPO(pool, companyId, branchId);
+  return rows.map((r) => ({
+    lpoNo:    r.lpo_no   ?? '',
+    date:     fmtDate(r.lpo_date),
+    supplier: r.supplier ?? '',
+    status:   r.status   ?? '',
+    items:    num(r.items),
+    sub:      num(r.sub),
+    disc:     num(r.disc),
+    net:      num(r.net),
   }));
 }
 
@@ -270,4 +318,38 @@ export async function cashBankMovement(pool, authStaff, query) {
       balance: Math.round(running * 100) / 100,
     };
   });
+}
+
+/* ───────────── HR ───────────── */
+
+export async function attendanceReport(pool, authStaff, query) {
+  const { companyId, branchId } = resolveScope(authStaff, query);
+  const { dateFrom, dateTo } = resolveDates(query);
+  const rows = await reportRepo.attendanceReport(pool, companyId, branchId, dateFrom, dateTo);
+  return rows.map((r) => ({
+    date: fmtDate(r.work_date),
+    empCode: r.employee_code || '',
+    employee: r.employee_name || '',
+    department: r.department || '',
+    firstIn: r.first_in ? String(r.first_in).slice(0, 5) : '',
+    lastOut: r.last_out ? String(r.last_out).slice(0, 5) : '',
+    otHours: num(r.ot_hours),
+    status: r.status || '',
+  }));
+}
+
+export async function leaveReport(pool, authStaff, query) {
+  const { companyId, branchId } = resolveScope(authStaff, query);
+  const { dateFrom, dateTo } = resolveDates(query);
+  const rows = await reportRepo.leaveReport(pool, companyId, branchId, dateFrom, dateTo);
+  return rows.map((r) => ({
+    empCode: r.employee_code || '',
+    employee: r.employee_name || '',
+    department: r.department || '',
+    leaveType: r.leave_type || '',
+    fromDate: fmtDate(r.from_date),
+    toDate: fmtDate(r.to_date),
+    totalDays: num(r.total_days),
+    status: r.status || '',
+  }));
 }

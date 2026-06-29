@@ -34,8 +34,9 @@ export const config = {
   rateLimitAuth: Number(process.env.RATE_LIMIT_AUTH_PER_MIN) || 30,
   jwtAccessSecret: process.env.JWT_ACCESS_SECRET || '',
   jwtRefreshSecret: process.env.JWT_REFRESH_SECRET || '',
-  jwtAccessExpires: process.env.JWT_ACCESS_EXPIRES || '15m',
+  jwtAccessExpires: process.env.JWT_ACCESS_EXPIRES || '2h',
   jwtRefreshExpires: process.env.JWT_REFRESH_EXPIRES || '7d',
+  jwtPosAccessExpires: process.env.JWT_POS_ACCESS_EXPIRES || '8h',
   jwtPlatformAccessSecret:
     process.env.JWT_PLATFORM_ACCESS_SECRET || process.env.JWT_ACCESS_SECRET || '',
   jwtPlatformRefreshSecret:

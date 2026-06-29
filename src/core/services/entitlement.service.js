@@ -132,6 +132,68 @@ export function applyOverrides(base, overrides, keyName, valueName) {
   return out;
 }
 
+// Directed dependency graph: enabling feature X automatically enables its deps.
+// BFS traversal — O(V+E). Add new cross-module deps here; no route edits needed.
+const FEATURE_DEPS = {
+  // Garage needs customer master + product lookup for parts
+  garage:                     ['core.customers', 'core.products'],
+  'garage.job_cards':          ['core.customers'],
+  'garage.estimates':          ['core.customers'],
+  'garage.invoices':           ['core.customers', 'core.products'],
+  'garage.parts_usage':        ['core.products'],
+
+  // CRM needs customer master
+  crm:                        ['core.customers'],
+  'crm.leads':                 ['core.customers'],
+  'crm.opportunities':         ['core.customers'],
+  'crm.interactions':          ['core.customers'],
+  'crm.followups':             ['core.customers'],
+
+  // Backoffice sales/purchase need customer/supplier/product masters
+  'backoffice.sales':          ['backoffice.customers', 'backoffice.products'],
+  'backoffice.purchase':       ['backoffice.suppliers', 'backoffice.products'],
+  'backoffice.grn':            ['backoffice.suppliers', 'backoffice.products'],
+
+  // Accounts module needs chart of accounts (accountHead routes)
+  'accounts.vouchers':         ['accounts', 'backoffice.accounts'],
+  'accounts.ledger':           ['accounts', 'backoffice.accounts'],
+  'accounts.receivables':      ['accounts', 'backoffice.accounts'],
+  'accounts.payables':         ['accounts', 'backoffice.accounts'],
+  'accounts.reports':          ['accounts', 'backoffice.accounts'],
+  'accounts.dashboard':        ['accounts'],
+
+  // POS needs customer + product lookups
+  'pos.billing':               ['core.customers', 'core.products'],
+  'pos.settlement':            ['core.customers'],
+};
+
+/**
+ * BFS over FEATURE_DEPS. For every enabled feature, walk its dependency edges
+ * and enable those features too. Runs in O(V+E) — V = feature count, E = dep edges.
+ * Callers (route middleware) only ever check their own feature code; this function
+ * makes cross-module access "just work" without touching any route files.
+ */
+export function resolveDependencies(features) {
+  const result = { ...features };
+  // Seed queue with currently-enabled features
+  const queue = Object.keys(result).filter((k) => result[k]);
+  const visited = new Set(queue);
+
+  while (queue.length > 0) {
+    const feature = queue.shift();
+    for (const dep of FEATURE_DEPS[feature] || []) {
+      if (!result[dep]) {
+        result[dep] = true;  // auto-enable the dependency
+      }
+      if (!visited.has(dep)) {
+        visited.add(dep);
+        queue.push(dep);     // traverse transitively
+      }
+    }
+  }
+  return result;
+}
+
 /**
  * Software-type ("module") scope for a company. Returns null when the company
  * has no software type or the mapping is absent — callers then keep the
@@ -209,7 +271,7 @@ export async function resolveEntitlementsForStaff(staffRow, db = pool) {
     // Plan decides the tier; the company's software type (module bundle)
     // decides which features that tier can ever reach. Granted features are
     // included with the module regardless of plan. Tenant overrides win last.
-    const features = applyOverrides(
+    const rawFeatures = applyOverrides(
       applySoftwareTypeScope(
         objectFromRows(planFeatures, 'feature_code', 'is_enabled'),
         softwareTypeScope
@@ -221,10 +283,14 @@ export async function resolveEntitlementsForStaff(staffRow, db = pool) {
 
     // Core master data always available for any usable subscription
     if (subscription.isUsable) {
-      features['core.customers'] = true;
-      features['core.suppliers'] = true;
-      features['core.products'] = true;
+      rawFeatures['core.customers'] = true;
+      rawFeatures['core.suppliers'] = true;
+      rawFeatures['core.products'] = true;
     }
+
+    // Walk dependency graph: enabling garage auto-enables core.customers etc.
+    // No route files need to know about cross-module consumers.
+    const features = subscription.isUsable ? resolveDependencies(rawFeatures) : rawFeatures;
 
     const limits = applyOverrides(
       objectFromRows(planLimits, 'limit_code', 'limit_value'),

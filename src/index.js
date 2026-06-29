@@ -87,6 +87,11 @@ import { counterPosRouter } from './pos/counter-pos/counter-pos.routes.js';
 import { posRouter } from './pos/restaurant-pos/pos.routes.js';
 import { vanRouter } from './van/van.routes.js';
 import { featureAdminRouter } from './core/routes/featureAdmin.routes.js';
+import { toolsRouter } from './tools/routes/tools.routes.js';
+import { systemActivityLogger } from './middleware/systemActivityLogger.js';
+import cookieParser from 'cookie-parser';
+import { authMiddleware } from './middleware/authMiddleware.js';
+import { requireFeature, requireAnyFeature } from './middleware/entitlementMiddleware.js';
 
 try {
   assertConfig();
@@ -113,12 +118,13 @@ app.use(compression());
 app.use(
   cors({
     origin: config.corsOrigins,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'OPTIONS','DELETE'],
+    credentials: true, // required for httpOnly cookie exchange
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'OPTIONS', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization'],
-
   })
 );
 app.use(express.json({ limit: '4mb' }));
+app.use(cookieParser());
 
 // Async structured logging (replaces the synchronous res.json wrapper).
 // Dev: pretty one-line colored logs. Prod: raw JSON (for log aggregators).
@@ -153,6 +159,7 @@ app.use('/api/auth/register', authLimiter);
 app.use('/api/auth/forgot-password', authLimiter);
 app.use('/api/auth/reset-password', authLimiter);
 app.use('/api', apiLimiter);
+app.use('/api', systemActivityLogger);
 
 // Liveness + DB readiness in one probe so the LB pulls a node with a dead DB.
 app.get('/health', async (_req, res) => {
@@ -213,6 +220,11 @@ app.use('/api/counter-pos', counterPosRouter);
 app.use('/api/van',         vanRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/feature-admin', featureAdminRouter);
+// Garage feature gate — applies to every /api/garage/* route.
+// authMiddleware runs first (sets req.authStaff), then requireFeature checks
+// enabledFeatures. Individual route files run authMiddleware again (no-op).
+app.use('/api/garage', authMiddleware, requireFeature('garage'));
+
 app.use('/api/garage/colors',           colorMasterRouter);
 app.use('/api/garage/car-groups',       carGroupRouter);
 app.use('/api/garage/car-sub-groups',   carSubGroupRouter);
@@ -236,6 +248,7 @@ app.use('/api/exchange', exchangeRouter);
 app.use('/api/company', companyRouter);
 app.use('/api/parameters', systemParameterRouter);
 app.use('/api/units', unitRouter);
+app.use('/api/tools', toolsRouter);
 
 // Map common Postgres error codes to HTTP status + a safe client message.
 // Controllers that simply `next(err)` get consistent responses for free.

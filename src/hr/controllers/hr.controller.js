@@ -195,6 +195,15 @@ export async function createAttendance(req, res) {
   }
 }
 
+export async function updateAttendance(req, res) {
+  try {
+    const record = await hrService.updateAttendance(pool, req.authStaff, req.params.dailyId, req.body);
+    return res.json({ record });
+  } catch (err) {
+    return handle(err, res, 'Could not update attendance record');
+  }
+}
+
 // ── Document Types ────────────────────────────────────
 export async function listDocumentTypes(req, res) {
   try {
@@ -268,5 +277,53 @@ export async function listLoans(req, res) {
     return res.json({ loans });
   } catch (err) {
     return handle(err, res, 'Could not load loans');
+  }
+}
+
+// ── Branches ──────────────────────────────────────────
+export async function listBranches(req, res) {
+  try {
+    const branches = await hrService.listBranches(pool, req.authStaff);
+    return res.json({ branches });
+  } catch (err) {
+    return handle(err, res, 'Could not load branches');
+  }
+}
+
+// ── Departments ───────────────────────────────────────
+export async function listDepartments(req, res) {
+  try {
+    const departments = await hrService.listDepartments(pool, req.authStaff, req.query);
+    return res.json({ departments });
+  } catch (err) {
+    return handle(err, res, 'Could not load departments');
+  }
+}
+
+export async function createDepartment(req, res) {
+  try {
+    const department = await hrService.createDepartment(pool, req.authStaff, req.body);
+    return res.status(201).json(department);
+  } catch (err) {
+    return handle(err, res, 'Could not create department');
+  }
+}
+
+export async function deleteDepartment(req, res) {
+  try {
+    await hrService.deleteDepartment(pool, req.authStaff, req.params.deptId, req.query);
+    return res.json({ message: 'Department deleted' });
+  } catch (err) {
+    return handle(err, res, 'Could not delete department');
+  }
+}
+
+// ── Expiring Documents ────────────────────────────────
+export async function getExpiringDocuments(req, res) {
+  try {
+    const documents = await hrService.listExpiringDocuments(pool, req.authStaff, req.query);
+    return res.json({ documents });
+  } catch (err) {
+    return handle(err, res, 'Could not load expiring documents');
   }
 }

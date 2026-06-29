@@ -1,4 +1,11 @@
 import * as authService from '../services/auth.service.js';
+import { pool } from '../../../config/db.js';
+import {
+  getSessionLimits,
+  countActiveSessions,
+  registerSession,
+  logAuthEvent,
+} from '../../../core/services/authSession.service.js';
 
 function handleError(res, err, fallback) {
   if (err.status) return res.status(err.status).json({ message: err.message });
@@ -53,10 +60,56 @@ export async function listStaff(req, res) {
  * Body: { staffId, pin, companyId }   (staffId = staffPk from the picker)
  */
 export async function pinLogin(req, res) {
+  const clientIp = req.ip ?? req.socket?.remoteAddress;
   try {
     const { accessToken, refreshToken, session } = await authService.loginWithPin(req.body);
+    const companyId = session.company?.companyId;
+    const staffPk   = session.user?.staffId;
+
+    // Enforce concurrent POS session limit defined by plan.
+    if (companyId) {
+      const limits  = await getSessionLimits(pool, companyId);
+      const current = await countActiveSessions(pool, companyId, 'pos');
+      if (current >= Number(limits?.max_pos_sessions ?? 1)) {
+        await logAuthEvent(pool, {
+          companyId,
+          staffPk,
+          eventType: 'session_limit_exceeded',
+          ipAddress: clientIp,
+          metadata: { session_type: 'pos', current, limit: limits?.max_pos_sessions },
+        });
+        return res.status(429).json({ message: 'Maximum concurrent POS sessions reached for your plan' });
+      }
+    }
+
+    req.systemLogContext = {
+      companyId,
+      branchId: session.user?.branchId,
+      actor: session.user?.staffName,
+      message: 'Counter POS PIN login completed',
+    };
+
+    if (companyId && staffPk) {
+      const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000); // matches JWT_POS_ACCESS_EXPIRES=8h
+      await registerSession(pool, staffPk, companyId, 'pos', expiresAt);
+      await logAuthEvent(pool, {
+        companyId,
+        staffPk,
+        eventType: 'login_success',
+        ipAddress: clientIp,
+        metadata: { session_type: 'pos' },
+      });
+    }
+
     return res.json({ accessToken, refreshToken, session });
   } catch (err) {
+    logAuthEvent(pool, {
+      companyId: null,
+      staffPk:   null,
+      eventType: 'login_failed',
+      ipAddress: clientIp,
+      metadata:  { session_type: 'pos' },
+    });
     return handleError(res, err, 'PIN login failed');
   }
 }

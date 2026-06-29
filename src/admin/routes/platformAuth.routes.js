@@ -7,3 +7,4 @@ export const platformAuthRouter = Router();
 platformAuthRouter.post('/login', ctrl.login);
 platformAuthRouter.post('/refresh', ctrl.refresh);
 platformAuthRouter.get('/me', requirePlatformAuth, ctrl.me);
+platformAuthRouter.post('/logout', requirePlatformAuth, ctrl.logout);

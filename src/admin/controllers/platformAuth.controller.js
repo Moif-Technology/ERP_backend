@@ -24,3 +24,7 @@ export function me(req, res) {
     capabilities: req.platformCapabilities || [],
   });
 }
+
+export function logout(req, res) {
+  return res.json({ ok: true });
+}

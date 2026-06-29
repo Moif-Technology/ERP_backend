@@ -1,5 +1,5 @@
 import { buildSessionPayload } from './session.js';
-import { signAccessToken, signRefreshToken } from './token.service.js';
+import { signAccessToken, signPosAccessToken, signRefreshToken } from './token.service.js';
 import {
   resolveEntitlementsForStaff,
   getEntitlementVersionForStaff,
@@ -42,7 +42,7 @@ export async function buildTokensForPOSDevice(staffRow, stationId) {
   ]);
   const mergedRow = { ...staffRow, station_id: stationId };
   return {
-    accessToken: signAccessToken({
+    accessToken: signPosAccessToken({
       typ: 'access',
       sub: String(staffRow.id),
       cid: staffRow.company_id,

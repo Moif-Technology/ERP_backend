@@ -41,6 +41,7 @@ export async function insertArea(client, params) {
     tableCreationType,
     supplyType,
     kotPrefix,
+    priceLevel,
     isTabletShow,
     createdBy,
     modifiedBy,
@@ -49,10 +50,10 @@ export async function insertArea(client, params) {
   const { rows } = await client.query(
     `INSERT INTO core.area_master (
         area_id, company_id, branch_id, area_name, area_name_arabic,
-        table_creation_type, supply_type, kot_prefix, is_tablet_show,
+        table_creation_type, supply_type, kot_prefix, price_level, is_tablet_show,
         created_by, modified_by, created_by_staff_id
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
       )
       RETURNING area_id, company_id, branch_id, created_by_staff_id, area_name, area_name_arabic,
                 table_creation_type, supply_type, kot_prefix, is_tablet_show,
@@ -66,6 +67,7 @@ export async function insertArea(client, params) {
       tableCreationType,
       supplyType,
       kotPrefix,
+      priceLevel,
       isTabletShow,
       createdBy,
       modifiedBy,
@@ -89,21 +91,29 @@ export async function listAreasByCompanyAndBranch(pool, companyId, branchId) {
 }
 
 export async function updateArea(pool, params) {
-  const { companyId, branchId, areaId, areaName, areaNameArabic, supplyType, kotPrefix, isTabletShow, modifiedBy } = params;
+  const {
+    companyId, branchId, areaId, areaName, areaNameArabic, tableCreationType,
+    supplyType, kotPrefix, priceLevel, isTabletShow, modifiedBy,
+  } = params;
   const { rows } = await pool.query(
     `UPDATE core.area_master
      SET area_name = $4,
          area_name_arabic = $5,
-         supply_type = $6,
-         kot_prefix = $7,
-         is_tablet_show = $8,
-         modified_by = $9,
+         table_creation_type = $6,
+         supply_type = $7,
+         kot_prefix = $8,
+         price_level = $9,
+         is_tablet_show = $10,
+         modified_by = $11,
          modified_at = CURRENT_TIMESTAMP
      WHERE company_id = $1 AND branch_id = $2 AND area_id = $3
      RETURNING area_id, company_id, branch_id, created_by_staff_id, area_name, area_name_arabic,
                table_creation_type, supply_type, kot_prefix, is_tablet_show,
                price_level, created_at, modified_at`,
-    [companyId, branchId, areaId, areaName, areaNameArabic, supplyType, kotPrefix, isTabletShow, modifiedBy]
+    [
+      companyId, branchId, areaId, areaName, areaNameArabic, tableCreationType,
+      supplyType, kotPrefix, priceLevel, isTabletShow, modifiedBy,
+    ]
   );
   return rows[0] ? mapRow(rows[0]) : null;
 }

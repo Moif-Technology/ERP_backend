@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import * as accountHeadController from '../controllers/accountHead.controller.js';
 import { authMiddleware } from '../../middleware/authMiddleware.js';
-import { requireFeature } from '../../middleware/entitlementMiddleware.js';
+import { requireAnyFeature } from '../../middleware/entitlementMiddleware.js';
 
 export const accountHeadRouter = Router();
 
 accountHeadRouter.use(authMiddleware);
-accountHeadRouter.use(requireFeature('backoffice.accounts'));
+accountHeadRouter.use(requireAnyFeature(['backoffice.accounts', 'accounts', 'accounts.ledger', 'accounts.vouchers']));
 accountHeadRouter.get('/', accountHeadController.listAccountHeads);
 accountHeadRouter.get('/tree', accountHeadController.getAccountTree);
 accountHeadRouter.get('/suggest-number', accountHeadController.suggestAccountNumber);

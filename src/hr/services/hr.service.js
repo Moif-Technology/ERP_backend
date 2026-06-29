@@ -335,6 +335,27 @@ export async function createAttendance(pool, authStaff, body) {
   });
 }
 
+export async function updateAttendance(pool, authStaff, dailyId, body) {
+  const { companyId, branchId } = await resolveTenant(pool, authStaff, body?.branchId);
+  const id = requirePositiveInt(dailyId, 'dailyId');
+  return withTransaction(async (client) => {
+    const record = await hrRepo.updateAttendanceRecord(client, {
+      companyId, branchId, dailyId: id,
+      firstIn: body?.firstIn ?? null,
+      lastOut: body?.lastOut ?? null,
+      shiftId: body?.shiftId != null ? Number(body.shiftId) : null,
+      otHours: body?.otHours != null ? Number(body.otHours) : null,
+      attendanceStatus: optionalText(body?.attendanceStatus, 20) ?? null,
+    });
+    if (!record) {
+      const err = new Error('Attendance record not found');
+      err.status = 404;
+      throw err;
+    }
+    return record;
+  });
+}
+
 // ── Document Types ────────────────────────────────────
 export async function listDocumentTypes(pool, authStaff, query) {
   const { companyId, branchId } = await resolveTenant(pool, authStaff, query?.branchId);
@@ -433,8 +454,55 @@ export async function listLoans(pool, authStaff, employeeId, query) {
   return hrRepo.listLoans(pool, companyId, branchId, empId);
 }
 
+// ── Branches (read-only, reuse core.branch_master) ────
+export async function listBranches(pool, authStaff) {
+  const companyId = Number(authStaff.company_id);
+  const { rows } = await branchRepo.listBranchesByCompany(pool, companyId);
+  return rows.map((r) => ({
+    branchId: Number(r.branch_id),
+    branchCode: r.branch_code,
+    branchName: r.branch_name,
+  }));
+}
+
+// ── Departments ───────────────────────────────────────
+export async function listDepartments(pool, authStaff, query) {
+  const { companyId, branchId } = await resolveTenant(pool, authStaff, query?.branchId);
+  return hrRepo.listDepartments(pool, companyId, branchId);
+}
+
+export async function createDepartment(pool, authStaff, body) {
+  const { companyId, branchId } = await resolveTenant(pool, authStaff, body?.branchId);
+  const deptName = optionalText(body?.deptName, 80);
+  if (!deptName) {
+    const err = new Error('deptName is required');
+    err.status = 400;
+    throw err;
+  }
+  return withTransaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
+      `hr.department_master:${companyId}:${branchId}`,
+    ]);
+    const deptId = await hrRepo.nextDeptId(client, companyId, branchId);
+    return hrRepo.insertDepartment(client, { companyId, branchId, deptId, deptName });
+  });
+}
+
+export async function deleteDepartment(pool, authStaff, deptId, query) {
+  const { companyId, branchId } = await resolveTenant(pool, authStaff, query?.branchId);
+  const id = requirePositiveInt(deptId, 'deptId');
+  return hrRepo.deleteDepartment(pool, companyId, branchId, id);
+}
+
 // ── Dashboard ─────────────────────────────────────────
 export async function dashboardSummary(pool, authStaff, query) {
   const { companyId, branchId } = await resolveTenant(pool, authStaff, query?.branchId);
   return hrRepo.hrSummary(pool, companyId, branchId);
+}
+
+// ── Expiring Documents ────────────────────────────────
+export async function listExpiringDocuments(pool, authStaff, query) {
+  const { companyId, branchId } = await resolveTenant(pool, authStaff, query?.branchId);
+  const withinDays = query?.withinDays ? Number(query.withinDays) : 60;
+  return hrRepo.listExpiringDocuments(pool, companyId, branchId, withinDays);
 }

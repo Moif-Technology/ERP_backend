@@ -1,34 +1,47 @@
 import { withTransaction } from '../../config/db.js';
 import * as areaRepo from '../repositories/area.repository.js';
-import * as branchRepo from '../../shared/repositories/branch.repository.js';
 import { actorStaffPk } from '../../utils/actorStaff.js';
 
 const SUPPLY_TYPES = new Set(['DINE_IN', 'DELIVERY', 'PARCEL', 'TAKEAWAY', 'GENERAL']);
+const PRICE_LEVELS = new Set(['NORMAL', 'PRICE LEVEL 1', 'PRICE LEVEL 2']);
 
-function parseBranchId(raw) {
+function parseStationId(raw) {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1) return null;
   return n;
 }
 
+async function assertStationBelongsToCompany(pool, companyId, stationId) {
+  const { rowCount } = await pool.query(
+    `SELECT 1
+     FROM core.station_master
+     WHERE company_id = $1
+       AND station_id = $2
+       AND is_deleted = FALSE
+     LIMIT 1`,
+    [companyId, stationId]
+  );
+  if (!rowCount) {
+    const err = new Error('Invalid station for this company');
+    err.status = 400;
+    throw err;
+  }
+}
+
+function resolveStationId(explicitId, authStaff) {
+  return parseStationId(explicitId) ?? parseStationId(authStaff.station_id);
+}
+
 export async function listAreas(pool, authStaff, branchIdQuery) {
   const companyId = Number(authStaff.company_id);
-  let bid = parseBranchId(branchIdQuery);
-  if (bid == null) {
-    bid = parseBranchId(authStaff.branch_id);
-  }
-  if (bid == null) {
-    const err = new Error('branchId is required (query branchId or set staff default branch)');
+  const stationId = resolveStationId(branchIdQuery, authStaff);
+  if (stationId == null) {
+    const err = new Error('stationId is required');
     err.status = 400;
     throw err;
   }
-  const ok = await branchRepo.branchBelongsToCompany(pool, companyId, bid);
-  if (!ok) {
-    const err = new Error('Invalid branch for this company');
-    err.status = 400;
-    throw err;
-  }
-  return areaRepo.listAreasByCompanyAndBranch(pool, companyId, bid);
+  await assertStationBelongsToCompany(pool, companyId, stationId);
+  return areaRepo.listAreasByCompanyAndBranch(pool, companyId, stationId);
 }
 
 export async function createArea(pool, body, authStaff) {
@@ -40,20 +53,15 @@ export async function createArea(pool, body, authStaff) {
   }
   const areaName = nameRaw.slice(0, 150);
 
-  const branchId = parseBranchId(body.branchId);
-  if (branchId == null) {
-    const err = new Error('branchId is required');
+  const stationId = resolveStationId(body.stationId ?? body.branchId, authStaff);
+  if (stationId == null) {
+    const err = new Error('stationId is required');
     err.status = 400;
     throw err;
   }
 
   const companyId = Number(authStaff.company_id);
-  const branchOk = await branchRepo.branchBelongsToCompany(pool, companyId, branchId);
-  if (!branchOk) {
-    const err = new Error('Invalid branch for this company');
-    err.status = 400;
-    throw err;
-  }
+  await assertStationBelongsToCompany(pool, companyId, stationId);
 
   let supplyType = String(body.supplyType ?? 'GENERAL').trim().toUpperCase() || 'GENERAL';
   if (!SUPPLY_TYPES.has(supplyType)) {
@@ -72,6 +80,13 @@ export async function createArea(pool, body, authStaff) {
   const kotRaw = body.kotPrefix != null ? String(body.kotPrefix).trim() : '';
   const kotPrefix = kotRaw ? kotRaw.slice(0, 50) : null;
 
+  let priceLevel = String(body.priceLevel ?? 'NORMAL').trim().toUpperCase() || 'NORMAL';
+  if (!PRICE_LEVELS.has(priceLevel)) {
+    const err = new Error(`priceLevel must be one of: ${[...PRICE_LEVELS].join(', ')}`);
+    err.status = 400;
+    throw err;
+  }
+
   let isTabletShow = true;
   if (body.isTabletShow === false || body.isTabletShow === 'false') {
     isTabletShow = false;
@@ -81,18 +96,19 @@ export async function createArea(pool, body, authStaff) {
 
   return withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
-      `core.area_master:${companyId}:${branchId}`,
+      `core.area_master:${companyId}:${stationId}`,
     ]);
-    const areaId = await areaRepo.nextAreaId(client, companyId, branchId);
+    const areaId = await areaRepo.nextAreaId(client, companyId, stationId);
     return areaRepo.insertArea(client, {
       areaId,
       companyId,
-      branchId,
+      branchId: stationId,
       areaName,
       areaNameArabic,
       tableCreationType,
       supplyType,
       kotPrefix,
+      priceLevel,
       isTabletShow,
       createdBy: userLabel,
       modifiedBy: userLabel,
@@ -110,28 +126,31 @@ export async function updateArea(pool, areaIdRaw, body, authStaff) {
   if (!nameRaw) {
     const err = new Error('areaName is required'); err.status = 400; throw err;
   }
-  const branchId = Number(body.branchId);
-  if (!Number.isFinite(branchId) || branchId < 1) {
-    const err = new Error('branchId is required'); err.status = 400; throw err;
+  const stationId = resolveStationId(body.stationId ?? body.branchId, authStaff);
+  if (stationId == null) {
+    const err = new Error('stationId is required'); err.status = 400; throw err;
   }
   const companyId = Number(authStaff.company_id);
-  const branchOk = await branchRepo.branchBelongsToCompany(pool, companyId, branchId);
-  if (!branchOk) {
-    const err = new Error('Invalid branch for this company'); err.status = 400; throw err;
-  }
+  await assertStationBelongsToCompany(pool, companyId, stationId);
   let supplyType = String(body.supplyType ?? 'GENERAL').trim().toUpperCase() || 'GENERAL';
   if (!SUPPLY_TYPES.has(supplyType)) supplyType = 'GENERAL';
   const arRaw = body.areaNameArabic != null ? String(body.areaNameArabic).trim() : '';
   const areaNameArabic = arRaw ? arRaw.slice(0, 50) : null;
   const kotRaw = body.kotPrefix != null ? String(body.kotPrefix).trim() : '';
   const kotPrefix = kotRaw ? kotRaw.slice(0, 50) : null;
+  let tableCreationType = Number(body.tableCreationType ?? 0);
+  if (!Number.isFinite(tableCreationType)) tableCreationType = 0;
+  tableCreationType = Math.max(0, Math.min(32767, Math.trunc(tableCreationType)));
+  let priceLevel = String(body.priceLevel ?? 'NORMAL').trim().toUpperCase() || 'NORMAL';
+  if (!PRICE_LEVELS.has(priceLevel)) priceLevel = 'NORMAL';
   let isTabletShow = true;
   if (body.isTabletShow === false || body.isTabletShow === 'false') isTabletShow = false;
   const modifiedBy = (authStaff.staff_name || '').slice(0, 50) || 'system';
   const row = await areaRepo.updateArea(pool, {
-    companyId, branchId, areaId,
+    companyId, branchId: stationId, areaId,
     areaName: nameRaw.slice(0, 150),
-    areaNameArabic, supplyType, kotPrefix, isTabletShow, modifiedBy,
+    areaNameArabic, tableCreationType, supplyType, kotPrefix, priceLevel,
+    isTabletShow, modifiedBy,
   });
   if (!row) {
     const err = new Error('Area not found'); err.status = 404; throw err;
