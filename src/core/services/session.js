@@ -4,6 +4,7 @@
  */
 export function buildSessionPayload(row, access = null) {
   const {
+    id: staffPk,
     staff_id: staffId,
     staff_name: staffName,
     role_id: roleId,
@@ -32,6 +33,7 @@ export function buildSessionPayload(row, access = null) {
 
   const payload = {
     user: {
+      staffPk,
       staffId,
       staffName,
       role: roleId != null ? String(roleId) : null,

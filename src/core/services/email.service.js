@@ -9,6 +9,9 @@ function getClient() {
 
 export async function sendVerificationEmail(toEmail, firstName, verifyUrl) {
   if (!config.resendApiKey) {
+    if (config.nodeEnv === 'production') {
+      throw new Error('RESEND_API_KEY is required to send verification email');
+    }
     console.log('');
     console.log('----------------------------------------------------------');
     console.log(`  [EMAIL VERIFY] No RESEND_API_KEY set — dev console only`);
@@ -29,6 +32,9 @@ export async function sendVerificationEmail(toEmail, firstName, verifyUrl) {
 
 export async function sendPasswordResetEmail(toEmail, firstName, otp) {
   if (!config.resendApiKey) {
+    if (config.nodeEnv === 'production') {
+      throw new Error('RESEND_API_KEY is required to send password reset email');
+    }
     console.log('');
     console.log('----------------------------------------------------------');
     console.log(`  [PASSWORD RESET] OTP for ${toEmail}: ${otp}`);

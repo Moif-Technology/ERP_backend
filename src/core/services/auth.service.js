@@ -18,6 +18,7 @@ import * as onboardingRepo from '../repositories/onboarding.repository.js';
 import { resolveEntitlementsForStaff } from './entitlement.service.js';
 import { getEntitlementVersionForStaff } from './entitlement.service.js';
 import { buildTokensForStaffRow } from './sessionTokens.js';
+import { hasActiveSession } from './authSession.service.js';
 
 // Delegates to the shared builder so ERP + Counter-POS stay in sync.
 const tokensForStaffRow = (staffRow) => buildTokensForStaffRow(staffRow);
@@ -212,6 +213,11 @@ export async function refreshAccessToken(refreshToken) {
       throw err;
     }
     const staffPk = Number(payload.sub);
+    if (!(await hasActiveSession(pool, staffPk, 'erp'))) {
+      const err = new Error('Session expired');
+      err.status = 401;
+      throw err;
+    }
     const { rows } = await staffRepo.findStaffSessionByPk(pool, staffPk);
     if (!rows.length) {
       const err = new Error('Staff not found or inactive');

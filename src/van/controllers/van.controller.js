@@ -82,10 +82,50 @@ export async function customers(req, res) {
   }
 }
 
+/** GET /api/van/vans */
+export async function vans(req, res) {
+  try {
+    const result = await vanService.getVans(req.authStaff);
+    return res.json({ vans: result });
+  } catch (err) {
+    return handleError(res, err, 'Could not load vans');
+  }
+}
+
+/** GET /api/van/routes */
+export async function routes(req, res) {
+  try {
+    const result = await vanService.getRoutes(req.authStaff);
+    return res.json({ routes: result });
+  } catch (err) {
+    return handleError(res, err, 'Could not load routes');
+  }
+}
+
+/** GET /api/van/assignment/today */
+export async function todayAssignment(req, res) {
+  try {
+    const result = await vanService.getTodayAssignment(req.authStaff);
+    return res.json({ assignment: result });
+  } catch (err) {
+    return handleError(res, err, 'Could not load assignment');
+  }
+}
+
+/** POST /api/van/assignment */
+export async function startDay(req, res) {
+  try {
+    const result = await vanService.startDay(req.authStaff, req.body);
+    return res.status(201).json({ assignment: result });
+  } catch (err) {
+    return handleError(res, err, 'Could not start day');
+  }
+}
+
 /** GET /api/van/dashboard */
 export async function dashboard(req, res) {
   try {
-    const result = await vanService.getDashboard(req.authStaff);
+    const result = await vanService.getDashboard(req.authStaff, req.query.date);
     return res.json(result);
   } catch (err) {
     return handleError(res, err, 'Could not load dashboard');

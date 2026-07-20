@@ -64,7 +64,7 @@ export async function pinLogin(req, res) {
   try {
     const { accessToken, refreshToken, session } = await authService.loginWithPin(req.body);
     const companyId = session.company?.companyId;
-    const staffPk   = session.user?.staffId;
+    const staffPk   = session.user?.staffPk;
 
     // Enforce concurrent POS session limit defined by plan.
     if (companyId) {

@@ -6,6 +6,7 @@ import * as staffRepo from '../repositories/staff.repository.js';
 import * as onboardingRepo from '../repositories/onboarding.repository.js';
 import * as roleRepo from '../repositories/role.repository.js';
 import { seedDefaultTenantAccounts } from '../../accounts/repositories/accountsSeed.repository.js';
+import { seedDefaultDesignations } from '../repositories/designation.repository.js';
 import { sendVerificationEmail } from './email.service.js';
 import { config } from '../../config.js';
 
@@ -140,6 +141,7 @@ export async function registerCompanyInTransaction(client, input) {
   const branchId = 1;
   await branchRepo.insertHeadOfficeBranch(client, { companyId, branchId, now });
   await roleRepo.seedDefaultTenantRoles(client, companyId, 'registration');
+  await seedDefaultDesignations(client, companyId, branchId);
   // Chart of accounts + voucher types + branch ledger defaults. Without this a
   // new company's backoffice Accounts module + cash/card ledger posting are dead.
   await seedDefaultTenantAccounts(client, { companyId, branchId, actor: 'registration' });

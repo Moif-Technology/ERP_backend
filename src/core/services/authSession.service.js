@@ -46,6 +46,20 @@ export async function countActiveSessions(db, companyId, sessionType) {
   return Number(rows[0]?.cnt ?? 0);
 }
 
+export async function hasActiveSession(db, staffPk, sessionType) {
+  if (staffPk == null) return false;
+  const { rows } = await db.query(
+    `SELECT 1
+     FROM core.active_session
+     WHERE staff_pk = $1
+       AND session_type = $2
+       AND expires_at > NOW()
+     LIMIT 1`,
+    [staffPk, sessionType]
+  );
+  return rows.length > 0;
+}
+
 export async function registerSession(db, staffPk, companyId, sessionType, expiresAt) {
   await db.query(
     `INSERT INTO core.active_session (staff_pk, company_id, session_type, expires_at)

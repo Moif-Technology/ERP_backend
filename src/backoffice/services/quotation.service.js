@@ -237,6 +237,7 @@ export async function createQuotation(pool, body, authStaff) {
       sequenceCode: 'QUOTATION',
       fiscalYear: new Date().getFullYear(),
     });
+    const docPrefix = quotationNo.includes('-') ? quotationNo.split('-')[0] : 'QT';
 
     await quotationRepo.insertQuotationMaster(client, {
       companyId,

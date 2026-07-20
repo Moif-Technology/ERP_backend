@@ -20,6 +20,15 @@ function assertCounterPosAllowed(staffRow) {
   }
 }
 
+function assertDeviceEnrollmentAdmin(staffRow) {
+  const roleId = Number(staffRow?.role_id);
+  const roleName = String(staffRow?.role_name || '').trim().toLowerCase();
+  if (roleId === 1 || roleName === 'admin' || roleName === 'owner') return;
+  const err = new Error('Only an admin can enroll POS devices');
+  err.status = 403;
+  throw err;
+}
+
 /**
  * Enroll a POS device to a company + station.
  * Admin authenticates with email/password. stationId specifies which COUNTER_POS
@@ -55,6 +64,7 @@ export async function enrollDevice({ adminUsername, adminPassword, deviceToken, 
     err.status = 401;
     throw err;
   }
+  assertDeviceEnrollmentAdmin(adminRow);
 
   const companyId = Number(adminRow.company_id);
 
@@ -125,6 +135,7 @@ export async function listStationsForEnroll({ adminUsername, adminPassword }) {
   if (!adminRow) {
     const err = new Error('Invalid credentials'); err.status = 401; throw err;
   }
+  assertDeviceEnrollmentAdmin(adminRow);
 
   const companyId = Number(adminRow.company_id);
   const { rows: stations } = await pool.query(
@@ -188,6 +199,7 @@ export async function listStaffForDevice({ deviceToken }) {
 export async function loginWithPin({ pin, companyId, staffId, deviceToken }) {
   const pinStr = String(pin || '').trim();
   const cid    = Number(companyId);
+  const token  = String(deviceToken || '').trim();
 
   if (!pinStr) {
     const err = new Error('PIN is required'); err.status = 400; throw err;
@@ -195,24 +207,28 @@ export async function loginWithPin({ pin, companyId, staffId, deviceToken }) {
   if (!Number.isFinite(cid) || cid < 1) {
     const err = new Error('companyId is required'); err.status = 400; throw err;
   }
+  if (!token) {
+    const err = new Error('deviceToken is required'); err.status = 400; throw err;
+  }
   if (!/^\d{4,6}$/.test(pinStr)) {
     const err = new Error('Invalid PIN'); err.status = 401; throw err;
   }
 
   // Resolve stationId from enrolled device.
-  let stationId = null;
-  if (deviceToken) {
-    const enrollment = await deviceRepo.findByToken(pool, String(deviceToken).trim());
-    if (!enrollment) {
-      const err = new Error('Device not enrolled'); err.status = 401; throw err;
-    }
-    stationId = enrollment.station_id != null ? Number(enrollment.station_id) : null;
+  const enrollment = await deviceRepo.findByToken(pool, token);
+  if (!enrollment) {
+    const err = new Error('Device not enrolled'); err.status = 401; throw err;
+  }
+  if (Number(enrollment.company_id) !== cid) {
+    const err = new Error('Device not enrolled for this company'); err.status = 401; throw err;
+  }
+  const stationId = enrollment.station_id != null ? Number(enrollment.station_id) : null;
+  if (!Number.isFinite(stationId) || stationId < 1) {
+    const err = new Error('Device station is not configured'); err.status = 401; throw err;
   }
 
   const buildTokens = (row) =>
-    stationId != null
-      ? buildTokensForPOSDevice(row, stationId)
-      : tokensForStaffRow(row);
+    buildTokensForPOSDevice(row, stationId);
 
   // Secure path: a specific staff was selected on the picker.
   const staffPk = Number(staffId);

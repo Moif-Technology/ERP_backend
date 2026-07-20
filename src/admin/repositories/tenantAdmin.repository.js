@@ -95,20 +95,45 @@ export async function upsertSubscription(companyId, patch) {
     return existing.rows[0] || null;
   }
 
-  const insertCols = ['company_id', ...patchEntries.map(([col]) => col)];
-  const params = [companyId, ...patchEntries.map(([, val]) => val)];
+  // UPDATE first: an INSERT ... ON CONFLICT would fail the plan_code NOT NULL
+  // check on the proposed row whenever the patch doesn't include plan_code,
+  // even when a conflicting row already exists.
+  const updateParams = [companyId, ...patchEntries.map(([, val]) => val)];
+  const updateSet = patchEntries.map(([col], idx) => `${col} = $${idx + 2}`);
+  const updated = await pool.query(
+    `UPDATE core.tenant_subscription
+        SET ${updateSet.join(', ')},
+            updated_at = NOW()
+      WHERE company_id = $1
+      RETURNING *`,
+    updateParams
+  );
+  if (updated.rows[0]) return updated.rows[0];
+
+  // No subscription row yet — insert one. plan_code is NOT NULL, so fall back
+  // to the registration-time plan from company_onboarding, then 'basic'.
+  const patchMap = Object.fromEntries(patchEntries);
+  if (!patchMap.plan_code) {
+    const ob = await pool.query(
+      `SELECT plan_code FROM core.company_onboarding WHERE company_id = $1`,
+      [companyId]
+    );
+    patchMap.plan_code = ob.rows[0]?.plan_code || 'basic';
+  }
+  const insertEntries = Object.entries(patchMap);
+  const insertCols = ['company_id', ...insertEntries.map(([col]) => col)];
+  const insertParams = [companyId, ...insertEntries.map(([, val]) => val)];
   const insertVals = insertCols.map((_, idx) => `$${idx + 1}`);
-  const updateSet = patchEntries.map(([col]) => `${col} = EXCLUDED.${col}`);
 
   const { rows } = await pool.query(
     `INSERT INTO core.tenant_subscription (${insertCols.join(', ')})
      VALUES (${insertVals.join(', ')})
      ON CONFLICT (company_id)
      DO UPDATE SET
-       ${updateSet.join(', ')},
+       ${insertEntries.map(([col]) => `${col} = EXCLUDED.${col}`).join(', ')},
        updated_at = NOW()
      RETURNING *`,
-    params
+    insertParams
   );
 
   return rows[0] || null;

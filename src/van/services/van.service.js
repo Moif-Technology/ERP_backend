@@ -56,14 +56,43 @@ export async function getCustomers(authStaff, { search, limit } = {}) {
 
 export async function getPaymentAccounts(authStaff) {
   const companyId = Number(authStaff.company_id);
-  const rows = await accountHeadRepo.listAccountHeads(pool, companyId, { postingOnly: true });
-  return rows
-    .filter(r => {
-      const type = (r.account_type ?? '').toUpperCase();
-      const no = String(r.account_no ?? '');
-      // Keep Cash/Bank type accounts, or any asset-range account (no starts with '1')
-      return type === 'CASH' || type === 'BANK' || no.startsWith('1');
-    })
+  const branchId  = Number(authStaff.branch_id);
+
+  // Pull cash/card receipt ledger accounts from accounts_parameter config
+  const { rows: params } = await pool.query(
+    `SELECT parameter_name, account_id
+     FROM accounts.accounts_parameter
+     WHERE company_id = $1
+       AND parameter_name IN ('DEFAULT_CASH_LEDGER', 'DEFAULT_CARD_LEDGER',
+                              'CODRCashReceiptLedger', 'CODRCreditCardReceiptLedger')
+       AND account_id IS NOT NULL`,
+    [companyId],
+  );
+
+  if (!params.length) {
+    // Fallback: all posting accounts under bank/cash groups (account_no 03-01% or 03-02%)
+    const all = await accountHeadRepo.listAccountHeads(pool, companyId, { postingOnly: true });
+    return all
+      .filter(r => String(r.account_no ?? '').match(/^03-0[12]/))
+      .map(r => ({
+        accountId:   Number(r.account_id),
+        accountNo:   r.account_no,
+        accountHead: r.account_head,
+        accountType: r.account_type ?? '',
+      }));
+  }
+
+  // Deduplicate and look up account details
+  const seen = new Set();
+  const accountIds = [];
+  for (const p of params) {
+    const id = Number(p.account_id);
+    if (!seen.has(id)) { seen.add(id); accountIds.push(id); }
+  }
+
+  const all = await accountHeadRepo.listAccountHeads(pool, companyId, { postingOnly: true });
+  return all
+    .filter(r => accountIds.includes(Number(r.account_id)))
     .map(r => ({
       accountId:   Number(r.account_id),
       accountNo:   r.account_no,
@@ -116,12 +145,72 @@ export async function getDaySummary(authStaff, dateStr) {
   };
 }
 
-export async function getDashboard(authStaff) {
-  const data = await dashboardService.getBackofficeDashboard(pool, authStaff);
+export async function getVans(authStaff) {
+  const companyId = Number(authStaff.company_id);
+  const rows = await vanRepo.listVans(pool, companyId);
+  return rows
+    .filter(r => r.is_active)
+    .map(r => ({
+      vanId:   Number(r.van_id),
+      vanCode: r.van_code,
+      vanName: r.van_name,
+      plateNo: r.plate_no ?? '',
+    }));
+}
+
+export async function getRoutes(authStaff) {
+  const companyId = Number(authStaff.company_id);
+  const rows = await vanRepo.listRoutes(pool, companyId);
+  return rows
+    .filter(r => r.is_active)
+    .map(r => ({
+      routeId:   Number(r.route_id),
+      routeCode: r.route_code,
+      routeName: r.route_name,
+      description: r.description ?? '',
+    }));
+}
+
+export async function getTodayAssignment(authStaff) {
+  const companyId = Number(authStaff.company_id);
+  const staffId   = Number(authStaff.staff_id);
+  const today     = new Date().toISOString().slice(0, 10);
+  return vanRepo.getTodayAssignment(pool, companyId, staffId, today);
+}
+
+export async function startDay(authStaff, body) {
+  const companyId = Number(authStaff.company_id);
+  const branchId  = authStaff.branch_id != null ? Number(authStaff.branch_id) : null;
+  const staffId   = Number(authStaff.staff_id);
+  const actor     = String(authStaff.staff_id ?? 'van');
+
+  const vanId = Number(body.vanId);
+  if (!vanId) {
+    const err = new Error('vanId is required'); err.status = 400; throw err;
+  }
+
+  const routeId      = body.routeId ? Number(body.routeId) : null;
+  const openingCash  = Number(body.openingCash ?? 0);
+  const today        = new Date().toISOString().slice(0, 10);
+
+  const row = await vanRepo.insertDayAssignment(pool, {
+    companyId, branchId, staffId, vanId, routeId,
+    assignmentDate: today, openingCash, actor,
+  });
+  return row;
+}
+
+export async function getDashboard(authStaff, date) {
+  const companyId = Number(authStaff.company_id);
+  const branchId  = Number(authStaff.branch_id);
+  const staffId   = Number(authStaff.staff_id);
+  const today     = new Date().toISOString().slice(0, 10);
+  const target    = /^\d{4}-\d{2}-\d{2}$/.test(String(date ?? '')) ? date : today;
+  const stats     = await vanRepo.getDashboardStats(pool, companyId, branchId, staffId, target);
   return {
-    todayRevenue:   data.today.netSales,
-    todayInvoices:  data.today.billCount,
-    totalCustomers: data.setup.customers,
-    totalSkus:      data.setup.products,
+    todayRevenue:   Number(stats.revenue),
+    todayInvoices:  stats.invoice_count,
+    totalCustomers: stats.total_customers,
+    totalSkus:      stats.total_skus,
   };
 }

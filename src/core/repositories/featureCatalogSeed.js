@@ -75,12 +75,13 @@ export async function ensureFeatureCatalog() {
 
       -- HR pack
       ('hr',                      'Human Resources',        'hr',         NULL,       'pack',   300),
-      ('hr.dashboard',            'HR dashboard',           'hr',         'hr',       'feature',308),
+      ('hr.dashboard',            'HR dashboard',           'hr',         'hr',       'feature',304),
       ('hr.employee_master',      'Employee master',        'hr',         'hr',       'feature',301),
       ('hr.attendance',           'Attendance',             'hr',         'hr',       'feature',302),
       ('hr.leave',                'Leave',                  'hr',         'hr',       'feature',303),
       ('hr.shifts',               'Shifts',                 'hr',         'hr',       'feature',305),
-      ('hr.document_types',       'Document types',         'hr',         'hr',       'feature',307),
+      ('hr.departments',          'Departments',            'hr',         'hr',       'feature',306),
+      ('hr.document_types',       'Document types',         'hr',         'hr',       'feature',308),
       ('hr.reports',              'HR reports',             'hr',         'hr',       'feature',309),
 
       -- CRM pack
@@ -198,6 +199,18 @@ export async function ensureFeatureCatalog() {
       ('pos.kot.reprint',          'KOT reprint',             'pos', 'pos',  'feature', 217),
       ('pos.kot.comments',         'KOT comments',            'pos', 'pos',  'feature', 218),
 
+      -- Van Sales pack
+      ('van',              'Van Sales',   'van', NULL,  'pack',    700),
+      ('van.dashboard',    'Dashboard',   'van', 'van', 'feature', 701),
+      ('van.sales',        'Sales',       'van', 'van', 'feature', 702),
+      ('van.customers',    'Customers',   'van', 'van', 'feature', 703),
+      ('van.products',     'Products',    'van', 'van', 'feature', 704),
+      ('van.day_summary',  'Day summary', 'van', 'van', 'feature', 705),
+      ('van.reports',      'Van reports',     'van', 'van', 'feature', 706),
+      ('van.van_master',   'Van master',      'van', 'van', 'feature', 707),
+      ('van.route_master', 'Route master',    'van', 'van', 'feature', 708),
+      ('van.assignment',   'Day assignment',  'van', 'van', 'feature', 709),
+
       -- Accounts pack (standalone financial module)
       ('accounts',               'Accounts',             'accounts', NULL,       'pack',   600),
       ('accounts.dashboard',     'Accounts dashboard',   'accounts', 'accounts', 'feature',601),
@@ -234,6 +247,7 @@ export async function ensureFeatureCatalog() {
         WHEN p.plan_code = 'pro'    THEN TRUE
         WHEN p.plan_code = 'standard' AND f.pack_code = 'accounts' THEN FALSE
         WHEN p.plan_code = 'standard' AND f.pack_code IN ('core','backoffice','pos') THEN TRUE
+        WHEN p.plan_code IN ('pro','custom') AND f.pack_code = 'van' THEN TRUE
         WHEN p.plan_code = 'basic' AND f.feature_code IN (
           'core','core.company_profile','core.branches','core.users','core.roles',
           'core.customers','core.suppliers','core.settings',
@@ -247,5 +261,39 @@ export async function ensureFeatureCatalog() {
     WHERE p.plan_code IN ('basic','standard','pro','custom')
       AND f.is_active = TRUE
     ON CONFLICT (plan_code, feature_code) DO NOTHING
+  `);
+
+  await pool.query(`
+    INSERT INTO core.permission_master
+      (permission_code, feature_code, action_code, permission_name, is_active, sort_order)
+    SELECT
+      f.feature_code || '.' || a.action_code,
+      f.feature_code,
+      a.action_code,
+      f.feature_name || ' - ' || INITCAP(a.action_code),
+      TRUE,
+      f.sort_order * 10 + a.sort_offset
+    FROM core.feature_master f
+    CROSS JOIN (VALUES
+      ('view', 1),
+      ('create', 2),
+      ('edit', 3),
+      ('delete', 4)
+    ) AS a(action_code, sort_offset)
+    WHERE f.is_active = TRUE
+      AND f.feature_type = 'feature'
+    ON CONFLICT (permission_code) DO NOTHING
+  `);
+
+  await pool.query(`
+    INSERT INTO core.role_permission (company_id, role_id, permission_code, is_allowed)
+    SELECT rm.company_id, rm.role_id, pm.permission_code, TRUE
+    FROM core.role_master rm
+    CROSS JOIN core.permission_master pm
+    WHERE rm.role_id = 1
+      AND rm.record_status = 'ACTIVE'
+      AND pm.is_active = TRUE
+    ON CONFLICT (company_id, role_id, permission_code)
+    DO UPDATE SET is_allowed = TRUE, updated_at = NOW()
   `);
 }

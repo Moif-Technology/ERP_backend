@@ -98,7 +98,7 @@ export async function login(req, res) {
       req.body?.password
     );
     const companyId = session.company?.companyId;
-    const staffPk   = session.user?.staffId;
+    const staffPk   = session.user?.staffPk;
 
     // Enforce concurrent ERP session limit defined by plan.
     if (companyId) {

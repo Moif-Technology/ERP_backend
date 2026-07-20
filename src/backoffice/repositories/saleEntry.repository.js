@@ -71,6 +71,16 @@ export async function deleteSalesPaymentSplits(client, companyId, salesId) {
   );
 }
 
+export async function nextBillNo(client, companyId, branchId) {
+  const { rows } = await client.query(
+    `SELECT COALESCE(MAX(bill_no), 0) + 1 AS n
+     FROM ops.sales_master
+     WHERE company_id = $1 AND branch_id = $2`,
+    [companyId, branchId],
+  );
+  return Number(rows[0].n);
+}
+
 export async function insertSalesMaster(client, row) {
   const {
     companyId, salesId, branchId, kotMasterId, counterNo, billNo,
@@ -81,6 +91,7 @@ export async function insertSalesMaster(client, row) {
     tax1Rate, tax2Rate, tax3Rate,
     roundOffAdj,
     waiterId, tableId, areaId, noOfCustomers, staffId, remarks,
+    entrySource = 'ERP',
     createdBy, modifiedBy,
   } = row;
   await client.query(
@@ -97,7 +108,7 @@ export async function insertSalesMaster(client, row) {
       ) VALUES (
         $1,$2,$3,$4,$5,$6, NOW(), NOW(), $7,$8,$9,
         $10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,
-        'ERP',$32,$33
+        $32,$33,$34
       )`,
     [
       companyId, salesId, branchId, kotMasterId, counterNo, billNo,
@@ -108,7 +119,7 @@ export async function insertSalesMaster(client, row) {
       tax1Rate, tax2Rate, tax3Rate,
       roundOffAdj,
       waiterId, tableId, areaId, noOfCustomers, staffId, remarks,
-      createdBy, modifiedBy,
+      entrySource, createdBy, modifiedBy,
     ]
   );
 }
@@ -229,6 +240,8 @@ export async function listSales(pool, companyId, branchId, limit, offset) {
             sm.branch_id,
             sm.counter_no,
             sm.bill_no,
+            sm.invoice_no,
+            sm.entry_source,
             sm.bill_date,
             sm.bill_time,
             sm.payment_mode,

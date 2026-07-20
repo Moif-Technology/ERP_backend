@@ -62,6 +62,9 @@ export async function createSale(req, res) {
             : 'Invalid reference (branch, customer, or product).',
       });
     }
+    if (err.code === '23505' && err.constraint === 'uq_sales_master_company_branch_bill_no') {
+      return res.status(409).json({ message: 'Duplicate bill number — another sale was saved at the same time. Please try saving again.' });
+    }
     console.error(err);
     return res.status(500).json({ message: 'Could not save sale' });
   }

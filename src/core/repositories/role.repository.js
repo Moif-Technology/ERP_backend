@@ -249,6 +249,7 @@ export async function seedDefaultTenantRoles(db, companyId, actor = 'entitlement
   await seedCashierPermissions(db, companyId);
   await seedInventoryPermissions(db, companyId);
   await seedAccountantPermissions(db, companyId);
+  await seedVanSalesManPermissions(db, companyId);
   await seedCounterPosCashierPermissions(db, companyId);
   await seedRestaurantPosWaiterPermissions(db, companyId);
 }
@@ -338,6 +339,17 @@ async function seedAccountantPermissions(db, companyId) {
      DO UPDATE SET is_allowed = TRUE, updated_at = NOW()`,
     [companyId, DEFAULT_ROLE_IDS.accountant]
   );
+}
+
+async function seedVanSalesManPermissions(db, companyId) {
+  await seedPermissionList(db, companyId, DEFAULT_ROLE_IDS.vanSalesMan, [
+    'van.sales.view',
+    'van.sales.create',
+    'van.customers.view',
+    'van.products.view',
+    'van.dashboard.view',
+    'van.day_summary.view',
+  ]);
 }
 
 async function seedCounterPosCashierPermissions(db, companyId) {

@@ -96,6 +96,13 @@ export const SEQUENCE_DEFS = {
   // ── COUNTER_POS — Transactional ──────────────────────────────────────────
   HOLD_BILL:      { module: 'COUNTER_POS', prefix: 'HLD', padLength: 4, resetRule: 'NEVER',  sequenceName: 'Hold Bill' },
   COUNTER_CLOSE:  { module: 'COUNTER_POS', prefix: 'CCL', padLength: 4, resetRule: 'YEARLY', sequenceName: 'Counter Close' },
+
+  // ── SERVICE — Master codes (NEVER reset) ─────────────────────────────────
+  SERVICE_CODE:   { module: 'SERVICE', prefix: 'SVC', padLength: 4, resetRule: 'NEVER',  sequenceName: 'Service Code' },
+
+  // ── SERVICE — Transactional (YEARLY reset) ───────────────────────────────
+  CASE:           { module: 'SERVICE', prefix: 'SC',  padLength: 4, resetRule: 'YEARLY', sequenceName: 'Case' },
+  CASE_INVOICE:   { module: 'SERVICE', prefix: 'SCI', padLength: 4, resetRule: 'YEARLY', sequenceName: 'Case Invoice' },
 };
 
 /**

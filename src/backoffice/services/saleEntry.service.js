@@ -106,6 +106,8 @@ function mapSaleRowToApi(row) {
     branchId: Number(row.branch_id),
     counterNo: row.counter_no != null ? String(row.counter_no) : null,
     billNo: row.bill_no != null ? String(row.bill_no) : '',
+    invoiceNo: row.invoice_no ?? null,
+    entrySource: row.entry_source ?? 'ERP',
     billDate: row.bill_date,
     billTime: row.bill_time,
     paymentMode: row.payment_mode,
@@ -540,7 +542,7 @@ async function rewriteSaleVouchers(client, ctx) {
       salesVoucherId = await voucherRepo.nextVoucherMasterId(client, companyId, branchId);
       await voucherRepo.insertVoucherMaster(client, {
         companyId, branchId, voucherMasterId: salesVoucherId, voucherTypeId: salesVoucherTypeId,
-        autoVoucherNo: voucherBillNo, manualVoucherNo: String(billNo), voucherPrefix,
+        autoVoucherNo: await voucherRepo.nextAutoVoucherNo(client, companyId, branchId, salesVoucherTypeId), manualVoucherNo: String(billNo), voucherPrefix,
         referenceNo: String(billNo), voucherAmount: netClient, remarks: `SVT: ${billNo}`,
         postStatus: 'PENDING', creationMode: 'INVENTORYACCOUNTS', voucherPostedId: salesId,
         counterCloseNo: 'PENDING', recordStatus: 'ACTIVE', createdBy: auditBy,
@@ -565,7 +567,7 @@ async function rewriteSaleVouchers(client, ctx) {
     const recMasterId = await voucherRepo.nextVoucherMasterId(client, companyId, branchId);
     await voucherRepo.insertVoucherMaster(client, {
       companyId, branchId, voucherMasterId: recMasterId, voucherTypeId: recVoucherTypeId,
-      autoVoucherNo: Number(billNo), manualVoucherNo: String(billNo), voucherPrefix,
+      autoVoucherNo: await voucherRepo.nextAutoVoucherNo(client, companyId, branchId, recVoucherTypeId), manualVoucherNo: String(billNo), voucherPrefix,
       referenceNo: String(billNo), voucherAmount: paid, remarks: `RCV: ${billNo}`,
       postStatus: 'PENDING', creationMode: 'INVENTORYACCOUNTS', voucherPostedId: salesId,
       counterCloseNo: 'PENDING', recordStatus: 'ACTIVE', createdBy: auditBy,
@@ -845,12 +847,12 @@ export async function createSale(pool, body, authStaff, { salesChannel = 'ERP' }
   if (deliveryOrderIdOpt) remarksParts.push(`DO:${deliveryOrderIdOpt}`);
   const remarks = str(remarksParts.filter(Boolean).join(' | '), 200);
 
-  return withTransaction(async (client) => {
+  const doInsert = () => withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [`ops.sales_erp:${companyId}`]);
 
     // ───── STEP 3: SalesMaster INSERT ─────
     const salesId = await salesRepo.nextSalesId(client, companyId);
-    const billNo = await salesRepo.nextBillNo(client, companyId, branchId);
+    const billNo = await saleEntryRepo.nextBillNo(client, companyId, branchId);
     const invoiceNo = await nextDocNo(client, {
       companyId,
       branchId,
@@ -890,6 +892,7 @@ export async function createSale(pool, body, authStaff, { salesChannel = 'ERP' }
       noOfCustomers: 0,
       staffId: staffPk,
       remarks,
+      entrySource: salesChannel === 'VAN' ? 'VAN' : 'ERP',
       createdBy: auditBy,
       modifiedBy: auditBy,
     });
@@ -1102,7 +1105,7 @@ export async function createSale(pool, body, authStaff, { salesChannel = 'ERP' }
           branchId,
           voucherMasterId: vMasterId,
           voucherTypeId: salesVoucherTypeId,
-          autoVoucherNo: voucherBillNo,
+          autoVoucherNo: await voucherRepo.nextAutoVoucherNo(client, companyId, branchId, salesVoucherTypeId),
           manualVoucherNo: String(billNo),
           voucherPrefix,
           referenceNo: String(billNo),
@@ -1150,7 +1153,7 @@ export async function createSale(pool, body, authStaff, { salesChannel = 'ERP' }
           branchId,
           voucherMasterId: recMasterId,
           voucherTypeId: recVoucherTypeId,
-          autoVoucherNo: voucherBillNo,
+          autoVoucherNo: await voucherRepo.nextAutoVoucherNo(client, companyId, branchId, recVoucherTypeId),
           manualVoucherNo: String(billNo),
           voucherPrefix: recPrefix,
           referenceNo: String(billNo),
@@ -1272,6 +1275,17 @@ export async function createSale(pool, body, authStaff, { salesChannel = 'ERP' }
       message: 'Sale saved.',
     };
   });
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await doInsert();
+    } catch (e) {
+      if (e.code === '23505' && e.constraint === 'uq_sales_master_company_branch_bill_no' && attempt < 2) {
+        continue;
+      }
+      throw e;
+    }
+  }
 }
 
 /** PUT /api/sales/:salesId — update draft sale (not posted). */

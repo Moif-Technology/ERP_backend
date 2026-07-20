@@ -4,6 +4,7 @@ import { pool, withTransaction } from '../../config/db.js';
 import * as staffRepo from '../repositories/staff.repository.js';
 import * as passwordResetRepo from '../repositories/passwordReset.repository.js';
 import { sendPasswordResetEmail } from './email.service.js';
+import { config } from '../../config.js';
 
 const OTP_TTL_MS = 15 * 60 * 1000;
 const MIN_PASSWORD_LEN = 8;
@@ -60,6 +61,9 @@ export async function requestForgotPasswordOtp(body) {
   try {
     await sendPasswordResetEmail(toEmail, firstName, plainOtp);
   } catch (emailErr) {
+    if (config.nodeEnv === 'production') {
+      throw emailErr;
+    }
     // Fallback to console so OTP is never silently lost
     console.log('');
     console.log('---------------------------------------------------------');
