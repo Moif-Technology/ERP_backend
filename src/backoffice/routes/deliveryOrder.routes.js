@@ -10,3 +10,4 @@ deliveryOrderRouter.use(requireFeature('backoffice.delivery_order'));
 deliveryOrderRouter.post('/', deliveryOrderController.createDeliveryOrder);
 deliveryOrderRouter.get('/', deliveryOrderController.listDeliveryOrders);
 deliveryOrderRouter.get('/:deliveryOrderId', deliveryOrderController.getDeliveryOrder);
+deliveryOrderRouter.put('/:deliveryOrderId', deliveryOrderController.updateDeliveryOrder);

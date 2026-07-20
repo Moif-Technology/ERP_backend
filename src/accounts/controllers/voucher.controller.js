@@ -1,6 +1,9 @@
 import { pool } from '../../config/db.js';
 import * as voucherService from '../services/voucher.service.js';
 import * as financialReportService from '../services/financialReport.service.js';
+import * as trialBalanceTreeService from '../services/trialBalanceTree.service.js';
+import * as profitAndLossTreeService from '../services/profitAndLossTree.service.js';
+import * as balanceSheetTreeService from '../services/balanceSheetTree.service.js';
 import * as accountsDashboardService from '../services/accountsDashboard.service.js';
 
 function handleError(res, err, fallbackMsg) {
@@ -67,6 +70,12 @@ export async function listVoucherTypes(req, res) {
   } catch (err) { return handleError(res, err, 'Could not load voucher types'); }
 }
 
+export async function peekNextVoucherNo(req, res) {
+  try {
+    return res.json(await voucherService.peekNextVoucherNo(pool, req.authStaff, req.query));
+  } catch (err) { return handleError(res, err, 'Could not preview next voucher number'); }
+}
+
 export async function getLedgerTransactions(req, res) {
   try {
     return res.json(await voucherService.getLedgerTransactions(pool, req.authStaff, Number(req.params.accountId), req.query));
@@ -87,18 +96,30 @@ export async function getAgingDetail(req, res) {
 
 export async function getTrialBalance(req, res) {
   try {
+    const view = String(req.query.view || '').toLowerCase();
+    if (view === 'tree') {
+      return res.json(await trialBalanceTreeService.getTrialBalanceTree(pool, req.authStaff, req.query));
+    }
     return res.json(await financialReportService.getFullTrialBalance(pool, req.authStaff, req.query));
   } catch (err) { return handleError(res, err, 'Could not load trial balance'); }
 }
 
 export async function getBalanceSheet(req, res) {
   try {
+    const view = String(req.query.view || '').toLowerCase();
+    if (view === 'tree') {
+      return res.json(await balanceSheetTreeService.getBalanceSheetTree(pool, req.authStaff, req.query));
+    }
     return res.json(await financialReportService.getBalanceSheet(pool, req.authStaff, req.query));
   } catch (err) { return handleError(res, err, 'Could not load balance sheet'); }
 }
 
 export async function getProfitAndLoss(req, res) {
   try {
+    const view = String(req.query.view || '').toLowerCase();
+    if (view === 'tree') {
+      return res.json(await profitAndLossTreeService.getProfitAndLossTree(pool, req.authStaff, req.query));
+    }
     return res.json(await financialReportService.getProfitAndLoss(pool, req.authStaff, req.query));
   } catch (err) { return handleError(res, err, 'Could not load profit and loss'); }
 }

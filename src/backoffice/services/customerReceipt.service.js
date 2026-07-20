@@ -168,14 +168,16 @@ async function insertCustomerReceiptVoucher(client, args) {
   const auditBy = String(staffId ?? 'BACKOFFICE').slice(0, 50);
   const ref = referenceNo ? String(referenceNo).trim().slice(0, 100) : `RCT-${transactionId}`;
   const detailPostStatus = postStatus;
+  let autoVoucherNo = null;
 
   if (!existingVoucherMasterId) {
+    autoVoucherNo = await voucherRepo.nextAutoVoucherNo(client, companyId, branchId, voucherTypeId);
     await voucherRepo.insertVoucherMaster(client, {
       companyId,
       branchId,
       voucherMasterId,
       voucherTypeId,
-      autoVoucherNo: transactionId,
+      autoVoucherNo,
       manualVoucherNo: ref,
       voucherPrefix,
       voucherDate: receiptDate || new Date(),
@@ -233,7 +235,7 @@ async function insertCustomerReceiptVoucher(client, args) {
     createdBy: auditBy,
   });
 
-  return voucherMasterId;
+  return { voucherMasterId, autoVoucherNo };
 }
 
 async function applyBillAllocations(client, companyId, allocations, customerLedgerId, postDatedCheque) {
@@ -376,7 +378,7 @@ async function persistReceiptChildren(client, args) {
 }
 
 export async function listCustomerReceiptOutstanding(authStaff, customerId, query = {}) {
-  return getCustomerOutstandingBills(authStaff, customerId, query);
+  return getCustomerOutstandingBills(authStaff, customerId);
 }
 
 export async function getCustomerReceiptByVoucher(authStaff, voucherMasterId) {
@@ -505,8 +507,8 @@ export async function saveCustomerReceipt(authStaff, body) {
   try {
     await client.query('BEGIN');
 
-    const osAmount = await customerRepo.getCustomerOsBalance(client, companyId, customerId, { postedOnly: true, branchId });
-    const rawBills = await settlementRepo.getOutstandingBills(client, companyId, customerId, { branchId });
+    const osAmount = await customerRepo.getCustomerOsBalance(client, companyId, customerId, { postedOnly: true });
+    const rawBills = await settlementRepo.getOutstandingBills(client, companyId, customerId);
     const bills = settlementRepo.reconcilePostedBills(rawBills);
 
     if (!bills.length) {
@@ -550,10 +552,10 @@ export async function saveCustomerReceipt(authStaff, body) {
 
     let voucherMasterId = null;
     let voucherPrefix = 'RCV';
-    let autoVoucherNo = transactionId;
+    let autoVoucherNo = null;
     try {
       await client.query('SAVEPOINT customer_receipt_voucher');
-      voucherMasterId = await insertCustomerReceiptVoucher(client, {
+      const voucherResult = await insertCustomerReceiptVoucher(client, {
         companyId,
         branchId,
         transactionId,
@@ -567,11 +569,12 @@ export async function saveCustomerReceipt(authStaff, body) {
         referenceNo,
         postStatus: 'PENDING',
       });
+      voucherMasterId = voucherResult.voucherMasterId;
+      autoVoucherNo = voucherResult.autoVoucherNo;
       voucherPrefix = (await voucherRepo.getVoucherPrefix(
         client, companyId,
         (await voucherRepo.getVoucherTypeId(client, companyId, 'ReceiptVoucherNameCustomer', branchId)) ?? 9,
       )) || 'RCV';
-      autoVoucherNo = transactionId;
       await client.query('RELEASE SAVEPOINT customer_receipt_voucher');
     } catch (vErr) {
       await client.query('ROLLBACK TO SAVEPOINT customer_receipt_voucher').catch(() => {});
@@ -671,8 +674,8 @@ export async function updateCustomerReceipt(authStaff, transactionId, body) {
       throw err;
     }
 
-    const osAmount = await customerRepo.getCustomerOsBalance(client, companyId, customerId, { postedOnly: true, branchId });
-    const rawBills = await settlementRepo.getOutstandingBills(client, companyId, customerId, { branchId });
+    const osAmount = await customerRepo.getCustomerOsBalance(client, companyId, customerId, { postedOnly: true });
+    const rawBills = await settlementRepo.getOutstandingBills(client, companyId, customerId);
     const bills = settlementRepo.reconcilePostedBills(rawBills);
 
     if (!bills.length) {

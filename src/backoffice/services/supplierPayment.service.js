@@ -167,14 +167,16 @@ async function insertSupplierPaymentVoucher(client, args) {
   const auditBy = String(staffId ?? 'BACKOFFICE').slice(0, 50);
   const ref = referenceNo ? String(referenceNo).trim().slice(0, 100) : `PMT-${transactionId}`;
   const detailPostStatus = postStatus;
+  let autoVoucherNo = null;
 
   if (!existingVoucherMasterId) {
+    autoVoucherNo = await voucherRepo.nextAutoVoucherNo(client, companyId, branchId, voucherTypeId);
     await voucherRepo.insertVoucherMaster(client, {
       companyId,
       branchId,
       voucherMasterId,
       voucherTypeId,
-      autoVoucherNo: transactionId,
+      autoVoucherNo,
       manualVoucherNo: ref,
       voucherPrefix,
       voucherDate: paymentDate || new Date(),
@@ -207,8 +209,8 @@ async function insertSupplierPaymentVoucher(client, args) {
       voucherDetailId: detailSeq++,
       voucherMasterId,
       accountId: line.ledgerId,
-      debitAmount: 0,
-      creditAmount: line.amount,
+      debitAmount: line.amount,
+      creditAmount: 0,
       outstandingBalance: 0,
       narration: line.narration || ref,
       postStatus: detailPostStatus,
@@ -223,8 +225,8 @@ async function insertSupplierPaymentVoucher(client, args) {
     voucherDetailId: detailSeq++,
     voucherMasterId,
     accountId: supplierLedgerId,
-    debitAmount: amount,
-    creditAmount: 0,
+    debitAmount: 0,
+    creditAmount: amount,
     outstandingBalance: 0,
     narration: ref,
     postStatus: detailPostStatus,
@@ -232,7 +234,7 @@ async function insertSupplierPaymentVoucher(client, args) {
     createdBy: auditBy,
   });
 
-  return voucherMasterId;
+  return { voucherMasterId, autoVoucherNo };
 }
 
 async function applyBillAllocations(client, companyId, branchId, allocations, supplierLedgerId, postDatedCheque) {
@@ -368,10 +370,9 @@ async function persistPaymentChildren(client, args) {
   }
 }
 
-export async function listSupplierPaymentOutstanding(authStaff, supplierId, query = {}) {
+export async function listSupplierPaymentOutstanding(authStaff, supplierId) {
   const companyId = Number(authStaff.company_id);
   const sid = Number(supplierId);
-  const branchId = parseBranchId(query.branchId) ?? parseBranchId(authStaff.branch_id);
   if (!Number.isFinite(sid) || sid < 1) {
     const err = new Error('Invalid supplier');
     err.status = 400;
@@ -385,19 +386,20 @@ export async function listSupplierPaymentOutstanding(authStaff, supplierId, quer
     throw err;
   }
 
-  const ledgerOs = await supplierPaymentRepo.getSupplierOsBalance(pool, companyId, sid, { postedOnly: true, branchId });
-  const rawBills = await supplierPaymentRepo.getOutstandingPurchaseBills(pool, companyId, sid, { branchId });
+  const ledgerOs = await supplierPaymentRepo.getSupplierOsBalance(pool, companyId, sid, { postedOnly: true });
+  const rawBills = await supplierPaymentRepo.getOutstandingPurchaseBills(pool, companyId, sid);
   const bills = supplierPaymentRepo.reconcilePostedBills(rawBills);
   const billsSum = bills.reduce((sum, b) => sum + num(b.currentAmount), 0);
+  const alignedLedgerOs = billsSum > 0.005 ? billsSum : Math.max(ledgerOs, 0);
 
   return {
     supplierId: sid,
     supplierCode: supplier.supplier_code,
     supplierName: supplier.supplier_name,
-    ledgerOs,
+    ledgerOs: alignedLedgerOs,
     billsTotal: billsSum,
     billsSum,
-    osAmount: billsSum > 0.005 ? billsSum : Math.max(ledgerOs, 0),
+    osAmount: alignedLedgerOs,
     bills,
   };
 }
@@ -533,8 +535,8 @@ export async function saveSupplierPayment(authStaff, body) {
   try {
     await client.query('BEGIN');
 
-    const osAmount = await supplierPaymentRepo.getSupplierOsBalance(client, companyId, supplierId, { postedOnly: true, branchId });
-    const rawBills = await supplierPaymentRepo.getOutstandingPurchaseBills(client, companyId, supplierId, { branchId });
+    const osAmount = await supplierPaymentRepo.getSupplierOsBalance(client, companyId, supplierId, { postedOnly: true });
+    const rawBills = await supplierPaymentRepo.getOutstandingPurchaseBills(client, companyId, supplierId);
     const bills = supplierPaymentRepo.reconcilePostedBills(rawBills);
 
     if (!bills.length) {
@@ -578,10 +580,10 @@ export async function saveSupplierPayment(authStaff, body) {
 
     let voucherMasterId = null;
     let voucherPrefix = 'PAY';
-    let autoVoucherNo = transactionId;
+    let autoVoucherNo = null;
     try {
       await client.query('SAVEPOINT supplier_payment_voucher');
-      voucherMasterId = await insertSupplierPaymentVoucher(client, {
+      const voucherResult = await insertSupplierPaymentVoucher(client, {
         companyId,
         branchId,
         transactionId,
@@ -595,11 +597,12 @@ export async function saveSupplierPayment(authStaff, body) {
         referenceNo,
         postStatus: 'PENDING',
       });
+      voucherMasterId = voucherResult.voucherMasterId;
+      autoVoucherNo = voucherResult.autoVoucherNo;
       voucherPrefix = (await voucherRepo.getVoucherPrefix(
         client, companyId,
         (await voucherRepo.getVoucherTypeId(client, companyId, 'PaymentVoucherNameSupplier', branchId)) ?? 4,
       )) || 'PAY';
-      autoVoucherNo = transactionId;
       await client.query('RELEASE SAVEPOINT supplier_payment_voucher');
     } catch (vErr) {
       await client.query('ROLLBACK TO SAVEPOINT supplier_payment_voucher').catch(() => {});
@@ -699,8 +702,8 @@ export async function updateSupplierPayment(authStaff, transactionId, body) {
       throw err;
     }
 
-    const osAmount = await supplierPaymentRepo.getSupplierOsBalance(client, companyId, supplierId, { postedOnly: true, branchId });
-    const rawBills = await supplierPaymentRepo.getOutstandingPurchaseBills(client, companyId, supplierId, { branchId });
+    const osAmount = await supplierPaymentRepo.getSupplierOsBalance(client, companyId, supplierId, { postedOnly: true });
+    const rawBills = await supplierPaymentRepo.getOutstandingPurchaseBills(client, companyId, supplierId);
     const bills = supplierPaymentRepo.reconcilePostedBills(rawBills);
 
     if (!bills.length) {

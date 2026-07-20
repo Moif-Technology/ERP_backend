@@ -1,15 +1,10 @@
 import * as financialReportRepo from '../repositories/financialReport.repository.js';
+import { resolveReportBranchId } from '../utils/reportBranch.js';
 
 const ASSET_ROOT_PREFIXES = ['03', '07', '10'];
 const LIABILITY_ROOT_PREFIXES = ['01', '02', '04', '11'];
 const TRADING_ROOT_PREFIXES = ['05', '06', '12', '13'];
 const PL_ROOT_PREFIXES = ['08', '09'];
-
-function parseOptionalBranchId(raw) {
-  if (raw == null || String(raw).trim() === '') return undefined;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : undefined;
-}
 
 function mapBalanceRow(r) {
   const dr = Number(r.total_debit || 0);
@@ -80,8 +75,9 @@ function sumPlNet(accounts) {
 
 export async function getFullTrialBalance(pool, authStaff, query) {
   const companyId = Number(authStaff.company_id);
+  const branchId = resolveReportBranchId(query, authStaff);
   const rows = await financialReportRepo.getAccountBalances(pool, companyId, {
-    branchId: parseOptionalBranchId(query.branchId),
+    branchId,
     dateFrom: query.dateFrom || undefined,
     dateTo: query.dateTo || undefined,
     postStatus: query.postStatus || undefined,
@@ -107,7 +103,7 @@ export async function getFullTrialBalance(pool, authStaff, query) {
 export async function getBalanceSheet(pool, authStaff, query) {
   const companyId = Number(authStaff.company_id);
   const opts = {
-    branchId: parseOptionalBranchId(query.branchId),
+    branchId: resolveReportBranchId(query, authStaff),
     dateTo: query.dateTo || undefined,
     postStatus: query.postStatus || 'POSTED',
   };
@@ -146,7 +142,7 @@ export async function getBalanceSheet(pool, authStaff, query) {
 export async function getProfitAndLoss(pool, authStaff, query) {
   const companyId = Number(authStaff.company_id);
   const opts = {
-    branchId: parseOptionalBranchId(query.branchId),
+    branchId: resolveReportBranchId(query, authStaff),
     dateFrom: query.dateFrom || undefined,
     dateTo: query.dateTo || undefined,
     postStatus: query.postStatus || 'POSTED',

@@ -22,6 +22,32 @@ export async function createDeliveryOrder(req, res) {
   }
 }
 
+export async function updateDeliveryOrder(req, res) {
+  try {
+    const result = await deliveryOrderService.updateDeliveryOrder(
+      pool,
+      req.params.deliveryOrderId,
+      req.body,
+      req.authStaff,
+    );
+    return res.json(result);
+  } catch (err) {
+    if (err.status) {
+      return res.status(err.status).json({ message: err.message });
+    }
+    if (err.code === '42P01' || err.code === '23503') {
+      return res.status(503).json({
+        message:
+          err.code === '42P01'
+            ? 'Delivery order tables not installed.'
+            : 'Invalid reference (customer, product, branch, or quotation).',
+      });
+    }
+    console.error(err);
+    return res.status(500).json({ message: 'Could not update delivery order' });
+  }
+}
+
 export async function getDeliveryOrder(req, res) {
   try {
     const result = await deliveryOrderService.getDeliveryOrder(

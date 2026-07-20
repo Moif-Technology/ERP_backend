@@ -1,6 +1,4 @@
-/**
- * Supplier payment — outstanding purchase bills + cash_transaction (payable side).
- */
+import { VD_CREDIT_LINE_OS_EXPR } from '../../accounts/lib/voucherOutstanding.js';
 import * as settlementRepo from '../../pos/counter-pos/repositories/settlement.repository.js';
 import { resolvePurchasePaymentVoucherTypeIds } from '../lib/purchasePaymentOutstanding.js';
 
@@ -21,8 +19,6 @@ const CLEARED_PAID_SUBQUERY = `
       ON ctm.company_id = ctc.company_id AND ctm.transaction_id = ctc.transaction_id
     WHERE ctc.company_id = p.company_id
       AND ctc.bill_id = p.purchase_id
-      AND ctm.supplier_id = p.supplier_id
-      AND ctm.customer_id IS NULL
       AND NOT (${PDC_PENDING_MASTER_SQL})
   ), 0)`;
 
@@ -34,16 +30,10 @@ const PDC_PAID_SUBQUERY = `
       ON ctm.company_id = ctc.company_id AND ctm.transaction_id = ctc.transaction_id
     WHERE ctc.company_id = p.company_id
       AND ctc.bill_id = p.purchase_id
-      AND ctm.supplier_id = p.supplier_id
-      AND ctm.customer_id IS NULL
       AND (${PDC_PENDING_MASTER_SQL})
   ), 0)`;
 
-const PURCHASE_OS_BASE_EXPR = `
-  CASE
-    WHEN COALESCE(p.outstanding_balance, 0) > 0.005 THEN COALESCE(p.outstanding_balance, 0)
-    ELSE GREATEST(COALESCE(p.invoice_amount, 0) - ${CLEARED_PAID_SUBQUERY}, 0)
-  END`;
+const PURCHASE_VOUCHER_OS_EXPR = `${VD_CREDIT_LINE_OS_EXPR}::numeric`;
 
 const PURCHASE_OUTSTANDING_SQL = `
   SELECT
@@ -51,18 +41,53 @@ const PURCHASE_OUTSTANDING_SQL = `
     p.purchase_no AS bill_no,
     p.purchase_date AS bill_date,
     p.invoice_amount::numeric AS invoice_amount,
-    (${PURCHASE_OS_BASE_EXPR})::numeric AS current_amount,
+    GREATEST(
+      COALESCE(
+        vos.voucher_os,
+        COALESCE(NULLIF(p.outstanding_balance, 0), p.invoice_amount, 0)
+        - ${CLEARED_PAID_SUBQUERY}
+      ),
+      0
+    )::numeric AS current_amount,
     ${PDC_PAID_SUBQUERY}::numeric AS pdc_pending,
     ${CLEARED_PAID_SUBQUERY}::numeric AS cleared_paid,
     TRIM(COALESCE(p.purchase_no::text, p.purchase_id::text)) AS invoice_no
   FROM ops.purchase_master p
+  INNER JOIN biz.supplier_master sm
+    ON sm.company_id = p.company_id AND sm.supplier_id = p.supplier_id
+  LEFT JOIN LATERAL (
+    SELECT ${PURCHASE_VOUCHER_OS_EXPR} AS voucher_os
+    FROM accounts.voucher_master vm
+    INNER JOIN accounts.voucher_detail vd
+      ON vd.company_id = vm.company_id
+     AND vd.voucher_master_id = vm.voucher_master_id
+    INNER JOIN accounts.account_head_master ah
+      ON ah.company_id = sm.company_id
+     AND ah.account_no = sm.supplier_code
+     AND ah.account_id = vd.account_id
+     AND (ah.record_status IS NULL OR TRIM(UPPER(ah.record_status)) = 'ACTIVE')
+    WHERE vm.company_id = p.company_id
+      AND vm.branch_id = p.branch_id
+      AND vm.voucher_posted_id = p.purchase_id
+      AND UPPER(COALESCE(vm.creation_mode, '')) = 'INVENTORYACCOUNTS'
+      AND UPPER(COALESCE(vm.post_status, 'PENDING')) = 'POSTED'
+      AND (vd.record_status IS NULL OR TRIM(UPPER(vd.record_status)) = 'ACTIVE')
+      AND vd.credit_amount > 0.005
+    LIMIT 1
+  ) vos ON true
   WHERE p.company_id = $1
     AND p.supplier_id = $2
-    AND ($3::int IS NULL OR p.branch_id = $3::int)
     AND UPPER(COALESCE(p.post_status, 'PENDING')) = 'POSTED'
     AND COALESCE(UPPER(p.record_status), 'ACTIVE') NOT IN ('CANCELLED', 'VOID', 'CANCELED')
     AND (
-      (${PURCHASE_OS_BASE_EXPR}) > 0.005
+      GREATEST(
+        COALESCE(
+          vos.voucher_os,
+          COALESCE(NULLIF(p.outstanding_balance, 0), p.invoice_amount, 0)
+          - ${CLEARED_PAID_SUBQUERY}
+        ),
+        0
+      ) > 0.005
       OR ${PDC_PAID_SUBQUERY} > 0.005
     )
   ORDER BY p.purchase_date ASC, p.purchase_id ASC`;
@@ -96,12 +121,11 @@ export async function getSupplierById(db, companyId, supplierId) {
   return rows[0] ?? null;
 }
 
-export async function getSupplierOsBalance(db, companyId, supplierId, { postedOnly = false, branchId = null } = {}) {
+export async function getSupplierOsBalance(db, companyId, supplierId, { postedOnly = false } = {}) {
   const postedFilter = postedOnly
     ? `AND EXISTS (
          SELECT 1 FROM accounts.voucher_master vm
          WHERE vm.company_id = vd.company_id
-           AND vm.branch_id = vd.branch_id
            AND vm.voucher_master_id = vd.voucher_master_id
            AND (vm.record_status IS NULL OR TRIM(UPPER(vm.record_status)) = 'ACTIVE')
            AND UPPER(COALESCE(vm.post_status, 'PENDING')) = 'POSTED'
@@ -116,10 +140,9 @@ export async function getSupplierOsBalance(db, companyId, supplierId, { postedOn
        LEFT JOIN accounts.voucher_detail vd
          ON vd.company_id = ah.company_id AND vd.account_id = ah.account_id
         AND (vd.record_status IS NULL OR TRIM(UPPER(vd.record_status)) = 'ACTIVE')
-        AND ($3::int IS NULL OR vd.branch_id = $3::int)
         ${postedFilter}
        WHERE sm.company_id = $1 AND sm.supplier_id = $2`,
-      [companyId, supplierId, branchId],
+      [companyId, supplierId],
     );
     return num(rows[0]?.os);
   } catch (e) {
@@ -128,9 +151,9 @@ export async function getSupplierOsBalance(db, companyId, supplierId, { postedOn
   }
 }
 
-export async function getOutstandingPurchaseBills(db, companyId, supplierId, { branchId = null } = {}) {
+export async function getOutstandingPurchaseBills(db, companyId, supplierId) {
   try {
-    const { rows } = await db.query(PURCHASE_OUTSTANDING_SQL, [companyId, supplierId, branchId]);
+    const { rows } = await db.query(PURCHASE_OUTSTANDING_SQL, [companyId, supplierId]);
     return rows.map(mapBillRow);
   } catch (e) {
     if (e.code === '42P01' || e.code === '42703') return [];
@@ -182,7 +205,7 @@ export async function reducePurchaseBillOutstanding(client, companyId, branchId,
   const { purchaseVoucherTypeId } = await resolvePurchasePaymentVoucherTypeIds(client, companyId, branchId);
   await client.query(
     `UPDATE accounts.voucher_detail vd
-     SET outstanding_balance = GREATEST(COALESCE(vd.outstanding_balance, 0) - $4, 0),
+     SET outstanding_balance = GREATEST(COALESCE(vd.outstanding_balance, vd.credit_amount, 0) - $4, 0),
          modified_at = NOW()
      FROM accounts.voucher_master vm
      WHERE vd.company_id = $1

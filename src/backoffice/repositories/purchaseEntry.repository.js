@@ -1,5 +1,6 @@
 /**
  * ops.purchase_master / ops.purchase_child */
+import { VD_CREDIT_LINE_OS_EXPR } from '../../accounts/lib/voucherOutstanding.js';
 
 export async function listPurchasesByBranch(pool, companyId, branchId, limit = 50, offset = 0, options = {}) {
   const lim = Math.min(Math.max(Number(limit) || 50, 1), 200);
@@ -19,15 +20,41 @@ export async function listPurchasesByBranch(pool, companyId, branchId, limit = 5
   }
   params.push(lim, off);
   const { rows } = await pool.query(
-    `SELECT p.purchase_id, p.branch_id, p.supplier_id, sm.supplier_name,
+    `SELECT p.purchase_id, p.branch_id, p.supplier_id, sm.supplier_name, sm.supplier_code,
             p.grn_id, p.lpo_master_id,
             p.purchase_date, p.purchase_no, p.supplier_invoice_no,
-            p.invoice_amount, p.outstanding_balance, p.payment_mode, p.post_status, p.remarks,
+            p.invoice_amount,
+            COALESCE(
+              osb.outstanding_balance,
+              NULLIF(p.outstanding_balance, 0),
+              CASE WHEN UPPER(COALESCE(p.payment_mode, '')) = 'CREDIT' THEN p.invoice_amount ELSE 0 END,
+              0
+            )::numeric AS outstanding_balance,
+            p.payment_mode, p.post_status, p.remarks,
             p.subtotal_amount, p.input_tax_1_amount, p.net_vat, p.items_total_bc,
             p.record_status
      FROM ops.purchase_master p
      LEFT JOIN biz.supplier_master sm
        ON sm.company_id = p.company_id AND sm.supplier_id = p.supplier_id
+     LEFT JOIN LATERAL (
+       SELECT COALESCE(SUM(${VD_CREDIT_LINE_OS_EXPR}), 0)::numeric AS outstanding_balance
+       FROM accounts.voucher_master vm
+       INNER JOIN accounts.voucher_detail vd
+         ON vd.company_id = vm.company_id
+        AND vd.voucher_master_id = vm.voucher_master_id
+       INNER JOIN accounts.account_head_master ah
+         ON ah.company_id = vd.company_id
+        AND ah.account_id = vd.account_id
+        AND ah.account_no = sm.supplier_code
+        AND (ah.record_status IS NULL OR TRIM(UPPER(ah.record_status)) = 'ACTIVE')
+       WHERE vm.company_id = p.company_id
+         AND vm.branch_id = p.branch_id
+         AND vm.voucher_posted_id = p.purchase_id
+         AND UPPER(COALESCE(vm.creation_mode, '')) = 'INVENTORYACCOUNTS'
+         AND UPPER(COALESCE(vm.post_status, 'PENDING')) = 'POSTED'
+         AND (vd.record_status IS NULL OR TRIM(UPPER(vd.record_status)) = 'ACTIVE')
+         AND vd.credit_amount > 0
+     ) osb ON true
      ${where}
      ORDER BY p.purchase_date DESC NULLS LAST, p.purchase_id DESC
      LIMIT $${params.length - 1} OFFSET $${params.length}`,

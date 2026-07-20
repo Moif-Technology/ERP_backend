@@ -100,13 +100,12 @@ export async function searchCustomers(pool, companyId, search, limit = 40) {
  * Customer is linked to its ledger via account_head_master.account_no == customer_code.
  * When postedOnly is true, only POSTED voucher lines count (for receipt / settlement).
  */
-export async function getCustomerOsBalance(db, companyId, customerId, { postedOnly = false, branchId = null } = {}) {
+export async function getCustomerOsBalance(db, companyId, customerId, { postedOnly = false } = {}) {
   const postedFilter = postedOnly
     ? `AND EXISTS (
          SELECT 1
          FROM accounts.voucher_master vm
          WHERE vm.company_id = vd.company_id
-           AND vm.branch_id = vd.branch_id
            AND vm.voucher_master_id = vd.voucher_master_id
            AND (vm.record_status IS NULL OR TRIM(UPPER(vm.record_status)) = 'ACTIVE')
            AND UPPER(COALESCE(vm.post_status, 'PENDING')) = 'POSTED'
@@ -123,10 +122,9 @@ export async function getCustomerOsBalance(db, companyId, customerId, { postedOn
          ON vd.company_id = ah.company_id
         AND vd.account_id = ah.account_id
         AND (vd.record_status IS NULL OR TRIM(UPPER(vd.record_status)) = 'ACTIVE')
-        AND ($3::int IS NULL OR vd.branch_id = $3::int)
         ${postedFilter}
        WHERE cm.company_id = $1 AND cm.customer_id = $2`,
-      [companyId, customerId, branchId],
+      [companyId, customerId],
     );
     return Number(rows[0]?.os || 0);
   } catch (e) {

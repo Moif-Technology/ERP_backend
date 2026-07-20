@@ -22,6 +22,32 @@ export async function createQuotation(req, res) {
   }
 }
 
+export async function updateQuotation(req, res) {
+  try {
+    const result = await quotationService.updateQuotation(
+      pool,
+      req.params.quotationId,
+      req.body,
+      req.authStaff,
+    );
+    return res.json(result);
+  } catch (err) {
+    if (err.status) {
+      return res.status(err.status).json({ message: err.message });
+    }
+    if (err.code === '42P01' || err.code === '23503') {
+      return res.status(503).json({
+        message:
+          err.code === '42P01'
+            ? 'Quotation tables not installed.'
+            : 'Invalid reference (customer, product, or branch).',
+      });
+    }
+    console.error(err);
+    return res.status(500).json({ message: 'Could not update quotation' });
+  }
+}
+
 export async function getQuotation(req, res) {
   try {
     const result = await quotationService.getQuotation(pool, req.authStaff, req.params.quotationId);

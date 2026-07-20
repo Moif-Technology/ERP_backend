@@ -15,6 +15,7 @@ voucherRouter.get(
 
 voucherRouter.use(requireAnyFeature(['backoffice.accounts', 'backoffice.vouchers', 'accounts', 'accounts.vouchers', 'accounts.ledger']));
 voucherRouter.get('/types', voucherController.listVoucherTypes);
+voucherRouter.get('/next-number', voucherController.peekNextVoucherNo);
 voucherRouter.get('/trial-balance', voucherController.getTrialBalance);
 voucherRouter.get('/balance-sheet', voucherController.getBalanceSheet);
 voucherRouter.get('/profit-and-loss', voucherController.getProfitAndLoss);
