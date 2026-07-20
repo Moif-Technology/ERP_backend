@@ -175,6 +175,100 @@ export async function insertQuotationMaster(client, row) {
   );
 }
 
+export async function updateQuotationMaster(client, row) {
+  const {
+    companyId,
+    quotationId,
+    quotationDate,
+    customerRefNo,
+    customerRefDate,
+    staffId,
+    customerId,
+    customerName,
+    customerAddress,
+    contactPerson,
+    quotationAmount,
+    discountAmount,
+    quotationTerms,
+    remarks,
+    subtotalAmount,
+    taxableAmount,
+    tax1Amount,
+    tax2Amount,
+    tax3Amount,
+    tax1Rate,
+    tax2Rate,
+    tax3Rate,
+    roundOffAdjustment,
+    modifiedBy,
+  } = row;
+
+  const { rowCount } = await client.query(
+    `UPDATE ops.quotation_master SET
+        quotation_date = $3,
+        customer_ref_no = $4,
+        customer_ref_date = $5,
+        staff_id = $6,
+        customer_id = $7,
+        customer_name = $8,
+        customer_address = $9,
+        contact_person = $10,
+        quotation_amount = $11,
+        discount_amount = $12,
+        quotation_terms = $13,
+        remarks = $14,
+        subtotal_amount = $15,
+        taxable_amount = $16,
+        tax_1_amount = $17,
+        tax_2_amount = $18,
+        tax_3_amount = $19,
+        tax_1_rate = $20,
+        tax_2_rate = $21,
+        tax_3_rate = $22,
+        round_off_adjustment = $23,
+        modified_by = $24,
+        modified_at = CURRENT_TIMESTAMP
+     WHERE company_id = $1 AND quotation_id = $2
+       AND COALESCE(post_status, 'UNPOSTED') = 'UNPOSTED'
+       AND COALESCE(is_deleted, FALSE) = FALSE`,
+    [
+      companyId,
+      quotationId,
+      quotationDate,
+      customerRefNo,
+      customerRefDate,
+      staffId,
+      customerId,
+      customerName,
+      customerAddress,
+      contactPerson,
+      quotationAmount,
+      discountAmount,
+      quotationTerms,
+      remarks,
+      subtotalAmount,
+      taxableAmount,
+      tax1Amount,
+      tax2Amount,
+      tax3Amount,
+      tax1Rate,
+      tax2Rate,
+      tax3Rate,
+      roundOffAdjustment,
+      modifiedBy,
+    ],
+  );
+  return rowCount;
+}
+
+export async function deleteQuotationChildren(client, companyId, quotationId) {
+  await client.query(
+    `DELETE FROM ops.quotation_child
+     WHERE company_id = $1 AND quotation_id = $2`,
+    [companyId, quotationId],
+  );
+}
+
 export async function insertQuotationChild(client, row) {
   const {
     companyId,

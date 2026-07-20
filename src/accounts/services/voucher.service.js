@@ -23,6 +23,36 @@ function resolveCompanyBranch(authStaff, body) {
   return { companyId, branchId };
 }
 
+/**
+ * Party O/S like inventory Sale/Purchase:
+ * - SV (sales): customer debit lines keep outstanding = debit
+ * - PUR (purchase): supplier credit lines keep outstanding = credit
+ * Other voucher types stay fully settled (0).
+ */
+function resolveLineOutstandingBalance(voucherTypeCode, line) {
+  if (line?.outstandingBalance != null && line.outstandingBalance !== '') {
+    const explicit = Number(line.outstandingBalance);
+    if (Number.isFinite(explicit)) return Math.max(0, explicit);
+  }
+  const code = String(voucherTypeCode || '').toUpperCase();
+  const dr = Number(line?.debitAmount || 0);
+  const cr = Number(line?.creditAmount || 0);
+  if (code === 'SV' && dr > 0) return dr;
+  if (code === 'PUR' && cr > 0) return cr;
+  return 0;
+}
+
+async function resolveVoucherTypeCode(db, companyId, voucherTypeId) {
+  if (!voucherTypeId) return '';
+  const { rows } = await db.query(
+    `SELECT voucher_type_code FROM accounts.voucher_type_master
+     WHERE company_id = $1 AND voucher_type_id = $2
+     LIMIT 1`,
+    [companyId, voucherTypeId],
+  );
+  return String(rows[0]?.voucher_type_code || '').toUpperCase();
+}
+
 function parseOptionalBranchId(raw) {
   if (raw == null || String(raw).trim() === '') return undefined;
   const n = Number(raw);
@@ -120,18 +150,21 @@ export async function createVoucher(pool, authStaff, body) {
     const voucherMasterId = await voucherRepo.nextVoucherMasterId(client, companyId, branchId);
     const autoVoucherNo = await voucherRepo.nextAutoVoucherNo(client, companyId, branchId, voucherTypeId);
     const prefix = await voucherRepo.getVoucherPrefix(client, companyId, voucherTypeId);
+    const typeCode = await resolveVoucherTypeCode(client, companyId, voucherTypeId);
     const createdBy = authStaff.staff_name || authStaff.user_name || 'system';
+    // NULL so manual SV/PUR appear in orphan outstanding (receipt/payment allocation)
+    const voucherPostedId = (typeCode === 'SV' || typeCode === 'PUR') ? null : 0;
 
     await voucherRepo.insertVoucherMaster(client, {
       companyId, branchId, voucherMasterId, voucherTypeId,
       autoVoucherNo, voucherPrefix: prefix,
       voucherDate: voucherDate || new Date(),
-      referenceNo: referenceNo || null,
+      referenceNo: referenceNo || `${prefix}${autoVoucherNo}`,
       voucherAmount: totalDebit,
       remarks: remarks || null,
       postStatus: 'PENDING',
       creationMode: 'MANUAL',
-      voucherPostedId: 0,
+      voucherPostedId,
       counterCloseNo: 0,
       recordStatus: 'ACTIVE',
       createdBy,
@@ -139,14 +172,16 @@ export async function createVoucher(pool, authStaff, body) {
 
     let detailIdBase = await voucherRepo.nextVoucherDetailId(client, companyId, branchId);
     for (const line of lines) {
+      const debitAmount = Number(line.debitAmount || 0);
+      const creditAmount = Number(line.creditAmount || 0);
       await voucherRepo.insertVoucherDetail(client, {
         companyId, branchId,
         voucherDetailId: detailIdBase++,
         voucherMasterId,
         accountId: Number(line.accountId),
-        debitAmount: Number(line.debitAmount || 0),
-        creditAmount: Number(line.creditAmount || 0),
-        outstandingBalance: 0,
+        debitAmount,
+        creditAmount,
+        outstandingBalance: resolveLineOutstandingBalance(typeCode, line),
         narration: line.narration || null,
         postStatus: 'PENDING',
         recordStatus: 'ACTIVE',
@@ -159,6 +194,7 @@ export async function createVoucher(pool, authStaff, body) {
       autoVoucherNo,
       voucherPrefix: prefix,
       voucherNo: `${prefix}${autoVoucherNo}`,
+      referenceNo: referenceNo || `${prefix}${autoVoucherNo}`,
       voucherAmount: totalDebit,
     };
   });
@@ -220,6 +256,11 @@ export async function updateVoucher(pool, authStaff, voucherMasterId, body) {
 
       await voucherRepo.deleteVoucherDetails(client, companyId, branchId, voucherMasterId);
       const createdBy = authStaff.staff_name || authStaff.user_name || 'system';
+      const typeCode = await resolveVoucherTypeCode(
+        client,
+        companyId,
+        existing.master.voucher_type_id || existing.master.voucherTypeId,
+      );
       let detailIdBase = await voucherRepo.nextVoucherDetailId(client, companyId, branchId);
       for (const line of lines) {
         await voucherRepo.insertVoucherDetail(client, {
@@ -229,7 +270,7 @@ export async function updateVoucher(pool, authStaff, voucherMasterId, body) {
           accountId: Number(line.accountId),
           debitAmount: Number(line.debitAmount || 0),
           creditAmount: Number(line.creditAmount || 0),
-          outstandingBalance: 0,
+          outstandingBalance: resolveLineOutstandingBalance(typeCode, line),
           narration: line.narration || null,
           postStatus: existing.master.post_status,
           recordStatus: 'ACTIVE',
@@ -322,6 +363,37 @@ export async function deleteVoucher(pool, authStaff, voucherMasterId) {
     await voucherRepo.softDeleteVoucher(client, companyId, branchId, voucherMasterId);
     return { deleted: true, purchaseOutstandingRestored };
   });
+}
+
+/** Preview next auto voucher no for a type/branch without consuming it. */
+export async function peekNextVoucherNo(pool, authStaff, query = {}) {
+  const companyId = Number(authStaff.company_id);
+  let voucherTypeId = query.voucherTypeId != null ? Number(query.voucherTypeId) : null;
+  if ((!Number.isFinite(voucherTypeId) || voucherTypeId < 1) && query.voucherTypeCode) {
+    voucherTypeId = await voucherRepo.getVoucherTypeIdByCode(
+      pool, companyId, String(query.voucherTypeCode).trim(),
+    );
+  }
+  if (!Number.isFinite(voucherTypeId) || voucherTypeId < 1) {
+    const err = new Error('voucherTypeId or voucherTypeCode is required');
+    err.status = 400;
+    throw err;
+  }
+  let branchId = query.branchId != null ? Number(query.branchId) : Number(authStaff.branch_id);
+  if (!Number.isFinite(branchId) || branchId < 1) {
+    const err = new Error('Branch is required');
+    err.status = 400;
+    throw err;
+  }
+  const autoVoucherNo = await voucherRepo.nextAutoVoucherNo(pool, companyId, branchId, voucherTypeId);
+  const voucherPrefix = await voucherRepo.getVoucherPrefix(pool, companyId, voucherTypeId);
+  return {
+    voucherTypeId,
+    branchId,
+    autoVoucherNo,
+    voucherPrefix: voucherPrefix || '',
+    voucherNo: `${voucherPrefix || ''}${autoVoucherNo}`,
+  };
 }
 
 export async function listVoucherTypes(pool, authStaff) {

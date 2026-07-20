@@ -108,10 +108,9 @@ function mapChildToApi(row) {
 }
 
 /**
- * Creates a quotation. Document number comes from core.document_sequence (sequence_code `quotation`, per company + branch).
- * Tax fields are stored as zero until tax is implemented.
+ * Shared validation + line/header amount prep for create and update.
  */
-export async function createQuotation(pool, body, authStaff) {
+async function prepareQuotationDocument(pool, body, authStaff) {
   const companyId = Number(authStaff.company_id);
   if (!Number.isFinite(companyId) || companyId < 1) {
     const err = new Error('Invalid company on session');
@@ -149,26 +148,33 @@ export async function createQuotation(pool, body, authStaff) {
   const remarks = sliceOrNull(body.remarks, 500);
 
   const customerIdOpt = parseOptionalCustomerId(body.customerId);
+  if (customerIdOpt == null) {
+    const err = new Error('Customer is required');
+    err.status = 400;
+    throw err;
+  }
   let customerName = sliceOrNull(body.customerName, 100);
   let customerAddress = sliceOrNull(body.customerAddress, 250);
   let contactPerson = sliceOrNull(body.contactPerson, 100);
 
-  if (customerIdOpt != null) {
-    const cust = await quotationRepo.findCustomerForQuotation(pool, companyId, customerIdOpt);
-    if (!cust) {
-      const err = new Error('Customer not found');
-      err.status = 400;
-      throw err;
-    }
-    if (!customerName) customerName = sliceOrNull(cust.customer_name, 100) || null;
-    if (!customerAddress) customerAddress = sliceOrNull(cust.address, 250) || null;
-    if (!contactPerson) contactPerson = sliceOrNull(cust.contact_person, 100) || null;
+  const cust = await quotationRepo.findCustomerForQuotation(pool, companyId, customerIdOpt);
+  if (!cust) {
+    const err = new Error('Customer not found');
+    err.status = 400;
+    throw err;
   }
+  if (!customerName) customerName = sliceOrNull(cust.customer_name, 100) || null;
+  if (!customerAddress) customerAddress = sliceOrNull(cust.address, 250) || null;
+  if (!contactPerson) contactPerson = sliceOrNull(cust.contact_person, 100) || null;
 
   const staffBusinessId =
     authStaff.staff_id != null ? Number(authStaff.staff_id) : null;
-  const userLabel = trimOrEmpty(authStaff.staff_name).slice(0, 50) || 'system';
   const staffPk = actorStaffPk(authStaff);
+  if (staffPk == null) {
+    const err = new Error('Invalid staff on session');
+    err.status = 400;
+    throw err;
+  }
 
   const normalizedLines = [];
   for (let i = 0; i < linesIn.length; i++) {
@@ -188,13 +194,15 @@ export async function createQuotation(pool, body, authStaff) {
     const qty = parseQty(L.qty, 1);
     const unitPrice = parseMoney(L.unitPrice, 0);
     const itemDiscount = parseMoney(L.itemDiscount ?? L.item_discount, 0);
+    const tax1Rate = parseMoney(L.taxPercent ?? L.tax1Rate ?? L.tax_1_rate, 0);
     const sub = Math.round((qty * unitPrice - itemDiscount) * 100) / 100;
     if (sub < 0) {
       const err = new Error(`Line ${i + 1}: invalid amounts`);
       err.status = 400;
       throw err;
     }
-    const lineTotal = sub;
+    const tax1Amount = Math.round(sub * (tax1Rate / 100) * 100) / 100;
+    const lineTotal = Math.round((sub + tax1Amount) * 100) / 100;
     const desc =
       sliceOrNull(L.description ?? L.productDescription, 1000) ||
       sliceOrNull(prow.short_name || prow.product_name, 1000) ||
@@ -211,74 +219,159 @@ export async function createQuotation(pool, body, authStaff) {
       originName: sliceOrNull(L.originName ?? L.origin_name, 20),
       stockStatus: sliceOrNull(L.stockStatus ?? L.stock_status, 20),
       subtotalAmount: sub,
+      tax1Rate,
+      tax1Amount,
       lineTotal,
     });
   }
 
   const linesSubtotal = normalizedLines.reduce((s, L) => s + L.subtotalAmount, 0);
+  const linesTax = normalizedLines.reduce((s, L) => s + L.tax1Amount, 0);
   const subRounded = Math.round(linesSubtotal * 100) / 100;
+  const taxRounded = Math.round(linesTax * 100) / 100;
   const disc = Math.min(Math.max(headerDiscount, 0), subRounded);
+  const taxableAfterDisc = Math.round((subRounded - disc) * 100) / 100;
+  const effTaxRate =
+    subRounded > 0.0001 ? Math.round((taxRounded / subRounded) * 10000) / 100 : 0;
+  const headerTax =
+    subRounded > 0.0001
+      ? Math.round(taxableAfterDisc * (taxRounded / subRounded) * 100) / 100
+      : 0;
   const net =
-    Math.round((subRounded - disc + roundOff) * 100) / 100;
+    Math.round((taxableAfterDisc + headerTax + roundOff) * 100) / 100;
+
+  return {
+    companyId,
+    branchId,
+    quotationDate,
+    customerRefNo,
+    customerRefDate,
+    quotationTerms,
+    remarks,
+    customerIdOpt,
+    customerName,
+    customerAddress,
+    contactPerson,
+    staffBusinessId,
+    staffPk,
+    normalizedLines,
+    subRounded,
+    taxableAfterDisc,
+    headerTax,
+    effTaxRate,
+    disc,
+    roundOff,
+    net,
+  };
+}
+
+function mapPreparedResult(quotationMeta, normalizedLines, lineResults, prep) {
+  return {
+    quotation: {
+      ...quotationMeta,
+      customerId: prep.customerIdOpt,
+      customerName: prep.customerName,
+      customerAddress: prep.customerAddress,
+      contactPerson: prep.contactPerson,
+      quotationAmount: String(prep.net),
+      discountAmount: String(prep.disc),
+      quotationTerms: prep.quotationTerms,
+      remarks: prep.remarks,
+      recordStatus: 'ACTIVE',
+      postStatus: quotationMeta.postStatus || 'UNPOSTED',
+      subtotalAmount: String(prep.subRounded),
+      taxableAmount: String(prep.taxableAfterDisc),
+      tax1Amount: String(prep.headerTax),
+      tax1Rate: String(prep.effTaxRate),
+      roundOffAdjustment: String(prep.roundOff),
+    },
+    lines: lineResults.map((r) => ({
+      quotationChildId: r.quotationChildId,
+      productId: r.productId,
+      barcode: r.barcode,
+      productDescription: r.productDescription,
+      unitName: r.unitName,
+      qty: String(r.qty),
+      unitPrice: String(r.unitPrice),
+      itemDiscount: String(r.itemDiscount),
+      locationCode: r.locationCode,
+      subtotalAmount: String(r.subtotalAmount),
+      tax1Amount: String(r.tax1Amount),
+      tax1Rate: String(r.tax1Rate),
+      lineTotal: String(r.lineTotal),
+      originName: r.originName,
+      stockStatus: r.stockStatus,
+    })),
+  };
+}
+
+/**
+ * Creates a quotation. Document number comes from core.document_sequence (sequence_code `QUOTATION`, per company + branch).
+ */
+export async function createQuotation(pool, body, authStaff) {
+  const prep = await prepareQuotationDocument(pool, body, authStaff);
 
   return withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
-      `ops.quotation_id:${companyId}`,
+      `ops.quotation_id:${prep.companyId}`,
     ]);
-    const quotationId = await quotationRepo.nextQuotationId(client, companyId);
+    const quotationId = await quotationRepo.nextQuotationId(client, prep.companyId);
 
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
-      `ops.quotation_child_id:${companyId}`,
+      `ops.quotation_child_id:${prep.companyId}`,
     ]);
 
     const quotationNo = await nextDocNo(client, {
-      companyId,
-      branchId,
+      companyId: prep.companyId,
+      branchId: prep.branchId,
       sequenceCode: 'QUOTATION',
       fiscalYear: new Date().getFullYear(),
     });
+    const noMatch = String(quotationNo).match(/^(.*?)(\d+)$/);
+    const docPrefix = noMatch ? noMatch[1] : 'QT-';
+    const seqNum = noMatch ? Number(noMatch[2]) : 0;
 
     await quotationRepo.insertQuotationMaster(client, {
-      companyId,
+      companyId: prep.companyId,
       quotationId,
-      branchId,
+      branchId: prep.branchId,
       quotationNo,
-      quotationDate,
-      customerRefNo,
-      customerRefDate,
-      staffId: Number.isFinite(staffBusinessId) && staffBusinessId >= 1 ? staffBusinessId : null,
+      quotationDate: prep.quotationDate,
+      customerRefNo: prep.customerRefNo,
+      customerRefDate: prep.customerRefDate,
+      staffId: Number.isFinite(prep.staffBusinessId) && prep.staffBusinessId >= 1 ? prep.staffBusinessId : null,
       quotationStatus: 'DRAFT',
-      customerId: customerIdOpt,
-      customerName,
-      customerAddress,
-      contactPerson,
-      quotationAmount: net,
-      discountAmount: disc,
-      quotationTerms,
-      remarks,
+      customerId: prep.customerIdOpt,
+      customerName: prep.customerName,
+      customerAddress: prep.customerAddress,
+      contactPerson: prep.contactPerson,
+      quotationAmount: prep.net,
+      discountAmount: prep.disc,
+      quotationTerms: prep.quotationTerms,
+      remarks: prep.remarks,
       recordStatus: 'ACTIVE',
       postStatus: 'UNPOSTED',
       prefix: docPrefix,
       quotationNoNumeric: seqNum,
-      subtotalAmount: subRounded,
-      taxableAmount: 0,
-      tax1Amount: 0,
+      subtotalAmount: prep.subRounded,
+      taxableAmount: prep.taxableAfterDisc,
+      tax1Amount: prep.headerTax,
       tax2Amount: 0,
       tax3Amount: 0,
-      tax1Rate: 0,
+      tax1Rate: prep.effTaxRate,
       tax2Rate: 0,
       tax3Rate: 0,
-      roundOffAdjustment: roundOff,
-      createdBy: userLabel,
-      modifiedBy: userLabel,
-      createdByStaffId: staffPk,
+      roundOffAdjustment: prep.roundOff,
+      createdBy: prep.staffPk,
+      modifiedBy: prep.staffPk,
+      createdByStaffId: prep.staffPk,
     });
 
     const lineResults = [];
-    for (const L of normalizedLines) {
-      const quotationChildId = await quotationRepo.nextQuotationChildId(client, companyId);
+    for (const L of prep.normalizedLines) {
+      const quotationChildId = await quotationRepo.nextQuotationChildId(client, prep.companyId);
       await quotationRepo.insertQuotationChild(client, {
-        companyId,
+        companyId: prep.companyId,
         quotationChildId,
         quotationId,
         productId: L.productId,
@@ -291,21 +384,117 @@ export async function createQuotation(pool, body, authStaff) {
         locationCode: L.locationCode,
         recordStatus: 'ACTIVE',
         postStatus: 'UNPOSTED',
-        tax1Amount: 0,
+        tax1Amount: L.tax1Amount,
         tax2Amount: 0,
         tax3Amount: 0,
-        tax1Rate: 0,
+        tax1Rate: L.tax1Rate,
         tax2Rate: 0,
         tax3Rate: 0,
         subtotalAmount: L.subtotalAmount,
         lineTotal: L.lineTotal,
         originName: L.originName,
         stockStatus: L.stockStatus,
-        createdBy: userLabel,
-        modifiedBy: userLabel,
+        createdBy: prep.staffPk,
+        modifiedBy: prep.staffPk,
       });
-      lineResults.push({
+      lineResults.push({ quotationChildId, ...L });
+    }
+
+    return mapPreparedResult(
+      {
+        quotationId,
+        branchId: prep.branchId,
+        quotationNo,
+        quotationDate: prep.quotationDate.toISOString(),
+        customerRefNo: prep.customerRefNo,
+        customerRefDate: prep.customerRefDate ? prep.customerRefDate.toISOString() : null,
+        staffId: Number.isFinite(prep.staffBusinessId) && prep.staffBusinessId >= 1 ? prep.staffBusinessId : null,
+        quotationStatus: 'DRAFT',
+        postStatus: 'UNPOSTED',
+      },
+      prep.normalizedLines,
+      lineResults,
+      prep,
+    );
+  });
+}
+
+/**
+ * Updates an unposted quotation in place (header + replace all lines).
+ */
+export async function updateQuotation(pool, quotationIdRaw, body, authStaff) {
+  const quotationId = Number(quotationIdRaw);
+  if (!Number.isFinite(quotationId) || quotationId < 1) {
+    const err = new Error('Invalid quotation id');
+    err.status = 400;
+    throw err;
+  }
+
+  const prep = await prepareQuotationDocument(pool, body, authStaff);
+  const existing = await quotationRepo.getQuotationByBusinessId(pool, prep.companyId, quotationId);
+  if (!existing) {
+    const err = new Error('Quotation not found');
+    err.status = 404;
+    throw err;
+  }
+  const postStatus = String(existing.master.post_status || 'UNPOSTED').toUpperCase();
+  if (postStatus === 'POSTED') {
+    const err = new Error('Posted quotation cannot be updated');
+    err.status = 409;
+    throw err;
+  }
+  if (Number(existing.master.branch_id) !== Number(prep.branchId)) {
+    const err = new Error('Branch cannot be changed on update');
+    err.status = 400;
+    throw err;
+  }
+
+  return withTransaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
+      `ops.quotation_child_id:${prep.companyId}`,
+    ]);
+
+    const updated = await quotationRepo.updateQuotationMaster(client, {
+      companyId: prep.companyId,
+      quotationId,
+      quotationDate: prep.quotationDate,
+      customerRefNo: prep.customerRefNo,
+      customerRefDate: prep.customerRefDate,
+      staffId: Number.isFinite(prep.staffBusinessId) && prep.staffBusinessId >= 1 ? prep.staffBusinessId : null,
+      customerId: prep.customerIdOpt,
+      customerName: prep.customerName,
+      customerAddress: prep.customerAddress,
+      contactPerson: prep.contactPerson,
+      quotationAmount: prep.net,
+      discountAmount: prep.disc,
+      quotationTerms: prep.quotationTerms,
+      remarks: prep.remarks,
+      subtotalAmount: prep.subRounded,
+      taxableAmount: prep.taxableAfterDisc,
+      tax1Amount: prep.headerTax,
+      tax2Amount: 0,
+      tax3Amount: 0,
+      tax1Rate: prep.effTaxRate,
+      tax2Rate: 0,
+      tax3Rate: 0,
+      roundOffAdjustment: prep.roundOff,
+      modifiedBy: prep.staffPk,
+    });
+    if (!updated) {
+      const err = new Error('Quotation could not be updated (posted or missing)');
+      err.status = 409;
+      throw err;
+    }
+
+    await quotationRepo.deleteQuotationChildren(client, prep.companyId, quotationId);
+
+    const lineResults = [];
+    for (const L of prep.normalizedLines) {
+      const quotationChildId = await quotationRepo.nextQuotationChildId(client, prep.companyId);
+      await quotationRepo.insertQuotationChild(client, {
+        companyId: prep.companyId,
         quotationChildId,
+        quotationId,
         productId: L.productId,
         barcode: L.barcode,
         productDescription: L.productDescription,
@@ -314,53 +503,40 @@ export async function createQuotation(pool, body, authStaff) {
         unitPrice: L.unitPrice,
         itemDiscount: L.itemDiscount,
         locationCode: L.locationCode,
+        recordStatus: 'ACTIVE',
+        postStatus: 'UNPOSTED',
+        tax1Amount: L.tax1Amount,
+        tax2Amount: 0,
+        tax3Amount: 0,
+        tax1Rate: L.tax1Rate,
+        tax2Rate: 0,
+        tax3Rate: 0,
         subtotalAmount: L.subtotalAmount,
         lineTotal: L.lineTotal,
         originName: L.originName,
         stockStatus: L.stockStatus,
+        createdBy: prep.staffPk,
+        modifiedBy: prep.staffPk,
       });
+      lineResults.push({ quotationChildId, ...L });
     }
 
-    return {
-      quotation: {
+    return mapPreparedResult(
+      {
         quotationId,
-        branchId,
-        quotationNo,
-        quotationDate: quotationDate.toISOString(),
-        customerRefNo,
-        customerRefDate: customerRefDate ? customerRefDate.toISOString() : null,
-        staffId: Number.isFinite(staffBusinessId) && staffBusinessId >= 1 ? staffBusinessId : null,
-        quotationStatus: 'DRAFT',
-        customerId: customerIdOpt,
-        customerName,
-        customerAddress,
-        contactPerson,
-        quotationAmount: String(net),
-        discountAmount: String(disc),
-        quotationTerms,
-        remarks,
-        recordStatus: 'ACTIVE',
-        postStatus: 'UNPOSTED',
-        subtotalAmount: String(subRounded),
-        taxableAmount: '0',
-        roundOffAdjustment: String(roundOff),
+        branchId: prep.branchId,
+        quotationNo: existing.master.quotation_no,
+        quotationDate: prep.quotationDate.toISOString(),
+        customerRefNo: prep.customerRefNo,
+        customerRefDate: prep.customerRefDate ? prep.customerRefDate.toISOString() : null,
+        staffId: Number.isFinite(prep.staffBusinessId) && prep.staffBusinessId >= 1 ? prep.staffBusinessId : null,
+        quotationStatus: existing.master.quotation_status || 'DRAFT',
+        postStatus: existing.master.post_status || 'UNPOSTED',
       },
-      lines: lineResults.map((r) => ({
-        quotationChildId: r.quotationChildId,
-        productId: r.productId,
-        barcode: r.barcode,
-        productDescription: r.productDescription,
-        unitName: r.unitName,
-        qty: String(r.qty),
-        unitPrice: String(r.unitPrice),
-        itemDiscount: String(r.itemDiscount),
-        locationCode: r.locationCode,
-        subtotalAmount: String(r.subtotalAmount),
-        lineTotal: String(r.lineTotal),
-        originName: r.originName,
-        stockStatus: r.stockStatus,
-      })),
-    };
+      prep.normalizedLines,
+      lineResults,
+      prep,
+    );
   });
 }
 

@@ -3,6 +3,9 @@ import * as customerReceiptService from '../services/customerReceipt.service.js'
 function handleError(res, err, fallbackMsg) {
   if (err.status) return res.status(err.status).json({ message: err.message });
   if (err.code === '42P01') return res.status(503).json({ message: 'Accounts tables missing. Run migrations.' });
+  if (err.code === '23505') {
+    return res.status(409).json({ message: err.detail || err.message || 'Duplicate voucher number — try again' });
+  }
   console.error(err);
   return res.status(500).json({ message: fallbackMsg });
 }

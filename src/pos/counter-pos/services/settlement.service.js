@@ -39,12 +39,9 @@ export async function listCreditCustomers(authStaff, q, limit = 200) {
     .filter(c => c.osAmount > 0.005);
 }
 
-export async function getCustomerOutstandingBills(authStaff, customerId, query = {}) {
+export async function getCustomerOutstandingBills(authStaff, customerId) {
   const companyId = Number(authStaff.company_id);
   const cid = Number(customerId);
-  const branchId = Number.isFinite(Number(query.branchId))
-    ? Math.trunc(Number(query.branchId))
-    : (Number.isFinite(Number(authStaff.branch_id)) ? Math.trunc(Number(authStaff.branch_id)) : null);
   if (!Number.isFinite(cid) || cid < 1) {
     const e = new Error('Invalid customer'); e.status = 400; throw e;
   }
@@ -54,8 +51,8 @@ export async function getCustomerOutstandingBills(authStaff, customerId, query =
     const e = new Error('Customer not found'); e.status = 404; throw e;
   }
 
-  const ledgerOs = await customerRepo.getCustomerOsBalance(pool, companyId, cid, { postedOnly: true, branchId });
-  const rawBills = await settlementRepo.getOutstandingBills(pool, companyId, cid, { branchId });
+  const ledgerOs = await customerRepo.getCustomerOsBalance(pool, companyId, cid, { postedOnly: true });
+  const rawBills = await settlementRepo.getOutstandingBills(pool, companyId, cid);
   const bills = settlementRepo.reconcilePostedBills(rawBills);
   const billsSum = bills.reduce((s, b) => s + num(b.currentAmount), 0);
 
@@ -233,8 +230,8 @@ export async function saveCreditSettlement(authStaff, body) {
   try {
     await client.query('BEGIN');
 
-    const osAmount = await customerRepo.getCustomerOsBalance(client, companyId, customerId, { postedOnly: true, branchId });
-    const rawBills = await settlementRepo.getOutstandingBills(client, companyId, customerId, { branchId });
+    const osAmount = await customerRepo.getCustomerOsBalance(client, companyId, customerId, { postedOnly: true });
+    const rawBills = await settlementRepo.getOutstandingBills(client, companyId, customerId);
     const bills = settlementRepo.reconcilePostedBills(rawBills);
     const payableTotal = bills.reduce((s, b) => s + num(b.currentAmount), 0);
 

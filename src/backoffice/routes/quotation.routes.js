@@ -10,3 +10,4 @@ quotationRouter.use(requireFeature('backoffice.sales_quotation'));
 quotationRouter.post('/', quotationController.createQuotation);
 quotationRouter.get('/', quotationController.listQuotations);
 quotationRouter.get('/:quotationId', quotationController.getQuotation);
+quotationRouter.put('/:quotationId', quotationController.updateQuotation);

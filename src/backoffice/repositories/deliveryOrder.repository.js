@@ -168,6 +168,99 @@ export async function insertDeliveryOrderMaster(client, row) {
   );
 }
 
+export async function updateDeliveryOrderMaster(client, row) {
+  const {
+    companyId,
+    deliveryOrderId,
+    deliveryOrderDate,
+    quotationNo,
+    quotationId,
+    customerLpoNo,
+    customerId,
+    customerName,
+    salesmanId,
+    counterNo,
+    discount,
+    subTotal,
+    taxableAmount,
+    tax1Amount,
+    tax2Amount,
+    tax3Amount,
+    tax1Rate,
+    tax2Rate,
+    tax3Rate,
+    roundOffAdjustment,
+    totalAmount,
+    remarks,
+    deliveryBy,
+    modifiedBy,
+  } = row;
+
+  const { rowCount } = await client.query(
+    `UPDATE ops.delivery_order_master SET
+        delivery_order_date = $3,
+        quotation_no = $4,
+        quotation_id = $5,
+        customer_lpo_no = $6,
+        customer_id = $7,
+        customer_name = $8,
+        salesman_id = $9,
+        counter_no = $10,
+        discount = $11,
+        sub_total = $12,
+        taxable_amount = $13,
+        tax_1_amount = $14,
+        tax_2_amount = $15,
+        tax_3_amount = $16,
+        tax_1_rate = $17,
+        tax_2_rate = $18,
+        tax_3_rate = $19,
+        round_off_adjustment = $20,
+        total_amount = $21,
+        remarks = $22,
+        delivery_by = $23,
+        modified_by = $24,
+        modified_at = CURRENT_TIMESTAMP
+     WHERE company_id = $1 AND delivery_order_id = $2
+       AND COALESCE(post_status, 'UNPOSTED') = 'UNPOSTED'`,
+    [
+      companyId,
+      deliveryOrderId,
+      deliveryOrderDate,
+      quotationNo,
+      quotationId,
+      customerLpoNo,
+      customerId,
+      customerName,
+      salesmanId,
+      counterNo,
+      discount,
+      subTotal,
+      taxableAmount,
+      tax1Amount,
+      tax2Amount,
+      tax3Amount,
+      tax1Rate,
+      tax2Rate,
+      tax3Rate,
+      roundOffAdjustment,
+      totalAmount,
+      remarks,
+      deliveryBy,
+      modifiedBy,
+    ],
+  );
+  return rowCount;
+}
+
+export async function deleteDeliveryOrderChildren(client, companyId, deliveryOrderId) {
+  await client.query(
+    `DELETE FROM ops.delivery_order_child
+     WHERE company_id = $1 AND delivery_order_id = $2`,
+    [companyId, deliveryOrderId],
+  );
+}
+
 export async function insertDeliveryOrderChild(client, row) {
   const {
     companyId,

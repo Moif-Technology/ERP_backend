@@ -2,6 +2,7 @@
  * Back-office sales: quotation / DO refs (029) + receipt ledger (031).
  */
 import { saleOnlyFilter } from './salesReturnEntry.repository.js';
+import { VD_RECEIVABLE_OS_EXPR } from '../../accounts/lib/voucherOutstanding.js';
 
 export async function getSaleMaster(pool, companyId, salesId) {
   const { rows } = await pool.query(
@@ -270,12 +271,7 @@ export async function listSales(pool, companyId, branchId, limit, offset) {
        LIMIT 1
      ) sv ON true
      LEFT JOIN LATERAL (
-       SELECT COALESCE(SUM(
-         GREATEST(
-           COALESCE(NULLIF(vd.outstanding_balance, 0), vd.debit_amount - vd.credit_amount, 0),
-           0
-         )
-       ), 0)::numeric AS outstanding_balance
+       SELECT COALESCE(SUM(${VD_RECEIVABLE_OS_EXPR}), 0)::numeric AS outstanding_balance
        FROM accounts.voucher_master vm
        INNER JOIN accounts.voucher_detail vd
          ON vd.company_id = vm.company_id
