@@ -49,10 +49,32 @@ export async function authMiddleware(req, res, next) {
 
     // POS tokens (scope: 'pos') must not access ERP routes — scope isolation.
     // Whitelist: POS namespaces + shared read-only lookup endpoints POS genuinely needs.
-    const POS_ALLOWED_PREFIXES = ['/api/pos/', '/api/counter-pos/'];
+    const POS_ALLOWED_PREFIXES = ['/api/pos/', '/api/counter-pos/', '/api/salon-pos/'];
+    // Shared catalogue endpoints every POS product needs to render its grid:
+    // categories, the item list, the floor plan and customer lookup. Without
+    // these a POS-scoped token can log in but the product grid, area strip and
+    // chair/table picker all come back empty.
+    //
+    // Deliberately NOT whitelisted: /api/staff (backoffice staff administration
+    // — POS gets its people from /api/<product>/staff-list and /stylists) and
+    // anything under /api/accounts, /api/hr, /api/admin.
+    const POS_ALLOWED_CATALOGUE = [
+      '/api/groups',
+      '/api/sub-groups',
+      '/api/areas',
+      '/api/tables',
+      '/api/products',
+      '/api/customers',
+    ];
     const POS_ALLOWED_EXACT = ['/api/app-parameters/gvtax', '/api/parameters/POS'];
-    const isPosAllowed = POS_ALLOWED_PREFIXES.some(p => req.originalUrl.startsWith(p))
-      || POS_ALLOWED_EXACT.some(p => req.originalUrl.startsWith(p));
+    // Compare against the PATH only. req.originalUrl carries the query string,
+    // so matching a catalogue route needs the '?' stripped first
+    // (e.g. '/api/products?groupId=1').
+    const reqPath = req.originalUrl.split('?')[0];
+    const isPosAllowed =
+      POS_ALLOWED_PREFIXES.some(p => reqPath.startsWith(p))
+      || POS_ALLOWED_EXACT.some(p => reqPath.startsWith(p))
+      || POS_ALLOWED_CATALOGUE.some(p => reqPath === p || reqPath.startsWith(`${p}/`));
     if (jwtScope === 'pos' && !isPosAllowed) {
       return res.status(403).json({ message: 'POS token cannot access ERP routes' });
     }

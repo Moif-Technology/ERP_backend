@@ -1,7 +1,11 @@
 import { pool } from '../../config/db.js';
 import * as stationRepo from '../repositories/station.repository.js';
 
-const VALID_TYPES = new Set(['BACKOFFICE', 'COUNTER_POS', 'RESTAURANT_POS']);
+// Must stay in sync with chk_station_type on core.station_master
+// (see database/migrations/104_salon_pos.sql).
+// Note the naming split: station types use UNDERSCORES (SALON_POS) while role
+// software types use HYPHENS (SALON-POS). They are different vocabularies.
+const VALID_TYPES = new Set(['BACKOFFICE', 'COUNTER_POS', 'RESTAURANT_POS', 'SALON_POS']);
 
 export async function listStations(req, res) {
   try {

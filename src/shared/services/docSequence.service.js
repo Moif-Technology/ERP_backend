@@ -93,6 +93,9 @@ export const SEQUENCE_DEFS = {
   PRO_REQUEST:    { module: 'RESTAURANT', prefix: 'PRQ', padLength: 4, resetRule: 'YEARLY', sequenceName: 'Product Transfer Request' },
   PRO_RECEIPT:    { module: 'RESTAURANT', prefix: 'PRC', padLength: 4, resetRule: 'YEARLY', sequenceName: 'Product Transfer Receipt' },
 
+  // ── SALON — Transactional ────────────────────────────────────────────────
+  SALON_JOB:      { module: 'SALON', prefix: 'SJ',  padLength: 4, resetRule: 'NEVER',  sequenceName: 'Salon Job' },
+
   // ── COUNTER_POS — Transactional ──────────────────────────────────────────
   HOLD_BILL:      { module: 'COUNTER_POS', prefix: 'HLD', padLength: 4, resetRule: 'NEVER',  sequenceName: 'Hold Bill' },
   COUNTER_CLOSE:  { module: 'COUNTER_POS', prefix: 'CCL', padLength: 4, resetRule: 'YEARLY', sequenceName: 'Counter Close' },

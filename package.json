@@ -6,6 +6,10 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
+    "migrate": "node scripts/run-migration.mjs",
+    "migrate:salon": "node scripts/run-migration.mjs 104_salon_pos.sql",
+    "migrate:salon:down": "node scripts/run-migration.mjs 104_salon_pos.down.sql",
+    "seed:salon": "node scripts/seed-salon-tenant.mjs",
     "migrate:entitlements": "node scripts/run-entitlement-migration.mjs",
     "migrate:platform": "node scripts/run-platform-migration.mjs",
     "migrate:roles": "node scripts/run-072-migration.mjs",

@@ -76,16 +76,37 @@ export async function insertSubGroup(client, params) {
   return mapRow(rows[0]);
 }
 
-export async function listSubGroupsByCompanyBranch(pool, companyId, branchId, groupIdFilter) {
-  const params = [companyId, branchId];
+/**
+ * Sub-groups for a company. Deliberately NOT filtered by branch.
+ *
+ * biz.sub_group_master is UNIQUE (company_id, sub_group_id) and
+ * UNIQUE (company_id, sub_group_code) — both company-wide. A sub_group_id
+ * therefore belongs to exactly one branch and no other branch can ever reuse it,
+ * which makes the stored branch_id a record of where the row was created rather
+ * than a scope. Filtering the list by it only hid rows.
+ *
+ * That bit the salon till directly: POS passes its STATION id in the branchId
+ * slot (station 2), while the seeded sub-groups carry branch 1, so the till's
+ * sub-group chips came back empty while backoffice on station 1 saw all nine.
+ * Duplicating rows per branch is not possible under the unique constraint, and
+ * offsetting the ids would break the join to core.product_master.subgroup_id,
+ * which stores the base id company-wide.
+ *
+ * Verified before changing: no company in either database has sub-groups under
+ * more than one branch_id, so no tenant loses branch separation here.
+ * `branchId` is still accepted and validated by the caller so an invalid branch
+ * is still rejected.
+ */
+export async function listSubGroupsByCompanyBranch(pool, companyId, _branchId, groupIdFilter) {
+  const params = [companyId];
   let sql = `SELECT sub_group_id, company_id, branch_id, group_id, sub_group_code,
                     sub_group_description, sub_group_description_arabic, r_status,
                     created_on, modified_on
              FROM biz.sub_group_master
-             WHERE company_id = $1 AND branch_id = $2
+             WHERE company_id = $1
                AND (r_status IS NULL OR r_status = 'ACTIVE')`;
   if (groupIdFilter != null && Number.isFinite(Number(groupIdFilter))) {
-    sql += ` AND group_id = $3`;
+    sql += ` AND group_id = $2`;
     params.push(Number(groupIdFilter));
   }
   sql += ` ORDER BY group_id ASC, sub_group_code ASC`;

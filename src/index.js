@@ -2,6 +2,8 @@ import compression from 'compression';
 import cors from 'cors';
 import express from 'express';
 import helmet from 'helmet';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import pinoHttp from 'pino-http';
 import { accountHeadRouter } from './accounts/routes/accountHead.routes.js';
 import { vatNatureRouter } from './accounts/routes/vatNature.routes.js';
@@ -87,6 +89,7 @@ import { hrRouter } from './hr/routes/hr.routes.js';
 import { buildLimiters } from './middleware/rateLimit.js';
 import { counterPosRouter } from './pos/counter-pos/counter-pos.routes.js';
 import { posRouter } from './pos/restaurant-pos/pos.routes.js';
+import { salonPosRouter } from './pos/salon/salon.routes.js';
 import { vanRouter } from './van/van.routes.js';
 import { vanMasterRouter } from './backoffice/routes/vanMaster.routes.js';
 import { routeMasterRouter } from './backoffice/routes/routeMaster.routes.js';
@@ -175,8 +178,22 @@ app.use('/api/counter-pos/device/enroll', authLimiter);
 app.use('/api/counter-pos/device/stations', authLimiter);
 app.use('/api/counter-pos/staff-list', authLimiter);
 app.use('/api/counter-pos/pin-login', authLimiter);
+// Salon public endpoints. staff-list enumerates staff names for any companyId
+// and pin-login brute-forces a 4-6 digit PIN against every staff row, so both
+// need the limiter. (/api/pos/* still lacks this — tracked separately.)
+app.use('/api/salon-pos/device/enroll', authLimiter);
+app.use('/api/salon-pos/device/stations', authLimiter);
+app.use('/api/salon-pos/staff-list', authLimiter);
+app.use('/api/salon-pos/pin-login', authLimiter);
+app.use('/api/salon-pos/login', authLimiter);
 app.use('/api', apiLimiter);
 app.use('/api', systemActivityLogger);
+
+// Electron auto-updater feed: electron-builder's "generic" provider just does
+// plain GETs for latest.yml + the nsis installer, so a static dir is enough —
+// no auth, no route logic. Drop new releases into api/updates/ on deploy.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+app.use('/updates', express.static(path.join(__dirname, '../updates')));
 
 // Liveness + DB readiness in one probe so the LB pulls a node with a dead DB.
 app.get('/health', async (_req, res) => {
@@ -235,6 +252,7 @@ app.use('/api/crm/notes', crmNoteRouter);
 app.use('/api/crm/dashboard', crmDashboardRouter);
 app.use('/api/pos',         posRouter);
 app.use('/api/counter-pos', counterPosRouter);
+app.use('/api/salon-pos',   salonPosRouter);
 app.use('/api/van',         vanRouter);
 app.use('/api/van-master',   vanMasterRouter);
 app.use('/api/route-master', routeMasterRouter);

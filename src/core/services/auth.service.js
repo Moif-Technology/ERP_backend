@@ -111,6 +111,35 @@ export async function loginWithCredentials(username, password) {
 const RESTAURANT_POS_ALLOWED_TYPES = new Set(['RESTAURANT-POS', 'ERP', '', null, undefined]);
 const COUNTER_POS_ALLOWED_TYPES    = new Set(['COUNTER-POS',    'ERP', '', null, undefined]);
 const VAN_ALLOWED_TYPES            = new Set(['VAN',            'ERP', '', null, undefined]);
+const SALON_POS_ALLOWED_TYPES      = new Set(['SALON-POS',      'ERP', '', null, undefined]);
+
+/**
+ * posType -> allowed role software types.
+ *
+ * This used to be a ternary chain that fell through to COUNTER_POS for any
+ * unrecognised posType, so a typo (or a new POS product) silently authorised
+ * staff under counter-POS rules. Unknown types now throw instead.
+ *
+ * Role software types use HYPHENS ('SALON-POS'); core.station_master.station_type
+ * uses UNDERSCORES ('SALON_POS'). Do not mix them.
+ */
+const POS_ALLOWED_TYPES_BY_POS = new Map([
+  ['RESTAURANT-POS', RESTAURANT_POS_ALLOWED_TYPES],
+  ['COUNTER-POS',    COUNTER_POS_ALLOWED_TYPES],
+  ['VAN',            VAN_ALLOWED_TYPES],
+  ['SALON-POS',      SALON_POS_ALLOWED_TYPES],
+]);
+
+function allowedTypesForPos(posType) {
+  const key = String(posType || '').toUpperCase().trim();
+  const set = POS_ALLOWED_TYPES_BY_POS.get(key);
+  if (!set) {
+    const err = new Error(`Unknown POS type '${posType}'. Expected one of: ${[...POS_ALLOWED_TYPES_BY_POS.keys()].join(', ')}`);
+    err.status = 400;
+    throw err;
+  }
+  return set;
+}
 
 function assertRoleAllowed(row, allowedSet, posName) {
   const roleType = String(row.role_software_type || '').toUpperCase().trim();
@@ -144,16 +173,19 @@ export async function loginWithCredentialsForPOS(username, password, posType) {
     throw err;
   }
 
-  const allowedSet =
-    posType === 'RESTAURANT-POS' ? RESTAURANT_POS_ALLOWED_TYPES :
-    posType === 'VAN'            ? VAN_ALLOWED_TYPES :
-                                   COUNTER_POS_ALLOWED_TYPES;
-  assertRoleAllowed(row, allowedSet, posType);
+  assertRoleAllowed(row, allowedTypesForPos(posType), posType);
 
   return await tokensForStaffRowWithWelcome(pool, row);
 }
 
-export async function loginWithPinForRestaurant({ pin, companyId, staffId }) {
+/**
+ * PIN login for a POS terminal.
+ *
+ * `posType` was previously hardcoded to RESTAURANT-POS, which meant a salon
+ * staffer with the wrong role got told "not authorised for Restaurant POS".
+ * It is now a parameter, defaulted so existing restaurant callers are unaffected.
+ */
+export async function loginWithPinForRestaurant({ pin, companyId, staffId, posType = 'RESTAURANT-POS' }) {
   const pinStr = String(pin || '').trim();
   const cid    = Number(companyId);
 
@@ -181,7 +213,7 @@ export async function loginWithPinForRestaurant({ pin, companyId, staffId }) {
   for (const row of ordered) {
     const ok = await bcrypt.compare(pinStr, row.staff_pin);
     if (!ok) continue;
-    assertRoleAllowed(row, RESTAURANT_POS_ALLOWED_TYPES, 'Restaurant POS');
+    assertRoleAllowed(row, allowedTypesForPos(posType), posType);
     return tokensForStaffRow(row);
   }
 
