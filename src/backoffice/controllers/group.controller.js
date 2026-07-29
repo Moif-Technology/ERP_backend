@@ -67,3 +67,32 @@ export async function createGroup(req, res) {
     return res.status(500).json({ message: 'Could not create group' });
   }
 }
+
+export async function updateGroup(req, res) {
+  try {
+    const updated = await groupService.updateGroup(pool, req.params.groupId, req.body, req.authStaff);
+    return res.json(updated);
+  } catch (err) {
+    if (err.status) {
+      return res.status(err.status).json({ message: err.message });
+    }
+    if (err.code === '23505') {
+      return res.status(409).json({ message: 'Group code already exists for this company and branch' });
+    }
+    console.error(err);
+    return res.status(500).json({ message: 'Could not update group' });
+  }
+}
+
+export async function deleteGroup(req, res) {
+  try {
+    const result = await groupService.deleteGroup(pool, req.params.groupId, req.body, req.authStaff);
+    return res.json(result);
+  } catch (err) {
+    if (err.status) {
+      return res.status(err.status).json({ message: err.message });
+    }
+    console.error(err);
+    return res.status(500).json({ message: 'Could not delete group' });
+  }
+}

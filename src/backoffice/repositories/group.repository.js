@@ -39,7 +39,7 @@ function mapRow(row) {
     keyShift: keyNumericFromDb(row.key_shift),
     rStatus: row.r_status,
     createdOn: row.created_on ?? null,
-    modifiedOn: row.modified_on ?? null,
+    modifiedOn: row.modified_at ?? row.modified_on ?? null,
   };
 }
 
@@ -91,4 +91,73 @@ export async function listGroupsByCompanyAndBranch(pool, companyId, branchId) {
     [companyId, branchId]
   );
   return rows.map(mapRow);
+}
+
+export async function updateGroup(client, params) {
+  const {
+    groupId,
+    companyId,
+    branchId,
+    groupCode,
+    groupDescription,
+    groupDescriptionArabic,
+    keyCode,
+    keyShift,
+    modifiedByStaffId,
+  } = params;
+  const { rows } = await client.query(
+    `UPDATE biz.group_master
+     SET group_code = $4,
+         group_description = $5,
+         group_description_arabic = $6,
+         key_code = $7,
+         key_shift = $8,
+         mod_by = 'group_update',
+         mod_on = CURRENT_TIMESTAMP,
+         modified_by = $9,
+         modified_at = NOW()
+     WHERE company_id = $1
+       AND branch_id = $2
+       AND group_id = $3
+       AND (r_status IS NULL OR r_status = 'ACTIVE')
+       AND is_deleted = FALSE
+     RETURNING group_id, company_id, branch_id, created_by_staff_id, group_code, group_description,
+               group_description_arabic, key_code, key_shift, r_status, modified_at`,
+    [
+      companyId,
+      branchId,
+      groupId,
+      groupCode,
+      groupDescription,
+      groupDescriptionArabic,
+      keyCode,
+      keyShift,
+      modifiedByStaffId ?? null,
+    ]
+  );
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
+export async function softDeleteGroup(client, params) {
+  const { groupId, companyId, branchId, deletedByStaffId } = params;
+  const { rows } = await client.query(
+    `UPDATE biz.group_master
+     SET r_status = 'DELETED',
+         mod_by = 'group_delete',
+         mod_on = CURRENT_TIMESTAMP,
+         deleted_by = $4,
+         deleted_at = NOW(),
+         is_deleted = TRUE,
+         modified_by = $4,
+         modified_at = NOW()
+     WHERE company_id = $1
+       AND branch_id = $2
+       AND group_id = $3
+       AND (r_status IS NULL OR r_status = 'ACTIVE')
+       AND is_deleted = FALSE
+     RETURNING group_id, company_id, branch_id, created_by_staff_id, group_code, group_description,
+               group_description_arabic, key_code, key_shift, r_status, modified_at`,
+    [companyId, branchId, groupId, deletedByStaffId ?? null]
+  );
+  return rows[0] ? mapRow(rows[0]) : null;
 }

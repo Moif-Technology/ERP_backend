@@ -235,16 +235,31 @@ export async function updateStaffMember(pool, staffIdRaw, body, authStaff) {
   const email      = normalizeEmail(body.email || '');
   const branchId   = Number(body.branchId);
   const mobileNo   = body.mobileNo != null ? String(body.mobileNo).trim() : '';
+  const password   = body.password != null ? String(body.password) : '';
+  const pin        = body.pin != null ? String(body.pin).trim() : '';
+  const roleIdRaw  = body.roleId == null || body.roleId === '' ? null : Number(body.roleId);
 
   const errors = [];
   if (!staffName)  errors.push('staffName is required');
   if (!email)      errors.push('email is required');
   else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.push('email is invalid');
   if (!Number.isFinite(branchId) || branchId < 1) errors.push('branchId is required');
+  if (password && password.length < 8) errors.push('password must be at least 8 characters');
+  if (pin && !/^\d{4,6}$/.test(pin)) errors.push('PIN must be 4-6 digits');
+  if (roleIdRaw != null && (!Number.isFinite(roleIdRaw) || roleIdRaw < 1)) errors.push('roleId is invalid');
   if (errors.length) { const e = new Error(errors.join('; ')); e.status = 400; throw e; }
 
   const branchOk = await branchRepo.branchBelongsToCompany(pool, companyId, branchId);
   if (!branchOk) { const e = new Error('Invalid branch'); e.status = 400; throw e; }
+
+  let role = null;
+  if (roleIdRaw != null) {
+    role = await roleRepo.findRoleByCompany(pool, companyId, roleIdRaw);
+    if (!role) { const e = new Error('Invalid role for this company'); e.status = 400; throw e; }
+    if (roleIdRaw === roleRepo.DEFAULT_ROLE_IDS.admin && Number(authStaff.role_id) !== roleRepo.DEFAULT_ROLE_IDS.admin) {
+      const e = new Error('Only admins can assign the admin role'); e.status = 403; throw e;
+    }
+  }
 
   // email uniqueness — exclude current staff row
   const { rows: conflict } = await pool.query(
@@ -258,15 +273,49 @@ export async function updateStaffMember(pool, staffIdRaw, body, authStaff) {
   }
 
   const actor = String(authStaff.staff_name || authStaff.login_name || 'staff').slice(0, 50);
-  const updated = await staffRepo.updateStaffDetails(pool, {
-    companyId, staffId, staffName, designation, branchId,
-    mobileNo: mobileNo || null, email, actor,
+  const updated = await withTransaction(async (client) => {
+    const details = await staffRepo.updateStaffDetails(client, {
+      companyId, staffId, staffName, designation, branchId,
+      mobileNo: mobileNo || null, email, actor,
+    });
+    if (!details) return null;
+
+    if (roleIdRaw != null && Number(details.role_id) !== Math.trunc(roleIdRaw)) {
+      await staffRepo.updateStaffRole(client, {
+        companyId,
+        staffId: Math.trunc(staffId),
+        roleId: Math.trunc(roleIdRaw),
+        actor,
+      });
+    }
+
+    if (password) {
+      const staffPk = await staffRepo.findStaffPk(client, companyId, staffId);
+      if (staffPk) {
+        await staffRepo.updatePasswordHashByStaffPk(client, staffPk, await bcrypt.hash(password, 12));
+      }
+    }
+
+    if (pin) {
+      await staffRepo.updateStaffPin(client, companyId, staffId, await bcrypt.hash(pin, 12));
+    }
+
+    return staffRepo.findStaffForCompanyByStaffId(client, companyId, staffId);
   });
 
   if (!updated) { const e = new Error('Staff not found'); e.status = 404; throw e; }
 
   // Drop cached session so updated details apply on the next request.
   await invalidateStaffSession(await staffRepo.findStaffPk(pool, companyId, staffId));
+
+  let garageTechnician = null;
+  if (role && isGarageRole(role)) {
+    garageTechnician = await ensureGarageTechnician(pool, updated, {
+      companyId,
+      actor,
+      specialisation: updated.designation,
+    });
+  }
 
   return {
     staffId:     Number(updated.staff_id),
@@ -277,6 +326,8 @@ export async function updateStaffMember(pool, staffIdRaw, body, authStaff) {
     mobileNo:    updated.mobile_no ?? null,
     email:       updated.email ?? null,
     roleId:      updated.role_id != null ? Number(updated.role_id) : null,
+    hasPIN:      pin ? true : undefined,
+    garageTechnician,
   };
 }
 

@@ -107,3 +107,105 @@ export async function createGroup(pool, body, authStaff) {
     });
   });
 }
+
+export async function updateGroup(pool, groupIdRaw, body, authStaff) {
+  const groupId = Number(groupIdRaw);
+  if (!Number.isFinite(groupId) || groupId < 1) {
+    const err = new Error('Invalid groupId');
+    err.status = 400;
+    throw err;
+  }
+
+  const branchId = parseBranchId(body.branchId ?? authStaff.branch_id);
+  if (branchId == null) {
+    const err = new Error('branchId is required');
+    err.status = 400;
+    throw err;
+  }
+
+  const manualCode = String(body.groupCode ?? '').trim();
+  if (!manualCode) {
+    const err = new Error('Group code is required');
+    err.status = 400;
+    throw err;
+  }
+  if (manualCode.length > 50) {
+    const err = new Error('Group code must be at most 50 characters');
+    err.status = 400;
+    throw err;
+  }
+
+  const companyId = Number(authStaff.company_id);
+  const branchOk = await branchRepo.branchBelongsToCompany(pool, companyId, branchId);
+  if (!branchOk) {
+    const err = new Error('Invalid branch for this company');
+    err.status = 400;
+    throw err;
+  }
+
+  const descRaw = body.groupDescription != null ? String(body.groupDescription).trim() : '';
+  const desc = descRaw ? descRaw.slice(0, 300) : '';
+  const descArRaw =
+    body.groupDescriptionArabic != null ? String(body.groupDescriptionArabic).trim() : '';
+
+  const updated = await withTransaction(async (client) =>
+    groupRepo.updateGroup(client, {
+      groupId,
+      companyId,
+      branchId,
+      groupCode: manualCode,
+      groupDescription: desc,
+      groupDescriptionArabic: descArRaw,
+      keyCode: legacyKeyNumeric(body.keyCode),
+      keyShift: legacyKeyNumeric(body.keyShift),
+      modifiedByStaffId: actorStaffPk(authStaff),
+    })
+  );
+
+  if (!updated) {
+    const err = new Error('Group not found');
+    err.status = 404;
+    throw err;
+  }
+  return updated;
+}
+
+export async function deleteGroup(pool, groupIdRaw, body, authStaff) {
+  const groupId = Number(groupIdRaw);
+  if (!Number.isFinite(groupId) || groupId < 1) {
+    const err = new Error('Invalid groupId');
+    err.status = 400;
+    throw err;
+  }
+
+  const branchId = parseBranchId(body?.branchId ?? authStaff.branch_id);
+  if (branchId == null) {
+    const err = new Error('branchId is required');
+    err.status = 400;
+    throw err;
+  }
+
+  const companyId = Number(authStaff.company_id);
+  const branchOk = await branchRepo.branchBelongsToCompany(pool, companyId, branchId);
+  if (!branchOk) {
+    const err = new Error('Invalid branch for this company');
+    err.status = 400;
+    throw err;
+  }
+
+  const deleted = await withTransaction(async (client) =>
+    groupRepo.softDeleteGroup(client, {
+      groupId,
+      companyId,
+      branchId,
+      deletedByStaffId: actorStaffPk(authStaff),
+    })
+  );
+
+  if (!deleted) {
+    const err = new Error('Group not found');
+    err.status = 404;
+    throw err;
+  }
+  return { ok: true, groupId: deleted.groupId };
+}
