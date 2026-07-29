@@ -29,3 +29,23 @@ export async function findActivePlanByCode(pool, planCode) {
   );
   return rows[0] ?? null;
 }
+
+/**
+ * Software types offered on the public signup page.
+ *
+ * display_order is the intended sort, but SERVICE was inserted with
+ * display_order 0 (the column default) while every other row uses 1..8, so
+ * ordering on it alone would push SERVICE to the front of the list. Sort rows
+ * with a real display_order first, in that order, then fall back to id.
+ */
+export async function listActiveSoftwareTypes(pool) {
+  const { rows } = await pool.query(
+    `SELECT software_type_id, software_code, software_name, description
+     FROM core.software_type_master
+     WHERE is_active = TRUE
+     ORDER BY (display_order IS NULL OR display_order = 0),
+              display_order ASC,
+              software_type_id ASC`
+  );
+  return rows;
+}

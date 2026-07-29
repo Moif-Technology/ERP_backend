@@ -12,21 +12,11 @@ import { config } from '../../config.js';
 
 const VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
 
-// Maps registration softwareTypeCode → software_type_master.software_type_id
-// Unknown/missing codes → null (legacy: no software-type feature scoping)
-const SOFTWARE_TYPE_ID_MAP = {
-  RESTAURANT: 1,
-  POS: 2,
-  GARAGE: 3,
-  HR: 4,
-  CRM: 5,
-  ERP: 6,
-};
-
-function resolveSoftwareTypeId(code) {
-  if (!code) return null;
-  return SOFTWARE_TYPE_ID_MAP[String(code).toUpperCase().trim()] ?? null;
-}
+// softwareTypeCode → software_type_master.software_type_id now comes from the
+// table (companyRepo.findSoftwareTypeIdByCode). The hardcoded map that lived
+// here stopped at ERP: 6 and never learned about SERVICE (7) or SALON (8), so
+// registering either one produced a company with software_type_id NULL — no
+// feature scoping, and no way to sign up a salon tenant through normal signup.
 
 function sanitizeCompanyCode(name, companyId) {
   const base = String(name || '')
@@ -105,7 +95,7 @@ export async function registerCompanyInTransaction(client, input) {
     trialDays,
   } = input;
 
-  const softwareTypeId = resolveSoftwareTypeId(softwareTypeCode);
+  const softwareTypeId = await companyRepo.findSoftwareTypeIdByCode(client, softwareTypeCode);
 
   await companyRepo.lockCompanyMasterForInsert(client);
 

@@ -13,6 +13,32 @@ export async function nextCompanyId(client) {
   return Number(rows[0].company_id);
 }
 
+/**
+ * Resolve a registration `softwareTypeCode` (RESTAURANT, POS, GARAGE, SALON, …)
+ * to core.software_type_master.software_type_id.
+ *
+ * Read from the table rather than a hardcoded map: the map that used to live in
+ * registration.service.js silently fell behind twice — SERVICE (id 7) and SALON
+ * (id 8) were both added to the table without anyone updating the constant, so
+ * registering either type produced a company with software_type_id NULL and no
+ * feature scoping at all. Returns null for an unknown or inactive code, which
+ * the caller treats as "legacy tenant, no software-type scoping".
+ */
+export async function findSoftwareTypeIdByCode(client, softwareCode) {
+  const code = String(softwareCode || '').trim();
+  if (!code) return null;
+  const { rows } = await client.query(
+    `SELECT software_type_id
+       FROM core.software_type_master
+      WHERE UPPER(software_code) = UPPER($1)
+        AND is_active = TRUE
+      ORDER BY software_type_id
+      LIMIT 1`,
+    [code]
+  );
+  return rows.length ? Number(rows[0].software_type_id) : null;
+}
+
 export async function isCompanyCodeTaken(client, companyCode) {
   const { rows } = await client.query(
     'SELECT 1 FROM core.company_master WHERE company_code = $1 LIMIT 1',

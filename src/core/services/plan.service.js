@@ -1,50 +1,29 @@
 import { pool } from '../../config/db.js';
 import * as planRepo from '../repositories/plan.repository.js';
 
-const REGISTRATION_SOFTWARE_TYPES = [
-  {
-    code: 'RESTAURANT',
-    typeId: 1,
-    name: 'Backoffice + Restaurant POS',
-    description: 'Restaurant POS + ERP Backoffice. For restaurants, cafes, hotels, and bakeries.',
-    includes: ['Restaurant POS (table management, KOT, billing)', 'Kitchen display & order flow', 'Full ERP Backoffice'],
-  },
-  {
-    code: 'POS',
-    typeId: 2,
-    name: 'Backoffice + Counter POS',
-    description: 'Counter POS + ERP Backoffice. For supermarkets, retail shops, and pharmacies.',
-    includes: ['Counter POS (barcode, fast checkout)', 'Inventory & purchase management', 'Full ERP Backoffice'],
-  },
-  {
-    code: 'ERP',
-    typeId: 6,
-    name: 'ERP Backoffice Only',
-    description: 'Full ERP without POS. For service businesses, wholesale, and trading companies.',
-    includes: ['Sales & purchase management', 'Accounts & vouchers', 'Reports & dashboard'],
-  },
-  {
-    code: 'GARAGE',
-    typeId: 3,
-    name: 'Garage ERP',
-    description: 'Garage workshop management + ERP Backoffice. For garages and service centers.',
-    includes: ['Job cards, estimates & gate pass', 'Technicians & parts usage', 'ERP Backoffice'],
-  },
-  {
-    code: 'HR',
-    typeId: 4,
-    name: 'HR & Payroll',
-    description: 'Human resources management. For teams that only need people operations.',
-    includes: ['Employees & documents', 'Attendance & shifts', 'Leave management'],
-  },
-  {
-    code: 'CRM',
-    typeId: 5,
-    name: 'CRM',
-    description: 'Customer relationship management. For sales-driven teams.',
-    includes: ['Leads & opportunities', 'Follow-ups & interactions', 'CRM reports'],
-  },
-];
+/**
+ * Marketing bullets for the signup cards, keyed by software_code.
+ *
+ * The LIST of software types is NOT defined here — it comes from
+ * core.software_type_master (see listRegistrationOptions). This map only
+ * decorates it. A code with no entry still appears on the signup page using the
+ * name and description stored in the table; it just shows no bullet list.
+ *
+ * That split matters: the previous version hardcoded the whole list and ended at
+ * CRM, so SERVICE (added 2026-07-20) and SALON (added 2026-07-28) were invisible
+ * on the signup page even though both existed in the table and had features
+ * scoped to them. Adding a software type is now a data change, not a code change.
+ */
+const SOFTWARE_TYPE_HIGHLIGHTS = {
+  RESTAURANT: ['Restaurant POS (table management, KOT, billing)', 'Kitchen display & order flow', 'Full ERP Backoffice'],
+  POS:        ['Counter POS (barcode, fast checkout)', 'Inventory & purchase management', 'Full ERP Backoffice'],
+  ERP:        ['Sales & purchase management', 'Accounts & vouchers', 'Reports & dashboard'],
+  GARAGE:     ['Job cards, estimates & gate pass', 'Technicians & parts usage', 'ERP Backoffice'],
+  HR:         ['Employees & documents', 'Attendance & shifts', 'Leave management'],
+  CRM:        ['Leads & opportunities', 'Follow-ups & interactions', 'CRM reports'],
+  SERVICE:    ['Service jobs & case tracking', 'Job status & assignment', 'ERP Backoffice'],
+  SALON:      ['Salon POS (chairs, service jobs, billing)', 'Per-stylist assignment & commission', 'Retail products alongside services'],
+};
 
 const REGISTRATION_DESIGNATIONS = [
   'CEO / Owner',
@@ -61,9 +40,16 @@ const REGISTRATION_DESIGNATIONS = [
   'Other',
 ];
 
-export function listRegistrationOptions() {
+export async function listRegistrationOptions() {
+  const rows = await planRepo.listActiveSoftwareTypes(pool);
   return {
-    softwareTypes: REGISTRATION_SOFTWARE_TYPES,
+    softwareTypes: rows.map((r) => ({
+      code: r.software_code,
+      typeId: Number(r.software_type_id),
+      name: r.software_name,
+      description: r.description ?? '',
+      includes: SOFTWARE_TYPE_HIGHLIGHTS[r.software_code] ?? [],
+    })),
     designations: REGISTRATION_DESIGNATIONS,
   };
 }

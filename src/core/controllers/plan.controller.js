@@ -3,7 +3,7 @@ import * as planService from '../services/plan.service.js';
 
 export async function getRegistrationOptions(_req, res) {
   try {
-    return res.json(planService.listRegistrationOptions());
+    return res.json(await planService.listRegistrationOptions());
   } catch (err) {
     console.error(err);
     return res.status(500).json({ message: 'Could not load registration options' });
