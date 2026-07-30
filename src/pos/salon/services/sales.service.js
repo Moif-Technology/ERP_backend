@@ -180,8 +180,9 @@ export async function settleSale(pool, body, authStaff) {
   const companyId = Number(authStaff.company_id);
   const branchId = Number(authStaff.branch_id);
 
-  const stationId = parseLong(body.stationId ?? body.StationID ?? authStaff.station_id ?? authStaff.branch_id);
-  if (stationId == null) throw badRequest('stationId is required', 'NO_STATION');
+  const requestedStationId = parseLong(
+    body.stationId ?? body.StationID ?? authStaff.station_id ?? authStaff.branch_id
+  );
 
   const jobId = parseLong(body.jobId ?? body.kotId ?? body.JobID ?? body.kotMasterId);
   if (jobId == null) throw badRequest('jobId is required', 'NO_JOB');
@@ -208,9 +209,26 @@ export async function settleSale(pool, body, authStaff) {
       err.code = 'JOB_NOT_FOUND';
       throw err;
     }
-    if (Number(job.station_id ?? job.branch_id) !== stationId) {
-      throw badRequest('Job belongs to a different station', 'WRONG_STATION');
+
+    // Jobs are saved on the SALON_POS till. SessionManager often still holds the
+    // BACKOFFICE station id from username/password login — use the job's till.
+    const jobStationId = Number(job.station_id ?? job.branch_id);
+    if (!Number.isFinite(jobStationId) || jobStationId < 1) {
+      throw badRequest('Job has no station', 'NO_STATION');
     }
+    if (requestedStationId != null && requestedStationId !== jobStationId) {
+      const { rows: stRows } = await client.query(
+        `SELECT station_type
+           FROM core.station_master
+          WHERE company_id = $1 AND station_id = $2 AND is_deleted = FALSE
+          LIMIT 1`,
+        [companyId, requestedStationId]
+      );
+      if (stRows[0]?.station_type === 'SALON_POS') {
+        throw badRequest('Job belongs to a different station', 'WRONG_STATION');
+      }
+    }
+    const stationId = jobStationId;
     if (String(job.job_status).toUpperCase() === 'SETTLED' || job.sales_id != null) {
       throw conflict('Job is already settled', 'ALREADY_SETTLED');
     }

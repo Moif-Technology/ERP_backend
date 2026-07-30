@@ -180,7 +180,11 @@ export async function listJobLines(executor, companyId, jobId) {
  * restaurant's getKot omits this scoping, which lets any staffer read any
  * ticket in the company by guessing an id. Not repeating that here.
  */
-export async function listOpenJobs(executor, companyId, { stationId = null, stylistId = null } = {}) {
+export async function listOpenJobs(executor, companyId, {
+  stationId = null,
+  stylistId = null,
+  search = null,
+} = {}) {
   const params = [companyId];
   let where = `m.company_id = $1 AND m.job_status <> 'SETTLED' AND m.is_deleted = FALSE`;
 
@@ -195,12 +199,24 @@ export async function listOpenJobs(executor, companyId, { stationId = null, styl
                               AND c.job_id = m.job_id
                               AND c.stylist_id = $${params.length})`;
   }
+  if (search != null && String(search).trim() !== '') {
+    params.push(`%${String(search).trim().toLowerCase()}%`);
+    const p = `$${params.length}`;
+    where += ` AND (
+      LOWER(COALESCE(m.job_no, '')) LIKE ${p}
+      OR LOWER(COALESCE(cu.customer_name, '')) LIKE ${p}
+      OR LOWER(COALESCE(t.table_name, '')) LIKE ${p}
+      OR LOWER(COALESCE(s.staff_name, '')) LIKE ${p}
+      OR CAST(m.job_id AS TEXT) LIKE ${p}
+    )`;
+  }
 
   const { rows } = await executor.query(
     `SELECT m.job_id, m.job_no, m.job_status, m.chair_id, m.area_id,
             m.customer_id, m.primary_stylist_id, m.amount,
-            m.start_time, m.job_date, m.job_time,
+            m.start_time, m.job_date, m.job_time, m.station_id,
             t.table_name   AS chair_name,
+            a.area_name,
             cu.customer_name,
             s.staff_name   AS primary_stylist_name,
             (SELECT COUNT(*) FROM ops.salon_job_child c
@@ -213,6 +229,10 @@ export async function listOpenJobs(executor, companyId, { stationId = null, styl
        FROM ops.salon_job_master m
        LEFT JOIN core.table_master t
          ON t.company_id = m.company_id AND t.table_id = m.chair_id
+       LEFT JOIN core.area_master a
+         ON a.company_id = m.company_id
+        AND a.area_id = m.area_id
+        AND a.branch_id = m.branch_id
        LEFT JOIN biz.customer_master cu
          ON cu.company_id = m.company_id AND cu.customer_id = m.customer_id
        LEFT JOIN core.staff_master s
@@ -248,11 +268,26 @@ export async function updateLineStylist(client, companyId, jobId, lineId, stylis
 /** Station must belong to the company and be a salon till. */
 export async function assertSalonStation(executor, companyId, stationId) {
   const { rows } = await executor.query(
-    `SELECT station_type
+    `SELECT station_id, station_type, station_name, branch_id
        FROM core.station_master
       WHERE company_id = $1 AND station_id = $2 AND is_deleted = FALSE
       LIMIT 1`,
     [companyId, stationId]
+  );
+  return rows[0] ?? null;
+}
+
+/** First SALON_POS till for the company (used when the client still sends branch/BACKOFFICE id). */
+export async function findFirstSalonStation(executor, companyId) {
+  const { rows } = await executor.query(
+    `SELECT station_id, station_type, station_name, branch_id
+       FROM core.station_master
+      WHERE company_id = $1
+        AND station_type = 'SALON_POS'
+        AND is_deleted = FALSE
+      ORDER BY station_id
+      LIMIT 1`,
+    [companyId]
   );
   return rows[0] ?? null;
 }
