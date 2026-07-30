@@ -24,8 +24,8 @@ export async function saveKot(req, res) {
       console.error('[kot save] NOT NULL', err.message, err.column);
       return res.status(503).json({ ok: false, message: err.message });
     }
-    console.error(err);
-    return res.status(500).json({ ok: false, message: 'Could not save KOT' });
+    console.error('[saveKot] Error:', err.message, 'Code:', err.code, 'Detail:', err.detail);
+    return res.status(500).json({ ok: false, message: `Could not save KOT: ${err.message}` });
   }
 }
 

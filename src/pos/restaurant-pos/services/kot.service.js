@@ -1,7 +1,6 @@
 import { withTransaction } from '../../../config/db.js';
 import * as kotRepo from '../repositories/kot.repository.js';
 import * as branchRepo from '../../../shared/repositories/branch.repository.js';
-import { auditStaffId } from '../lib/staffAudit.js';
 
 function num(v, d = 0) {
   if (v == null || v === '') return d;
@@ -159,7 +158,7 @@ export async function saveKot(pool, body, authStaff, access = null) {
       ? String(body.txtRemarks).slice(0, 250)
       : '';
 
-  const auditBy = auditStaffId(authStaff);
+  const auditBy = parseLong(authStaff.staff_id) ?? null;
 
   return withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
