@@ -187,6 +187,25 @@ export async function login(req, res) {
       ? await staffRepo.findStaffPk(pool, companyId, session.user?.staffId)
       : null;
 
+    // Username/password maps staff.branch_id → stationId, which is often the
+    // BACKOFFICE row. Prefer the company's SALON_POS till so Save Job / settle
+    // receive a real front-desk station id.
+    if (companyId != null && session.user) {
+      const { rows } = await pool.query(
+        `SELECT station_id
+           FROM core.station_master
+          WHERE company_id = $1
+            AND station_type = 'SALON_POS'
+            AND is_deleted = FALSE
+          ORDER BY station_id
+          LIMIT 1`,
+        [companyId]
+      );
+      if (rows[0]?.station_id != null) {
+        session.user.stationId = Number(rows[0].station_id);
+      }
+    }
+
     const blocked = await openSession(res, {
       staffPk, companyId,
       sessionType: 'erp',   // ERP-scoped token -> authMiddleware looks for 'erp'

@@ -66,6 +66,50 @@ function badRequest(message, code) {
 }
 
 /**
+ * Pick a real SALON_POS till.
+ *
+ * Username/password login often puts staff.branch_id into SessionManager as
+ * StationID — for salon companies that id is frequently the BACKOFFICE row
+ * (station 1), not the front-desk till. Prefer JWT `sid` (device enroll), then
+ * the body id when it is already SALON_POS, else the company's first salon till.
+ */
+async function resolveSalonTill(pool, companyId, authStaff, body) {
+  const jwtSid = num(authStaff?.station_id, 0);
+  const bodySid = num(body.StationID ?? body.stationId, 0);
+  const candidates = [];
+  if (jwtSid > 0) candidates.push(jwtSid);
+  if (bodySid > 0 && bodySid !== jwtSid) candidates.push(bodySid);
+
+  for (const id of candidates) {
+    const station = await jobRepo.assertSalonStation(pool, companyId, id);
+    if (station && station.station_type === 'SALON_POS') {
+      return { stationId: id, station };
+    }
+  }
+
+  const fallback = await jobRepo.findFirstSalonStation(pool, companyId);
+  if (fallback) {
+    return { stationId: Number(fallback.station_id), station: fallback };
+  }
+
+  const tried = candidates[0] || bodySid || jwtSid;
+  if (tried > 0) {
+    const bad = await jobRepo.assertSalonStation(pool, companyId, tried);
+    if (bad) {
+      throw badRequest(
+        `Station ${tried} is a ${bad.station_type}, not a SALON_POS terminal. ` +
+        `Create a SALON_POS station in Backoffice > Stations, then re-login / re-enroll this device.`,
+        'NOT_SALON_STATION'
+      );
+    }
+  }
+  throw badRequest(
+    'No SALON_POS station exists for this company. Create one in Backoffice > Stations.',
+    'NO_SALON_STATION'
+  );
+}
+
+/**
  * Resolve one incoming cart item into a row ready for insert.
  * `defaultStylistId` is the job-level primary stylist that lines inherit.
  */
@@ -80,8 +124,9 @@ function buildLine(item, ctx) {
   }
 
   // Explicit lineType wins; otherwise infer from the catalogue's product_type.
-  const lineType = item.LineType ?? item.lineType
-    ? normaliseLineType(item.LineType ?? item.lineType)
+  const explicitType = item.LineType ?? item.lineType;
+  const lineType = explicitType != null && String(explicitType).trim() !== ''
+    ? normaliseLineType(explicitType)
     : lineTypeFromProductType(item.ProductType ?? item.productType);
 
   // Per-line stylist overrides the job default; absent, the line inherits it.
@@ -143,36 +188,58 @@ function buildLine(item, ctx) {
 /**
  * Create a job, or append lines to an existing open one.
  *
- * Body: { StationID, ChairID, AreaID, CustomerID, PrimaryStylistID, Items[],
- *         CurrentJobID? (append), Remarks?, BillDiscount?, RoundOffAdj? }
+ * Body (salon native): { StationID, ChairID, AreaID, CustomerID, PrimaryStylistID,
+ *   Items[], CurrentJobID?, Remarks?, BillDiscount?, RoundOffAdj? }
+ *
+ * Also accepts the restaurant-POS legacy keys the Flutter till still sends
+ * (mfAreaId, mfTableID, mfCustomerID, CurrentKOTID, ItemName, TaxPerc, …)
+ * so Save Job works without rewriting every screen at once.
  */
 export async function saveJob(pool, body, authStaff) {
   const companyId = Number(authStaff.company_id);
-  const branchId  = Number(authStaff.branch_id);
+  const branchId  = Number(authStaff.branch_id ?? authStaff.station_id);
   const createdBy = authStaff.staff_id != null ? Number(authStaff.staff_id) : null;
 
-  const stationId = num(
-    body.StationID ?? body.stationId ?? authStaff.station_id ?? authStaff.branch_id, 0
+  // Prefer real till station from JWT / company SALON_POS when the client still
+  // sends branchId or a BACKOFFICE station as StationID.
+  const { stationId } = await resolveSalonTill(pool, companyId, authStaff, body);
+
+  const rawItems = Array.isArray(body.Items ?? body.items) ? (body.Items ?? body.items) : [];
+  if (!rawItems.length) throw badRequest('Add at least one item before saving the job', 'NO_ITEMS');
+
+  // Normalise each line so restaurant-shaped carts (ItemName / TaxPerc / …) work.
+  const items = rawItems.map((item) => ({
+    ...item,
+    ShortDescription: item.ShortDescription ?? item.shortDescription
+      ?? item.ItemName ?? item.itemName ?? item.Description ?? '',
+    Tax1Rate: item.Tax1Rate ?? item.Tax1RateC ?? item.TaxPerc ?? item.taxPerc ?? 0,
+    Tax1RateC: item.Tax1RateC ?? item.Tax1Rate ?? item.TaxPerc ?? item.taxPerc ?? 0,
+    Tax1AmountC: item.Tax1AmountC ?? item.TaxAmount ?? item.taxAmount ?? 0,
+    ItemDiscount: item.ItemDiscount ?? item.ItemDisc ?? item.itemDisc ?? 0,
+    StylistID: item.StylistID ?? item.stylistId
+      ?? body.PrimaryStylistID ?? body.primaryStylistId
+      ?? body.gvCashierID ?? body.WaiterID ?? null,
+    LineType: item.LineType ?? item.lineType ?? item.ProductType ?? item.productType,
+  }));
+
+  const chairId = parseLong(
+    body.ChairID ?? body.chairId ?? body.TableID ?? body.mfTableID ?? body.tableId
   );
-  if (stationId < 1) throw badRequest('StationID is required', 'NO_STATION');
-
-  const items = Array.isArray(body.Items ?? body.items) ? (body.Items ?? body.items) : [];
-  if (!items.length) throw badRequest('Items array is required', 'NO_ITEMS');
-
-  const station = await jobRepo.assertSalonStation(pool, companyId, stationId);
-  if (!station) throw badRequest('Invalid station for this company', 'BAD_STATION');
-  if (station.station_type !== 'SALON_POS') {
-    throw badRequest(
-      `Station ${stationId} is a ${station.station_type}, not a SALON_POS terminal.`,
-      'NOT_SALON_STATION'
-    );
-  }
-
-  const chairId          = parseLong(body.ChairID ?? body.chairId ?? body.TableID);
-  const areaId           = parseLong(body.AreaID ?? body.areaId);
-  const customerId       = parseCustomerId(body.CustomerID ?? body.customerId);
-  const primaryStylistId = parseLong(body.PrimaryStylistID ?? body.primaryStylistId);
-  const appendJobId      = parseLong(body.CurrentJobID ?? body.currentJobId);
+  const areaId = parseLong(
+    body.AreaID ?? body.areaId ?? body.mfAreaId ?? body.AreaId
+  );
+  const customerId = parseCustomerId(
+    body.CustomerID ?? body.customerId ?? body.mfCustomerID
+  );
+  const primaryStylistId = parseLong(
+    body.PrimaryStylistID ?? body.primaryStylistId
+      ?? body.gvCashierID ?? body.WaiterID ?? body.waiterId
+      ?? authStaff.staff_id
+  );
+  const appendJobId = parseLong(
+    body.CurrentJobID ?? body.currentJobId
+      ?? body.CurrentKOTID ?? body.currentKotId ?? body.KotMasterID
+  );
 
   return withTransaction(async (client) => {
     // Serialise id allocation. Unlike restaurant's per-company lock, this is
@@ -236,13 +303,17 @@ export async function saveJob(pool, body, authStaff) {
         primaryStylistId: effectiveStylist,
         startTime: new Date(),
         appointmentId: parseLong(body.AppointmentID ?? body.appointmentId),
-        billDiscount: num(body.BillDiscount ?? body.billDiscount, 0),
+        billDiscount: num(
+          body.BillDiscount ?? body.billDiscount ?? body.txtDiscount, 0
+        ),
         subTotal: 0,
         tax1Amount: 0,
         tax1Rate: num(body.Tax1Rate ?? body.tax1Rate, 0),
-        roundOffAdj: num(body.RoundOffAdj ?? body.roundOffAdj, 0),
+        roundOffAdj: num(
+          body.RoundOffAdj ?? body.roundOffAdj ?? body.lblRound, 0
+        ),
         amount: 0,
-        remarks: body.Remarks ?? body.remarks ?? null,
+        remarks: body.Remarks ?? body.remarks ?? body.txtRemarks ?? null,
         createdBy,
       });
     }
@@ -267,16 +338,25 @@ export async function saveJob(pool, body, authStaff) {
 
     const totals = await jobRepo.refreshJobTotals(client, companyId, jobId, createdBy);
     const lines  = await jobRepo.listJobLines(client, companyId, jobId);
+    const data = lines.map(mapLineForClient);
 
+    // Emit both salon and restaurant-compat keys so Flutter Save Job / Settlement
+    // (still reading CurrentKOTID / kotDetails) keep working.
     return {
       ok: true,
       success: true,
+      msg: `Job ${jobNo} saved successfully.`,
+      message: `Job ${jobNo} saved successfully.`,
       jobId: String(jobId),
       jobNo,
       currentJobId: String(jobId),
+      CurrentKOTID: String(jobId),
+      currentKotId: String(jobId),
       newLineIds: inserted.map(String),
+      newKotChildIds: inserted.map(String),
       totals,
-      data: lines.map(mapLineForClient),
+      data,
+      kotDetails: { success: true, data },
     };
   });
 }
@@ -383,35 +463,67 @@ export async function getJob(pool, authStaff, jobIdRaw) {
 
 export async function listJobs(pool, authStaff, query = {}) {
   const companyId = Number(authStaff.company_id);
-  // Default to the caller's own station so one terminal cannot enumerate
-  // another's open jobs unless it explicitly asks for all.
-  const stationId = query.all === 'true'
-    ? null
-    : (parseLong(query.stationId) ?? parseLong(authStaff.station_id) ?? null);
+
+  // Prefer a real SALON_POS till. Username/password login often leaves
+  // authStaff.station_id as BACKOFFICE, which would hide every open job.
+  let stationId = null;
+  if (query.all !== 'true') {
+    const requested = parseLong(query.stationId) ?? parseLong(authStaff.station_id);
+    if (requested != null) {
+      const st = await jobRepo.assertSalonStation(pool, companyId, requested);
+      if (st?.station_type === 'SALON_POS') {
+        stationId = requested;
+      } else {
+        const fallback = await jobRepo.findFirstSalonStation(pool, companyId);
+        stationId = fallback ? Number(fallback.station_id) : null;
+      }
+    } else {
+      const fallback = await jobRepo.findFirstSalonStation(pool, companyId);
+      stationId = fallback ? Number(fallback.station_id) : null;
+    }
+  }
 
   const rows = await jobRepo.listOpenJobs(pool, companyId, {
     stationId,
     stylistId: parseLong(query.stylistId),
+    search: query.search ?? query.q ?? null,
   });
 
   return {
     success: true,
-    data: rows.map((r) => ({
-      JobID: String(r.job_id),
-      JobNo: r.job_no,
-      JobStatus: r.job_status,
-      ChairID: r.chair_id != null ? String(r.chair_id) : '',
-      ChairName: r.chair_name ?? '',
-      AreaID: r.area_id != null ? String(r.area_id) : '',
-      CustomerID: r.customer_id != null ? String(r.customer_id) : '',
-      CustomerName: r.customer_name ?? 'Walk-in',
-      PrimaryStylistID: r.primary_stylist_id != null ? String(r.primary_stylist_id) : '',
-      PrimaryStylistName: r.primary_stylist_name ?? '',
-      Amount: String(r.amount ?? 0),
-      StartTime: r.start_time ?? null,
-      ServiceCount: Number(r.service_count ?? 0),
-      ServiceDoneCount: Number(r.service_done_count ?? 0),
-    })),
+    data: rows.map((r) => {
+      const jobId = String(r.job_id);
+      const jobNo = r.job_no ?? '';
+      return {
+        JobID: jobId,
+        jobId,
+        JobNo: jobNo,
+        jobNo,
+        JobStatus: r.job_status,
+        ChairID: r.chair_id != null ? String(r.chair_id) : '',
+        ChairName: r.chair_name ?? '',
+        AreaID: r.area_id != null ? String(r.area_id) : '',
+        AreaName: r.area_name ?? '',
+        CustomerID: r.customer_id != null ? String(r.customer_id) : '',
+        CustomerName: r.customer_name ?? 'Walk-in',
+        PrimaryStylistID: r.primary_stylist_id != null ? String(r.primary_stylist_id) : '',
+        PrimaryStylistName: r.primary_stylist_name ?? '',
+        Amount: String(r.amount ?? 0),
+        StartTime: r.start_time ?? null,
+        ServiceCount: Number(r.service_count ?? 0),
+        ServiceDoneCount: Number(r.service_done_count ?? 0),
+
+        // Compatibility aliases for older Flutter Order List mapping
+        kotMasterID: jobId,
+        KotMasterID: jobId,
+        KotPrefix: '',
+        KotNumber: jobNo,
+        KotTime: r.start_time ?? null,
+        TableName: r.chair_name ?? '',
+        ChairNo: r.chair_id != null ? String(r.chair_id) : '',
+        staffName: r.primary_stylist_name ?? '',
+      };
+    }),
   };
 }
 
