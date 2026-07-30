@@ -15,11 +15,11 @@ function parseLong(v) {
   return Math.trunc(n);
 }
 
-/** KOT header customer: empty → null; 0 = walk-in (valid); positive = customer id. */
+/** KOT header customer: empty/0 → null (no customer); positive = customer id. */
 function parseCustomerId(v) {
   if (v == null || v === '') return null;
   const n = Number(v);
-  if (!Number.isFinite(n) || n < 0) return null;
+  if (!Number.isFinite(n) || n < 1) return null;
   return Math.trunc(n);
 }
 
