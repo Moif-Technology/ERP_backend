@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authMiddleware } from '../../middleware/authMiddleware.js';
 import { requireFeature } from '../../middleware/entitlementMiddleware.js';
 import * as hrController from '../controllers/hr.controller.js';
+import * as biometricController from '../controllers/biometric.controller.js';
 
 export const hrRouter = Router();
 
@@ -49,6 +50,20 @@ hrRouter.patch('/leave-requests/:leaveRequestId/status', hrController.updateLeav
 hrRouter.get('/attendance/daily', hrController.listAttendanceDaily);
 hrRouter.post('/attendance/daily', hrController.createAttendance);
 hrRouter.patch('/attendance/daily/:dailyId', hrController.updateAttendance);
+
+// Biometric sync — HR-facing side. The device-facing side lives in
+// biometricDevice.routes.js and is mounted separately, because it authenticates
+// with a device token instead of a staff session.
+hrRouter.get('/attendance/biometric/status', biometricController.getStatus);
+hrRouter.get('/attendance/biometric/unmatched', biometricController.listUnmatched);
+hrRouter.get('/attendance/biometric/staging', biometricController.listStaging);
+hrRouter.patch('/attendance/biometric/staging', biometricController.setStagingStatus);
+hrRouter.get('/attendance/biometric/pin-map', biometricController.listPinMap);
+hrRouter.post('/attendance/biometric/pin-map', biometricController.mapPin);
+hrRouter.delete('/attendance/biometric/pin-map/:devicePin', biometricController.unmapPin);
+// "Sync now" only enqueues; the office agent drains the queue on its next poll.
+hrRouter.get('/attendance/biometric/sync-jobs', biometricController.listSyncJobs);
+hrRouter.post('/attendance/biometric/sync-jobs', biometricController.enqueueSyncJob);
 
 // Document Types
 hrRouter.get('/document-types', hrController.listDocumentTypes);

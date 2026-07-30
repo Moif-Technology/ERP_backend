@@ -82,8 +82,6 @@ export async function createTable(pool, body, authStaff) {
   const tableNameArabic =
     body.tableNameArabic != null ? String(body.tableNameArabic).trim().slice(0, 50) || null : null;
 
-  const userLabel = (authStaff.staff_name || '').slice(0, 50) || 'system';
-
   return withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
       `core.table_master:${companyId}`,
@@ -105,8 +103,8 @@ export async function createTable(pool, body, authStaff) {
       tableNameArabic,
       noOfChairs,
       tableFormat,
-      createdBy: userLabel,
-      modifiedBy: userLabel,
+      createdBy: null,
+      modifiedBy: null,
     });
   });
 }

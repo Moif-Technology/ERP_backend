@@ -92,8 +92,6 @@ export async function createArea(pool, body, authStaff) {
     isTabletShow = false;
   }
 
-  const userLabel = (authStaff.staff_name || '').slice(0, 50) || 'system';
-
   return withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
       `core.area_master:${companyId}:${stationId}`,
@@ -110,8 +108,8 @@ export async function createArea(pool, body, authStaff) {
       kotPrefix,
       priceLevel,
       isTabletShow,
-      createdBy: userLabel,
-      modifiedBy: userLabel,
+      createdBy: null,
+      modifiedBy: null,
       createdByStaffId: actorStaffPk(authStaff),
     });
   });
@@ -145,12 +143,11 @@ export async function updateArea(pool, areaIdRaw, body, authStaff) {
   if (!PRICE_LEVELS.has(priceLevel)) priceLevel = 'NORMAL';
   let isTabletShow = true;
   if (body.isTabletShow === false || body.isTabletShow === 'false') isTabletShow = false;
-  const modifiedBy = (authStaff.staff_name || '').slice(0, 50) || 'system';
   const row = await areaRepo.updateArea(pool, {
     companyId, branchId: stationId, areaId,
     areaName: nameRaw.slice(0, 150),
     areaNameArabic, tableCreationType, supplyType, kotPrefix, priceLevel,
-    isTabletShow, modifiedBy,
+    isTabletShow, modifiedBy: null,
   });
   if (!row) {
     const err = new Error('Area not found'); err.status = 404; throw err;

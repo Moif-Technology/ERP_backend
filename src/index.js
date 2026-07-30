@@ -86,6 +86,7 @@ import { technicianRouter } from './garage/routes/technician.routes.js';
 import { vehicleMasterRouter } from './garage/routes/vehicleMaster.routes.js';
 import { workshopMonitorRouter } from './garage/routes/workshopMonitor.routes.js';
 import { hrRouter } from './hr/routes/hr.routes.js';
+import { biometricDeviceRouter } from './hr/routes/biometricDevice.routes.js';
 import { buildLimiters } from './middleware/rateLimit.js';
 import { counterPosRouter } from './pos/counter-pos/counter-pos.routes.js';
 import { posRouter } from './pos/restaurant-pos/pos.routes.js';
@@ -240,6 +241,9 @@ app.use('/api/vouchers', voucherRouter);
 app.use('/api/stock-entries', stockEntryRouter);
 app.use('/api/reports', reportRouter);
 app.use('/api/deals-offers', dealsOffersRouter);
+// Device-token routes must come first: hrRouter requires a staff JWT, and the
+// office punch receiver has no login.
+app.use('/api/hr/biometric', biometricDeviceRouter);
 app.use('/api/hr', hrRouter);
 app.use('/api/crm/lead-sources', crmLeadSourceRouter);
 app.use('/api/crm/lead-statuses', crmLeadStatusRouter);
