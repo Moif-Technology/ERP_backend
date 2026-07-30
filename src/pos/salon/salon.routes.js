@@ -28,6 +28,7 @@ import * as authController from './controllers/auth.controller.js';
 import * as jobController from './controllers/job.controller.js';
 import * as stylistController from './controllers/stylist.controller.js';
 import * as salesController from './controllers/sales.controller.js';
+import * as appointmentController from './controllers/appointment.controller.js';
 
 import { authMiddleware } from '../../middleware/authMiddleware.js';
 import { requireFeature } from '../../middleware/entitlementMiddleware.js';
@@ -70,6 +71,17 @@ salonPosRouter.post('/sales/settle', requireFeature('pos.settlement'), salesCont
 // Stylists — no restaurant equivalent.
 salonPosRouter.get('/stylists',                  stylistController.listStylists);
 salonPosRouter.get('/stylists/:stylistId/load',  stylistController.getStylistLoad);
+
+// Appointments — booking system for salon (phase 1).
+salonPosRouter.post('/appointments',                        appointmentController.createAppointment);
+salonPosRouter.get('/appointments',                         appointmentController.listAppointments);
+salonPosRouter.get('/appointments/:appointmentId',          appointmentController.getAppointmentDetail);
+salonPosRouter.put('/appointments/:appointmentId',          appointmentController.updateAppointment);
+salonPosRouter.delete('/appointments/:appointmentId',       appointmentController.cancelAppointment);
+salonPosRouter.post('/appointments/:appointmentId/confirm', appointmentController.confirmAppointment);
+salonPosRouter.post('/appointments/:appointmentId/check-in', appointmentController.checkInAppointment);
+salonPosRouter.get('/stylists/:stylistId/availability',     appointmentController.getStylistAvailability);
+salonPosRouter.get('/appointments/stats/daily-load',        appointmentController.getDailyLoad);
 
 // Parameters & privileges — reused from restaurant.
 salonPosRouter.get('/parameters',                    posController.getParameters);
