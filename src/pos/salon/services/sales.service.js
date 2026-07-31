@@ -1,7 +1,7 @@
-/**
+﻿/**
  * Salon POS settlement.
  *
- * Turns an open ops.salon_job_master into a bill: ops.sales_master +
+ * Turns an open ops.job_master into a bill: ops.sales_master +
  * ops.sales_child + ops.sales_payment_split, then marks the job SETTLED and
  * links the two together (migration 105).
  *
@@ -14,9 +14,9 @@
  *     cannot both pass the "not settled yet" check and produce two bills.
  *
  * The request body is the restaurant-shaped `orderData` the Flutter client
- * already builds (kotId, items[], subTotal, netAmount, paidAmount, …). Salon
- * keys are accepted alongside the legacy ones — `jobId` for `kotId`,
- * `stylistId` for `waiterId`, `chairId` for `tableId` — so the client can be
+ * already builds (kotId, items[], subTotal, netAmount, paidAmount, â€¦). Salon
+ * keys are accepted alongside the legacy ones â€” `jobId` for `kotId`,
+ * `stylistId` for `waiterId`, `chairId` for `tableId` â€” so the client can be
  * migrated key by key without a flag day.
  */
 import { withTransaction } from '../../../config/db.js';
@@ -106,11 +106,11 @@ function readTotals(body) {
 /**
  * Resolve one request item against the job it came from.
  *
- * `jobLinesByLineId` / `jobLinesByProductId` come from ops.salon_job_child.
+ * `jobLinesByLineId` / `jobLinesByProductId` come from ops.job_child.
  * Preference order for the stylist and the line type is: what the client sent,
  * then the matching job line, then the job's primary stylist. A SERVICE line
- * that still has no stylist after all that is rejected rather than written —
- * ops.salon_job_child already refuses such a row (chk_salon_service_needs_
+ * that still has no stylist after all that is rejected rather than written â€”
+ * ops.job_child already refuses such a row (chk_salon_service_needs_
  * stylist), and letting the bill disagree with the job would silently lose the
  * commission record.
  */
@@ -211,7 +211,7 @@ export async function settleSale(pool, body, authStaff) {
     }
 
     // Jobs are saved on the SALON_POS till. SessionManager often still holds the
-    // BACKOFFICE station id from username/password login — use the job's till.
+    // BACKOFFICE station id from username/password login â€” use the job's till.
     const jobStationId = Number(job.station_id ?? job.branch_id);
     if (!Number.isFinite(jobStationId) || jobStationId < 1) {
       throw badRequest('Job has no station', 'NO_STATION');
@@ -262,7 +262,7 @@ export async function settleSale(pool, body, authStaff) {
       salesId,
       branchId,
       stationId,
-      salonJobId: jobId,
+      jobId,
       counterNo,
       billNo,
       customerId: parseLong(body.customerId) ?? (job.customer_id != null ? Number(job.customer_id) : null),
@@ -337,3 +337,4 @@ export async function settleSale(pool, body, authStaff) {
     };
   });
 }
+

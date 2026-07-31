@@ -1,10 +1,10 @@
-/**
+﻿/**
  * ops.sales_master / sales_child / sales_payment_split writes for Salon POS.
  *
  * Separate from the restaurant repository rather than shared, for two reasons:
  *   - entry_source is written as 'SALON-POS', which is how reports tell salon
  *     bills apart from restaurant ones in the same table;
- *   - the salon needs salon_job_id on the master and stylist_id / line_type on
+ *   - needs job_id on the master and stylist_id / line_type on
  *     each line, and threading three nullable salon columns through the
  *     restaurant writer would put salon concerns in a hot restaurant path.
  *
@@ -12,7 +12,7 @@
  * mirrors the restaurant repository, including its MAX+1 approach. These ids
  * are per company and the callers hold an advisory lock for the whole
  * transaction, so concurrent tills cannot interleave. bill_no stays a plain
- * integer because the Flutter printing and receipt code parses it as one — see
+ * integer because the Flutter printing and receipt code parses it as one â€” see
  * the documented exception in api/CLAUDE.md.
  */
 
@@ -50,7 +50,7 @@ export async function findJobForSettlement(client, companyId, jobId) {
   const { rows } = await client.query(
     `SELECT job_id, job_no, job_status, station_id, branch_id,
             chair_id, area_id, customer_id, primary_stylist_id, sales_id
-       FROM ops.salon_job_master
+       FROM ops.job_master
       WHERE company_id = $1 AND job_id = $2 AND is_deleted = FALSE
       FOR UPDATE`,
     [companyId, jobId]
@@ -61,13 +61,13 @@ export async function findJobForSettlement(client, companyId, jobId) {
 /**
  * Job lines keyed by line_id, used to fill in stylist_id / line_type for a
  * settlement line when the client did not send them. The job is the source of
- * truth for who performed a service — a client that omits the stylist must not
+ * truth for who performed a service â€” a client that omits the stylist must not
  * silently produce a bill with no one credited.
  */
 export async function listJobLinesForSettlement(client, companyId, jobId) {
   const { rows } = await client.query(
     `SELECT line_id, product_id, line_type, stylist_id
-       FROM ops.salon_job_child
+       FROM ops.job_child
       WHERE company_id = $1 AND job_id = $2 AND is_deleted = FALSE`,
     [companyId, jobId]
   );
@@ -76,7 +76,7 @@ export async function listJobLinesForSettlement(client, companyId, jobId) {
 
 export async function markJobSettled(client, companyId, jobId, salesId, modifiedBy) {
   const { rowCount } = await client.query(
-    `UPDATE ops.salon_job_master
+    `UPDATE ops.job_master
         SET job_status = 'SETTLED',
             sales_id   = $3,
             end_time   = COALESCE(end_time, NOW()),
@@ -91,7 +91,7 @@ export async function markJobSettled(client, companyId, jobId, salesId, modified
 
 export async function insertSalesMaster(client, row) {
   const {
-    companyId, salesId, branchId, stationId, salonJobId, counterNo, billNo,
+    companyId, salesId, branchId, stationId, jobId, counterNo, billNo,
     customerId, paymentMode, creditCardNo,
     amount, cashAmount, creditCardAmount, paidAmount, balancePaid,
     discountAmount, subtotalAmount, taxableAmount,
@@ -102,7 +102,7 @@ export async function insertSalesMaster(client, row) {
 
   await client.query(
     `INSERT INTO ops.sales_master (
-        company_id, sales_id, branch_id, station_id, salon_job_id,
+        company_id, sales_id, branch_id, station_id, job_id,
         counter_no, bill_no, bill_date, bill_time,
         customer_id, payment_mode, credit_card_no,
         amount, cash_amount, credit_card_amount, paid_amount, balance_paid,
@@ -125,7 +125,7 @@ export async function insertSalesMaster(client, row) {
         $30,$31,'SALON-POS',$32,$33
       )`,
     [
-      companyId, salesId, branchId, stationId ?? branchId, salonJobId,
+      companyId, salesId, branchId, stationId ?? branchId, jobId,
       counterNo, billNo,
       customerId, paymentMode, creditCardNo,
       amount, cashAmount, creditCardAmount, paidAmount, balancePaid,
@@ -188,3 +188,4 @@ export async function insertSalesPaymentSplit(client, row) {
     [companyId, salesId, payerNo, payMode, billAmount, branchId, counter, staffId, refNo]
   );
 }
+

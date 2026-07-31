@@ -25,6 +25,18 @@ export async function list(req, res) {
   }
 }
 
+export async function create(req, res) {
+  try {
+    const result = await tenantService.createTenant({
+      body: req.body || {},
+      actorPlatformUserId: actorId(req),
+    });
+    return res.status(201).json(result);
+  } catch (err) {
+    return handle(err, res);
+  }
+}
+
 export async function detail(req, res) {
   try {
     const data = await tenantService.getTenantDetail(Number(req.params.companyId));

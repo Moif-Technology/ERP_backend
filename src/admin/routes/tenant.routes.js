@@ -10,6 +10,7 @@ export const tenantAdminRouter = Router();
 tenantAdminRouter.use(requirePlatformAuth);
 
 tenantAdminRouter.get('/', requireCapability('tenant.read'), ctrl.list);
+tenantAdminRouter.post('/', requireCapability('tenant.subscription.update'), ctrl.create);
 tenantAdminRouter.get('/:companyId', requireCapability('tenant.read'), ctrl.detail);
 tenantAdminRouter.get('/:companyId/features', requireCapability('tenant.read'), ctrl.getFeatures);
 tenantAdminRouter.get('/:companyId/audit',    requireCapability('audit.read'),           ctrl.audit);

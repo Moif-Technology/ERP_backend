@@ -12,13 +12,13 @@ CREATE TABLE IF NOT EXISTS ops.appointment_master (
   duration_minutes      INTEGER NOT NULL DEFAULT 60,
   appointment_status    VARCHAR(16) NOT NULL DEFAULT 'SCHEDULED',
   notes                 TEXT,
-  job_id                UUID NULL,
+  job_id                BIGINT NULL,
   created_at            TIMESTAMP DEFAULT NOW(),
   updated_at            TIMESTAMP DEFAULT NOW(),
   FOREIGN KEY (company_id) REFERENCES core.company_master(company_id),
-  FOREIGN KEY (customer_id) REFERENCES core.customer_master(customer_id),
-  FOREIGN KEY (stylist_id) REFERENCES core.staff_master(staff_id),
-  FOREIGN KEY (job_id) REFERENCES ops.kot_master(kot_id),
+  FOREIGN KEY (company_id, customer_id) REFERENCES biz.customer_master(company_id, customer_id),
+  FOREIGN KEY (company_id, stylist_id) REFERENCES core.staff_master(company_id, staff_id),
+  FOREIGN KEY (job_id) REFERENCES ops.kot_master(id),
   UNIQUE (company_id, stylist_id, appointment_date, appointment_time)
 );
 
@@ -26,11 +26,13 @@ CREATE TABLE IF NOT EXISTS ops.appointment_master (
 CREATE TABLE IF NOT EXISTS ops.appointment_service (
   appointment_service_id  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   appointment_id          UUID NOT NULL,
+  company_id              BIGINT NOT NULL,
   service_id              BIGINT NOT NULL,
   expected_duration_min   INTEGER,
   created_at              TIMESTAMP DEFAULT NOW(),
   FOREIGN KEY (appointment_id) REFERENCES ops.appointment_master(appointment_id) ON DELETE CASCADE,
-  FOREIGN KEY (service_id) REFERENCES core.product_master(product_id)
+  FOREIGN KEY (company_id) REFERENCES core.company_master(company_id),
+  FOREIGN KEY (company_id, service_id) REFERENCES core.product_master(company_id, product_id)
 );
 
 -- 3. Indices for fast queries

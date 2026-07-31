@@ -23,7 +23,20 @@ export async function createAppointment(pool, body, authStaff) {
   if (!customerId) throw createError('customerId is required', 400);
   if (!stylistId) throw createError('stylistId is required', 400);
   if (!appointmentDate) throw createError('appointmentDate is required (YYYY-MM-DD)', 400);
-  if (!appointmentTime) throw createError('appointmentTime is required (HH:MM)', 400);
+  if (!appointmentTime) throw createError('appointmentTime is required', 400);
+
+  const normalizedTime = normalize24HourTime(appointmentTime);
+  if (!normalizedTime) {
+    throw createError(`Invalid time format: "${appointmentTime}" (expected HH:MM or HH:MM AM/PM)`, 400);
+  }
+
+  const timeParts = normalizedTime.split(':');
+  const [hour, min] = timeParts.map(Number);
+  if (hour < 0 || hour > 23 || min < 0 || min > 59) {
+    throw createError(`Invalid time: ${normalizedTime} (hour must be 0-23, min must be 0-59)`, 400);
+  }
+
+  const appointmentTimeNormalized = normalizedTime;
 
   return withTransaction(async (client) => {
     // Advisory lock prevents concurrent double-bookings for this stylist+date
@@ -36,7 +49,7 @@ export async function createAppointment(pool, body, authStaff) {
       companyId,
       stylistId,
       appointmentDate,
-      appointmentTime,
+      appointmentTime: appointmentTimeNormalized,
       durationMinutes,
     });
 
@@ -55,7 +68,7 @@ export async function createAppointment(pool, body, authStaff) {
       customerId,
       stylistId,
       appointmentDate,
-      appointmentTime,
+      appointmentTime: appointmentTimeNormalized,
       durationMinutes,
       appointmentStatus: 'SCHEDULED',
       notes,
@@ -90,9 +103,27 @@ export async function listAppointments(pool, query, authStaff) {
   // Enrich with service and customer names
   const enriched = await Promise.all(
     appointments.map(async (appt) => {
-      const services = await appointmentRepo.findAppointmentServices(pool, appt.appointment_id);
-      const customer = await appointmentRepo.findCustomer(pool, appt.customer_id);
-      const stylist = await appointmentRepo.findStaff(pool, appt.stylist_id);
+      let services = [];
+      let customer = null;
+      let stylist = null;
+
+      try {
+        services = await appointmentRepo.findAppointmentServices(pool, appt.appointment_id);
+      } catch (e) {
+        // Services table missing or error — skip enrichment
+      }
+
+      try {
+        customer = await appointmentRepo.findCustomer(pool, appt.customer_id);
+      } catch (e) {
+        // Customer table missing — skip enrichment
+      }
+
+      try {
+        stylist = await appointmentRepo.findStaff(pool, appt.stylist_id);
+      } catch (e) {
+        // Staff table missing — skip enrichment
+      }
 
       return {
         appointmentId: appt.appointment_id,
@@ -125,9 +156,27 @@ export async function getAppointmentDetail(pool, appointmentId, authStaff) {
     throw createError('Appointment not found', 404);
   }
 
-  const services = await appointmentRepo.findAppointmentServices(pool, appointmentId);
-  const customer = await appointmentRepo.findCustomer(pool, appointment.customer_id);
-  const stylist = await appointmentRepo.findStaff(pool, appointment.stylist_id);
+  let services = [];
+  let customer = null;
+  let stylist = null;
+
+  try {
+    services = await appointmentRepo.findAppointmentServices(pool, appointmentId);
+  } catch (e) {
+    // Services table missing — skip
+  }
+
+  try {
+    customer = await appointmentRepo.findCustomer(pool, appointment.customer_id);
+  } catch (e) {
+    // Customer table missing — skip
+  }
+
+  try {
+    stylist = await appointmentRepo.findStaff(pool, appointment.stylist_id);
+  } catch (e) {
+    // Staff table missing — skip
+  }
 
   return {
     appointmentId: appointment.appointment_id,
@@ -172,10 +221,18 @@ export async function updateAppointment(pool, appointmentId, body, authStaff) {
       notes,
     } = body;
 
+    let appointmentTimeNormalized = null;
+    if (appointmentTime) {
+      appointmentTimeNormalized = normalize24HourTime(appointmentTime);
+      if (!appointmentTimeNormalized) {
+        throw createError(`Invalid time format: "${appointmentTime}" (expected HH:MM or HH:MM AM/PM)`, 400);
+      }
+    }
+
     // If rescheduling, check availability with new date/time
     if (appointmentDate || appointmentTime) {
       const newDate = appointmentDate || appointment.appointment_date;
-      const newTime = appointmentTime || appointment.appointment_time;
+      const newTime = appointmentTimeNormalized || appointment.appointment_time;
       const newDuration = durationMinutes || appointment.duration_minutes;
 
       const conflicting = await appointmentRepo.findConflictingAppointments(client, {
@@ -196,7 +253,7 @@ export async function updateAppointment(pool, appointmentId, body, authStaff) {
 
     const updated = await appointmentRepo.updateAppointmentMaster(client, appointmentId, {
       appointmentDate,
-      appointmentTime,
+      appointmentTime: appointmentTimeNormalized,
       durationMinutes,
       notes,
     });
@@ -348,6 +405,46 @@ function createError(message, status) {
   const err = new Error(message);
   err.status = status;
   return err;
+}
+
+function normalize24HourTime(timeStr) {
+  if (!timeStr) return null;
+  const str = String(timeStr).trim();
+
+  // Already 24-hour format: "14:30"
+  if (/^\d{1,2}:\d{2}$/.test(str)) {
+    const parts = str.split(':');
+    const hour = Number(parts[0]);
+    const min = Number(parts[1]);
+    if (hour >= 0 && hour <= 23 && min >= 0 && min <= 59) {
+      return String(hour).padStart(2, '0') + ':' + String(min).padStart(2, '0');
+    }
+    return null;
+  }
+
+  // 12-hour format with AM/PM: "2:30 PM", "14:30 PM", "02:30 AM"
+  const match = str.match(/^(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)$/i);
+  if (match) {
+    let [, hourStr, minStr, period] = match;
+    const hour = Number(hourStr);
+    const min = Number(minStr);
+    period = period.toUpperCase();
+
+    if (min < 0 || min > 59) return null;
+
+    let hour24 = hour;
+    if (period === 'AM') {
+      if (hour === 12) hour24 = 0;
+      if (hour < 1 || hour > 12) return null;
+    } else {
+      if (hour < 1 || hour > 12) return null;
+      if (hour !== 12) hour24 = hour + 12;
+    }
+
+    return String(hour24).padStart(2, '0') + ':' + String(min).padStart(2, '0');
+  }
+
+  return null;
 }
 
 function formatAppointmentResponse(appt) {

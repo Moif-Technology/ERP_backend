@@ -122,6 +122,9 @@ const { apiLimiter, authLimiter } = buildLimiters();
 
 const app = express();
 
+// Make pool available to all route handlers
+app.set('pool', pool);
+
 // Honour X-Forwarded-* from LB/Nginx so client IP + rate limiting are correct.
 if (config.trustProxy > 0) {
   app.set('trust proxy', config.trustProxy);

@@ -44,9 +44,19 @@ export async function findConflictingAppointments(client, query) {
     excludeAppointmentId,
   } = query;
 
-  const [hour, min] = appointmentTime.split(':').map(Number);
+  const parts = appointmentTime.split(':');
+  if (parts.length !== 2 || isNaN(parts[0]) || isNaN(parts[1])) {
+    throw new Error(`Invalid appointmentTime format: "${appointmentTime}" (expected HH:MM)`);
+  }
+
+  const [hour, min] = parts.map(Number);
+  if (hour < 0 || hour > 23 || min < 0 || min > 59) {
+    throw new Error(`Invalid time values: hour=${hour}, min=${min}`);
+  }
+
   const appointmentEndTime = new Date();
-  appointmentEndTime.setHours(hour, min + durationMinutes, 0, 0);
+  appointmentEndTime.setHours(hour, 0, 0, 0);
+  appointmentEndTime.setMinutes(min + durationMinutes);
   const appointmentEndTimeStr = String(appointmentEndTime.getHours()).padStart(2, '0')
     + ':' + String(appointmentEndTime.getMinutes()).padStart(2, '0');
 

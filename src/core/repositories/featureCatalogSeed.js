@@ -227,7 +227,19 @@ export async function ensureFeatureCatalog() {
       -- POS — settlement variants
       ('pos.settlement.direct',    'Direct settlement',       'pos', 'pos',  'feature', 221),
       ('pos.settlement.unsaved_cart', 'Settle unsaved cart',  'pos', 'pos',  'feature', 222),
-      ('pos.settlement.change',    'Change settlement',       'pos', 'pos',  'feature', 223)
+      ('pos.settlement.change',    'Change settlement',       'pos', 'pos',  'feature', 223),
+
+      -- POS — legacy layout modes
+      ('pos.full_ui',              'Full POS UI',             'pos', 'pos',  'feature', 224),
+      ('pos.ui.basic',             'Basic POS UI',            'pos', 'pos',  'feature', 225),
+      ('pos.ui.normal',            'Normal POS UI',           'pos', 'pos',  'feature', 226),
+
+      -- Salon POS
+      ('pos.salon.jobs',           'Salon jobs',              'pos', 'pos',  'feature', 230),
+      ('pos.salon.stylists',       'Salon stylists',          'pos', 'pos',  'feature', 231),
+      ('pos.salon.appointments',   'Salon appointments',      'pos', 'pos',  'feature', 232),
+      ('pos.salon.service_status', 'Salon service status',    'pos', 'pos',  'feature', 233),
+      ('pos.salon.stylist_reassign','Salon stylist reassignment','pos','pos', 'feature', 234)
 
     ON CONFLICT (feature_code) DO UPDATE SET
       feature_name         = EXCLUDED.feature_name,
@@ -261,6 +273,29 @@ export async function ensureFeatureCatalog() {
     WHERE p.plan_code IN ('basic','standard','pro','custom')
       AND f.is_active = TRUE
     ON CONFLICT (plan_code, feature_code) DO NOTHING
+  `);
+
+  await pool.query(`
+    INSERT INTO core.software_type_feature
+      (software_type_id, feature_code, is_granted, created_at)
+    SELECT
+      stm.software_type_id,
+      f.feature_code,
+      CASE
+        WHEN f.feature_code LIKE 'pos.salon.%' THEN (stm.software_code = 'SALON')
+        WHEN stm.software_code IN ('RESTAURANT','POS','SALON') AND f.pack_code IN ('core','pos') THEN TRUE
+        WHEN stm.software_code = 'GARAGE'  AND f.pack_code IN ('core','garage') THEN TRUE
+        WHEN stm.software_code = 'HR'      AND f.pack_code IN ('core','hr') THEN TRUE
+        WHEN stm.software_code = 'CRM'     AND f.pack_code IN ('core','crm') THEN TRUE
+        WHEN stm.software_code = 'ERP'     AND f.pack_code = 'core' THEN TRUE
+        WHEN stm.software_code = 'SERVICE' AND f.pack_code IN ('core','service') THEN TRUE
+        ELSE FALSE
+      END,
+      NOW()
+    FROM core.software_type_master stm
+    CROSS JOIN core.feature_master f
+    WHERE f.is_active = TRUE
+    ON CONFLICT (software_type_id, feature_code) DO NOTHING
   `);
 
   await pool.query(`

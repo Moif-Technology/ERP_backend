@@ -58,30 +58,30 @@ salonPosRouter.use(authMiddleware);
 salonPosRouter.use(requireFeature('pos'));
 
 // Jobs — the salon analogue of restaurant KOTs.
-salonPosRouter.post('/job/save',                       jobController.saveJob);
-salonPosRouter.get('/job/list',                        jobController.listJobs);
-salonPosRouter.get('/job/:jobId',                      jobController.getJob);
-salonPosRouter.patch('/job/:jobId/line/:lineId/status',  jobController.setServiceStatus);
-salonPosRouter.patch('/job/:jobId/line/:lineId/stylist', jobController.reassignStylist);
+salonPosRouter.post('/job/save',                         requireFeature('pos.salon.jobs'), jobController.saveJob);
+salonPosRouter.get('/job/list',                          requireFeature('pos.salon.jobs'), jobController.listJobs);
+salonPosRouter.get('/job/:jobId',                        requireFeature('pos.salon.jobs'), jobController.getJob);
+salonPosRouter.patch('/job/:jobId/line/:lineId/status',  requireFeature('pos.salon.service_status'), jobController.setServiceStatus);
+salonPosRouter.patch('/job/:jobId/line/:lineId/stylist', requireFeature('pos.salon.stylist_reassign'), jobController.reassignStylist);
 
 // Settlement. Gated on pos.settlement like restaurant's, so a plan that sells
 // the job board without billing still cannot take money.
 salonPosRouter.post('/sales/settle', requireFeature('pos.settlement'), salesController.settle);
 
 // Stylists — no restaurant equivalent.
-salonPosRouter.get('/stylists',                  stylistController.listStylists);
-salonPosRouter.get('/stylists/:stylistId/load',  stylistController.getStylistLoad);
+salonPosRouter.get('/stylists',                  requireFeature('pos.salon.stylists'), stylistController.listStylists);
+salonPosRouter.get('/stylists/:stylistId/load',  requireFeature('pos.salon.stylists'), stylistController.getStylistLoad);
 
 // Appointments — booking system for salon (phase 1).
-salonPosRouter.post('/appointments',                        appointmentController.createAppointment);
-salonPosRouter.get('/appointments',                         appointmentController.listAppointments);
-salonPosRouter.get('/appointments/:appointmentId',          appointmentController.getAppointmentDetail);
-salonPosRouter.put('/appointments/:appointmentId',          appointmentController.updateAppointment);
-salonPosRouter.delete('/appointments/:appointmentId',       appointmentController.cancelAppointment);
-salonPosRouter.post('/appointments/:appointmentId/confirm', appointmentController.confirmAppointment);
-salonPosRouter.post('/appointments/:appointmentId/check-in', appointmentController.checkInAppointment);
-salonPosRouter.get('/stylists/:stylistId/availability',     appointmentController.getStylistAvailability);
-salonPosRouter.get('/appointments/stats/daily-load',        appointmentController.getDailyLoad);
+salonPosRouter.post('/appointments',                        requireFeature('pos.salon.appointments'), appointmentController.createAppointment);
+salonPosRouter.get('/appointments',                         requireFeature('pos.salon.appointments'), appointmentController.listAppointments);
+salonPosRouter.get('/appointments/:appointmentId',          requireFeature('pos.salon.appointments'), appointmentController.getAppointmentDetail);
+salonPosRouter.put('/appointments/:appointmentId',          requireFeature('pos.salon.appointments'), appointmentController.updateAppointment);
+salonPosRouter.delete('/appointments/:appointmentId',       requireFeature('pos.salon.appointments'), appointmentController.cancelAppointment);
+salonPosRouter.post('/appointments/:appointmentId/confirm', requireFeature('pos.salon.appointments'), appointmentController.confirmAppointment);
+salonPosRouter.post('/appointments/:appointmentId/check-in', requireFeature('pos.salon.appointments'), appointmentController.checkInAppointment);
+salonPosRouter.get('/stylists/:stylistId/availability',     requireFeature('pos.salon.appointments'), appointmentController.getStylistAvailability);
+salonPosRouter.get('/appointments/stats/daily-load',        requireFeature('pos.salon.appointments'), appointmentController.getDailyLoad);
 
 // Parameters & privileges — reused from restaurant.
 salonPosRouter.get('/parameters',                    posController.getParameters);

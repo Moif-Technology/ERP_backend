@@ -206,6 +206,41 @@ function permissionFeatureEnabled(featureCode, enabledSet) {
   return enabledSet.has(featureCode);
 }
 
+/**
+ * Validate that admin can only manage roles matching their software type.
+ * ERP admins can manage all; others can only manage their own type.
+ */
+async function validateAdminCanManageRole(db, authStaff, roleId) {
+  const adminSoftwareType = authStaff.software_type_code || 'ERP';
+
+  // ERP admins can manage everything
+  if (adminSoftwareType === 'ERP') return true;
+
+  // Get the role being managed
+  const roleRes = await db.query(
+    'SELECT software_type FROM core.role_master WHERE role_id = $1',
+    [roleId]
+  );
+
+  if (roleRes.rows.length === 0) return false;
+
+  const roleSoftwareType = roleRes.rows[0].software_type || 'ERP';
+
+  // Non-ERP admins can only manage roles of their same type
+  if (roleSoftwareType !== adminSoftwareType) {
+    const err = new Error(
+      `You can only manage roles of type [${adminSoftwareType}]. ` +
+      `This role is type [${roleSoftwareType}].`
+    );
+    err.status = 403;
+    err.allowedType = adminSoftwareType;
+    err.roleType = roleSoftwareType;
+    throw err;
+  }
+
+  return true;
+}
+
 export async function listPermissionCatalog(db, authStaff) {
   const rows = await roleRepo.listPermissionCatalog(db);
   // Tenant admins only see permissions for features their company actually
@@ -226,6 +261,10 @@ export async function getRolePermissions(db, authStaff, roleIdRaw) {
     err.status = 404;
     throw err;
   }
+
+  // Validate admin can only view roles matching their software type
+  await validateAdminCanManageRole(db, authStaff, roleId);
+
   const rows = await roleRepo.listRolePermissions(db, companyId, roleId);
   return {
     roleId,
@@ -241,6 +280,9 @@ export async function updateRolePermissions(_db, authStaff, roleIdRaw, body) {
   const roleId = parseRoleId(roleIdRaw);
   assertNotProtectedRole(roleId, 'modify permissions of');
   const permissionCodes = normalizePermissionCodes(body);
+
+  // Validate admin can only manage roles matching their software type
+  await validateAdminCanManageRole(_db, authStaff, roleId);
 
   return withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [

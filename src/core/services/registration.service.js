@@ -93,6 +93,7 @@ export async function registerCompanyInTransaction(client, input) {
     softwareTypeCode,
     setupBlueprint,
     trialDays,
+    emailVerified = false,
   } = input;
 
   const softwareTypeId = await companyRepo.findSoftwareTypeIdByCode(client, softwareTypeCode);
@@ -183,15 +184,20 @@ export async function registerCompanyInTransaction(client, input) {
 
   const staffRow = await staffRepo.selectStaffSessionRow(client, companyId, staffId);
 
+  const staffPk = staffRow?.id;
+  if (staffPk && emailVerified) {
+    await staffRepo.markEmailVerified(client, staffPk);
+    return { staffRow, verifyToken: null, firstName, companyId };
+  }
+
   // Generate verification token and store it within the same transaction
   const verifyToken = crypto.randomBytes(32).toString('hex');
   const verifyExpiresAt = new Date(Date.now() + VERIFY_TTL_MS);
-  const staffPk = staffRow?.id;
   if (staffPk) {
     await staffRepo.storeVerifyToken(client, staffPk, verifyToken, verifyExpiresAt);
   }
 
-  return { staffRow, verifyToken, firstName };
+  return { staffRow, verifyToken, firstName, companyId };
 }
 
 export async function sendRegistrationVerificationEmail(email, firstName, verifyToken) {

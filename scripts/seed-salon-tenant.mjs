@@ -138,11 +138,17 @@ const SUBGROUPS = [
   { subGroupId: 9, groupId: 5, code: 'HAIRCARE', name: 'Hair Care' },
 ];
 
-// PINs are generated per run for the same reason as the password. A 4-digit PIN
-// is brute-forceable, so it must at least not be a published constant.
+const ADMIN_PIN_ARG = arg('--admin-pin');
+const MAYA_PIN_ARG = arg('--maya-pin');
+const SARA_PIN_ARG = arg('--sara-pin');
+
+// PINs from args or generate them. A 4-digit PIN is brute-forceable,
+// so if providing hardcoded values, use with caution.
+const ADMIN_PIN = ADMIN_PIN_ARG ?? null;
+
 const STYLISTS = [
-  { name: 'Maya', pin: generatePin() },
-  { name: 'Sara', pin: generatePin() },
+  { name: 'Maya', pin: MAYA_PIN_ARG ?? generatePin() },
+  { name: 'Sara', pin: SARA_PIN_ARG ?? generatePin() },
 ];
 
 // product_type 'SERVICE' marks a catalogue row as labour (decision D1).
@@ -280,23 +286,25 @@ async function seed(client) {
     [companyId]
   );
 
-  // 4. Staff. Admin logs in with a password; stylists with a PIN.
+  // 4. Staff. Admin logs in with a password; optionally with a PIN for POS enrollment.
   //    findLoginCandidates matches on login_name OR email, so either works.
   const passwordHash = await bcrypt.hash(PASSWORD, 12);
+  const adminPinHash = ADMIN_PIN ? await bcrypt.hash(ADMIN_PIN, 12) : null;
   await client.query(
     `INSERT INTO core.staff_master (
        company_id, staff_id, branch_id, staff_code, staff_name, designation,
-       login_name, password_hash, role_id, record_status, email,
+       login_name, password_hash, staff_pin, role_id, record_status, email,
        sync_status, server_status, created_at, created_by, modified_at, modified_by
      ) VALUES ($1, 1, 1, 'U1', 'Salon Owner', 'Admin',
-               $2, $3, 1, 'ACTIVE', $5, 'PENDING', 'PENDING', $4, 'seed', $4, 'seed')
+               $2, $3, $6, 1, 'ACTIVE', $5, 'PENDING', 'PENDING', $4, 'seed', $4, 'seed')
      ON CONFLICT (company_id, staff_id) DO UPDATE
        SET password_hash = EXCLUDED.password_hash,
            login_name    = EXCLUDED.login_name,
            email         = EXCLUDED.email,
+           staff_pin     = EXCLUDED.staff_pin,
            role_id       = EXCLUDED.role_id,
            record_status = 'ACTIVE'`,
-    [companyId, LOGIN_NAME, passwordHash, now, EMAIL]
+    [companyId, LOGIN_NAME, passwordHash, now, EMAIL, adminPinHash]
   );
 
   // Mark the address verified so no verification mail is required.
@@ -625,6 +633,7 @@ async function main() {
     console.log(`  login     : ${LOGIN_NAME}`);
     if (EMAIL) console.log(`  email     : ${EMAIL}${EMAIL_VERIFIED ? ' (verified)' : ''}`);
     console.log(`  password  : ${PASSWORD}`);
+    if (ADMIN_PIN) console.log(`  admin PIN : ${ADMIN_PIN}`);
     console.log(`  stylists  : ${STYLISTS.map(s => `${s.name} (PIN ${s.pin})`).join(', ')}`);
     console.log(`  disabled  : ${disabledFeatures} restaurant-only features (tenant override)`);
     console.log('─────────────────────────────────────────');

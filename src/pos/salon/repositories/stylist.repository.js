@@ -1,13 +1,13 @@
-/**
+﻿/**
  * Data access for salon stylists.
  *
- * A stylist is a core.staff_master row. There is no separate stylist table —
+ * A stylist is a core.staff_master row. There is no separate stylist table â€”
  * the garage module models technicians separately, but salon staff already
  * exist as POS staff (they log in and take payments), so a parallel table would
  * duplicate identity for no gain.
  *
  * All ids here are the BUSINESS staff id (staff_master.staff_id), matching what
- * ops.salon_job_child.stylist_id stores and what the POS client sends.
+ * ops.job_child.stylist_id stores and what the POS client sends.
  */
 
 /** Active staff for the company, shaped as a stylist roster. */
@@ -49,8 +49,8 @@ export async function stylistLoad(executor, companyId, { stylistId = null } = {}
             COUNT(*) FILTER (WHERE c.service_status = 'IN_PROGRESS')      AS running_services,
             MIN(m.start_time) FILTER (WHERE c.service_status = 'IN_PROGRESS') AS started_at,
             SUM(c.duration_minutes) FILTER (WHERE c.service_status <> 'DONE') AS pending_minutes
-       FROM ops.salon_job_child c
-       JOIN ops.salon_job_master m
+       FROM ops.job_child c
+       JOIN ops.job_master m
          ON m.company_id = c.company_id AND m.job_id = c.job_id
       WHERE c.company_id  = $1
         AND c.line_type   = 'SERVICE'
@@ -63,3 +63,4 @@ export async function stylistLoad(executor, companyId, { stylistId = null } = {}
   );
   return rows;
 }
+

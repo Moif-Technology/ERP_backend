@@ -11,3 +11,4 @@ graphify-out/
 
 updates/*
 !updates/README.md
+.gstack/

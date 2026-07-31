@@ -1,7 +1,57 @@
 import * as tenantRepo from '../repositories/tenantAdmin.repository.js';
+import { pool, withTransaction } from '../../config/db.js';
+import * as planService from '../../core/services/plan.service.js';
+import {
+  registerCompanyInTransaction,
+  validateRegisterBody,
+} from '../../core/services/registration.service.js';
 
 export async function listTenants(filters) {
   return tenantRepo.listTenants(filters);
+}
+
+export async function createTenant({ body, actorPlatformUserId }) {
+  const parsed = validateRegisterBody(body || {});
+  if (!parsed.ok) {
+    const err = new Error(parsed.errors.join('; '));
+    err.status = 400;
+    throw err;
+  }
+
+  const planRow = await planService.assertPlanAcceptsRegistration(
+    pool,
+    parsed.data.selectedPlan,
+  );
+
+  const result = await withTransaction((client) =>
+    registerCompanyInTransaction(client, {
+      ...parsed.data,
+      trialDays: planRow.trial_days,
+      emailVerified: true,
+    })
+  );
+
+  const tenant = await tenantRepo.getTenant(result.companyId);
+  await tenantRepo.appendAuditLog({
+    companyId: result.companyId,
+    actorPlatformUserId,
+    action: 'tenant.create',
+    entityType: 'tenant',
+    entityId: result.companyId,
+    beforeJson: null,
+    afterJson: {
+      company_id: tenant?.company_id,
+      company_name: tenant?.company_name,
+      plan_code: tenant?.plan_code,
+      status: tenant?.status,
+      admin_email: parsed.data.email,
+    },
+  });
+
+  return {
+    tenant,
+    adminEmail: parsed.data.email,
+  };
 }
 
 export async function getTenantDetail(companyId) {
