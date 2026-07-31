@@ -264,6 +264,21 @@ async function getCompanySoftwareType(db, companyId) {
 }
 
 /**
+ * Map company software types to allowed role software types.
+ * SALON company uses SALON-POS roles, etc.
+ */
+const ALLOWED_ROLE_TYPES_BY_COMPANY_MC = {
+  'SALON': new Set(['SALON-POS', 'ERP']),
+  'LAUNDRY': new Set(['LAUNDRY-POS', 'ERP']),
+  'GARAGE': new Set(['GARAGE', 'ERP']),
+  'HR': new Set(['HR', 'ERP']),
+  'CRM': new Set(['CRM', 'ERP']),
+  'RESTAURANT': new Set(['RESTAURANT-POS', 'ERP']),
+  'POS': new Set(['POS', 'COUNTER-POS', 'ERP']),
+  'ERP': new Set(['ERP', 'RESTAURANT-POS', 'COUNTER-POS', 'SALON-POS', 'LAUNDRY-POS', 'GARAGE', 'HR', 'CRM', 'VAN']),
+};
+
+/**
  * Validate admin can only manage roles of their software type.
  * ERP admins can manage all; others only their own type.
  */
@@ -283,8 +298,9 @@ async function validateAdminCanManageRole(db, authStaff, roleId) {
 
   const roleSoftwareType = roleRes.rows[0].software_type || 'ERP';
 
-  // Non-ERP admins can only manage their own type
-  if (roleSoftwareType !== adminSoftwareType) {
+  // Check if admin's type can manage this role's type
+  const allowedTypes = ALLOWED_ROLE_TYPES_BY_COMPANY_MC[adminSoftwareType] || new Set(['ERP']);
+  if (!allowedTypes.has(roleSoftwareType)) {
     const err = new Error(
       `You can only manage [${adminSoftwareType}] roles. ` +
       `This role is [${roleSoftwareType}].`
