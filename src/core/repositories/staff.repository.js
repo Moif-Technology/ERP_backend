@@ -10,7 +10,7 @@ function _loginSql(includeEmail, includeEmailVerified) {
   return `SELECT s.id, s.staff_id, s.staff_name, s.role_id, s.branch_id, s.company_id,
               s.login_name, s.email, s.designation, s.password_hash, s.record_status,
               ${includeEmailVerified ? 's.email_verified,' : ''}
-              c.company_name, c.company_address, b.branch_name, r.role_name,
+              c.company_name, c.company_address, c.business_variant, b.branch_name, r.role_name,
               r.software_type AS role_software_type,
               st.software_code AS software_type_code,
               stn.station_id,
@@ -62,7 +62,7 @@ export async function findStaffSessionByPk(pool, staffPk) {
     `SELECT s.id, s.staff_id, s.staff_name, s.role_id, s.branch_id, s.company_id,
             s.login_name, s.email, s.designation, r.role_name,
             r.software_type AS role_software_type,
-            c.company_name, c.company_address, c.currency, b.branch_name,
+            c.company_name, c.company_address, c.currency, c.business_variant, b.branch_name,
             st.software_code AS software_type_code,
             stn.station_id,
             stn.branch_id AS physical_branch_id,

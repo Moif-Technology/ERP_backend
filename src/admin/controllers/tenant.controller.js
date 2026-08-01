@@ -59,6 +59,25 @@ export async function patchSubscription(req, res) {
   }
 }
 
+export async function patchBusinessVariant(req, res) {
+  try {
+    const { businessVariant } = req.body || {};
+    if (!businessVariant || !['salon', 'laundry'].includes(businessVariant)) {
+      const err = new Error('businessVariant must be "salon" or "laundry"');
+      err.status = 400;
+      throw err;
+    }
+    const after = await tenantService.updateBusinessVariant({
+      companyId: Number(req.params.companyId),
+      businessVariant,
+      actorPlatformUserId: actorId(req),
+    });
+    return res.json({ businessVariant: after });
+  } catch (err) {
+    return handle(err, res);
+  }
+}
+
 export async function getFeatures(req, res) {
   try {
     const companyId = Number(req.params.companyId);
@@ -294,6 +313,69 @@ export async function killAllSessions(req, res) {
     await Promise.all(rows.map((r) => invalidateStaffSession(r.staff_pk)));
     return res.json({ ok: true, killed: rows.length });
   } catch (err) {
+    return handle(err, res);
+  }
+}
+
+export async function getModuleConfig(req, res) {
+  try {
+    const companyId = Number(req.params.companyId);
+    const { rows } = await pool.query(
+      `SELECT module_code, is_enabled FROM core.tenant_module_config
+       WHERE company_id = $1 ORDER BY module_code`,
+      [companyId]
+    );
+    const config = {};
+    for (const row of rows) {
+      config[row.module_code] = row.is_enabled;
+    }
+    return res.json(config);
+  } catch (err) {
+    if (err.code === '42P01') return res.json({});
+    return handle(err, res);
+  }
+}
+
+export async function updateModuleConfig(req, res) {
+  try {
+    const companyId = Number(req.params.companyId);
+    const moduleCode = String(req.params.moduleCode).trim();
+    const isEnabled = req.body?.is_enabled;
+
+    if (!Number.isFinite(companyId) || companyId < 1) {
+      return res.status(400).json({ error: 'Invalid companyId' });
+    }
+    if (!moduleCode) {
+      return res.status(400).json({ error: 'Invalid moduleCode' });
+    }
+    if (typeof isEnabled !== 'boolean') {
+      return res.status(400).json({ error: 'is_enabled must be boolean' });
+    }
+
+    const updatedBy = req.platformUser?.email || 'admin';
+    const { rows } = await pool.query(
+      `UPDATE core.tenant_module_config
+       SET is_enabled = $1, updated_at = CURRENT_TIMESTAMP, updated_by = $2
+       WHERE company_id = $3 AND module_code = $4
+       RETURNING module_code, is_enabled`,
+      [isEnabled, updatedBy, companyId, moduleCode]
+    );
+
+    if (rows.length === 0) {
+      await pool.query(
+        `INSERT INTO core.tenant_module_config (company_id, module_code, is_enabled, created_by, updated_by)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (company_id, module_code) DO UPDATE SET
+           is_enabled = $3, updated_at = CURRENT_TIMESTAMP, updated_by = $5`,
+        [companyId, moduleCode, isEnabled, updatedBy, updatedBy]
+      );
+    }
+
+    return res.json({ moduleCode, isEnabled });
+  } catch (err) {
+    if (err.code === '42P01') {
+      return res.status(503).json({ message: 'Tenant module config not available' });
+    }
     return handle(err, res);
   }
 }

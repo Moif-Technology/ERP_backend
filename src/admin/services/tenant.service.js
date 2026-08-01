@@ -231,3 +231,23 @@ export async function extendTrial({ companyId, days, actorPlatformUserId }) {
 export async function listAuditLog(companyId, opts) {
   return tenantRepo.listAuditLog(companyId, opts);
 }
+
+export async function updateBusinessVariant({ companyId, businessVariant, actorPlatformUserId }) {
+  const before = await tenantRepo.getTenant(companyId);
+  if (!before) {
+    const err = new Error('Tenant not found');
+    err.status = 404;
+    throw err;
+  }
+  const after = await tenantRepo.updateBusinessVariant(companyId, businessVariant);
+  await tenantRepo.appendAuditLog({
+    companyId,
+    actorPlatformUserId,
+    action: 'business_variant.update',
+    entityType: 'company',
+    entityId: companyId,
+    beforeJson: { business_variant: before?.business_variant },
+    afterJson: { business_variant: after },
+  });
+  return after;
+}

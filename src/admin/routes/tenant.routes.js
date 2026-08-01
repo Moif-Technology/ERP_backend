@@ -23,6 +23,11 @@ tenantAdminRouter.patch(
   requireCapability('tenant.subscription.update'),
   ctrl.patchSubscription
 );
+tenantAdminRouter.patch(
+  '/:companyId/business-variant',
+  requireCapability('tenant.subscription.update'),
+  ctrl.patchBusinessVariant
+);
 tenantAdminRouter.put(
   '/:companyId/features',
   requireCapability('tenant.feature.toggle'),
@@ -57,4 +62,16 @@ tenantAdminRouter.post(
   '/:companyId/extend-trial',
   requireCapability('tenant.extend_trial'),
   ctrl.extendTrial
+);
+
+tenantAdminRouter.get(
+  '/:companyId/module-config',
+  requireCapability('tenant.read'),
+  ctrl.getModuleConfig
+);
+
+tenantAdminRouter.patch(
+  '/:companyId/module-config/:moduleCode',
+  requireCapability('tenant.feature.toggle'),
+  ctrl.updateModuleConfig
 );

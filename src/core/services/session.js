@@ -17,6 +17,7 @@ export function buildSessionPayload(row, access = null) {
     company_name: companyName,
     company_address: companyAddress,
     currency,
+    business_variant: businessVariant,
     branch_name: branchName,
     software_type_code: softwareTypeCode,
     station_id,
@@ -52,6 +53,7 @@ export function buildSessionPayload(row, access = null) {
       branchName: branchName || 'Head Office',
       address: companyAddress || '',
       softwareType: softwareTypeCode || 'ERP',
+      businessVariant: businessVariant || 'salon',
       currency: currency || 'AED',
     },
   };

@@ -42,6 +42,7 @@ export async function listTenants({ status, search, limit = 100, offset = 0 } = 
 export async function getTenant(companyId) {
   const { rows } = await pool.query(
     `SELECT c.company_id, c.company_name, NULL::text AS email, NULL::text AS phone, c.company_address,
+            c.business_variant,
             stm.software_code AS software_type_code,
             stm.software_name AS software_type_name,
             ts.subscription_id,
@@ -219,4 +220,15 @@ export async function listAuditLog(companyId, { limit = 100, offset = 0 } = {}) 
     [companyId, limit, offset]
   );
   return rows;
+}
+
+export async function updateBusinessVariant(companyId, businessVariant) {
+  const { rows } = await pool.query(
+    `UPDATE core.company_master
+       SET business_variant = $1, updated_at = NOW()
+      WHERE company_id = $2
+      RETURNING business_variant`,
+    [businessVariant, companyId]
+  );
+  return rows[0]?.business_variant || null;
 }
