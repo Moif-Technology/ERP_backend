@@ -10,6 +10,9 @@ customerRouter.use(authMiddleware);
 // pos.billing, backoffice.sales, or any other consumer module is active.
 customerRouter.use(requireAnyFeature(['core.customers', 'backoffice.customers', 'pos.customer_selection']));
 customerRouter.get('/', requireAnyPermission(['core.customers.view', 'backoffice.customers.view', 'pos.customer_selection.view']), customerController.listCustomers);
-customerRouter.post('/', requireAnyPermission(['core.customers.create', 'backoffice.customers.create']), customerController.createCustomer);
+// POS tills only ship with pos.customer_selection.view (cashier / stylist roles).
+// Allow that permission for create/update so Customer Entry on Salon POS works;
+// ledger posting stays restricted to backoffice edit rights.
+customerRouter.post('/', requireAnyPermission(['core.customers.create', 'backoffice.customers.create', 'pos.customer_selection.view']), customerController.createCustomer);
 customerRouter.post('/:customerId/post-ledger', requireAnyPermission(['core.customers.edit', 'backoffice.customers.edit']), customerController.postCustomerLedger);
-customerRouter.put('/:customerId', requireAnyPermission(['core.customers.edit', 'backoffice.customers.edit']), customerController.updateCustomer);
+customerRouter.put('/:customerId', requireAnyPermission(['core.customers.edit', 'backoffice.customers.edit', 'pos.customer_selection.view']), customerController.updateCustomer);

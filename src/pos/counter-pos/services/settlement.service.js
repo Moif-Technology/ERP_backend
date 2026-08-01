@@ -26,17 +26,62 @@ function resolveMode(dbMode) {
 /** Credit customers with outstanding balance (for settlement list). */
 export async function listCreditCustomers(authStaff, q, limit = 200) {
   const companyId = Number(authStaff.company_id);
-  const customers = await customerRepo.searchCustomers(pool, companyId, q, limit);
-  return customers
-    .filter(c => resolveMode(c.paymentMode) === PM.CREDIT)
-    .map(c => ({
+  const [customers, salesOsMap] = await Promise.all([
+    customerRepo.searchCustomers(pool, companyId, q, limit),
+    settlementRepo.sumOpenCreditSalesOsByCustomer(pool, companyId, { q, limit }),
+  ]);
+
+  const byId = new Map();
+
+  for (const c of customers) {
+    const ledgerOs = c.osBalance != null ? Number(c.osBalance) : Number(c.creditBalance ?? 0);
+    const salesOs = salesOsMap.get(Number(c.customerId)) ?? 0;
+    const osAmount = Math.max(ledgerOs, salesOs, 0);
+    const isCreditCust = resolveMode(c.paymentMode) === PM.CREDIT;
+    if (!isCreditCust && salesOs <= 0.005) continue;
+    if (osAmount <= 0.005) continue;
+    byId.set(Number(c.customerId), {
       customerId:   c.customerId,
       customerCode: c.customerCode,
       customerName: c.customerName,
       paymentMode:  c.paymentMode ?? 'CREDIT',
-      osAmount:     c.osBalance != null ? c.osBalance : (c.creditBalance ?? 0),
-    }))
-    .filter(c => c.osAmount > 0.005);
+      osAmount,
+      ledgerOs,
+      salesOs,
+    });
+  }
+
+  // Customers with open credit bills who were filtered out of search (e.g. payment_mode not CREDIT).
+  const missingIds = [...salesOsMap.keys()].filter(
+    (id) => !byId.has(id) && (salesOsMap.get(id) ?? 0) > 0.005
+  );
+  if (missingIds.length) {
+    const { rows } = await pool.query(
+      `SELECT customer_id, customer_code, customer_name, payment_mode
+         FROM biz.customer_master
+        WHERE company_id = $1
+          AND customer_id = ANY($2::bigint[])
+          AND (status IS NULL OR status = 'ACTIVE')`,
+      [companyId, missingIds]
+    );
+    for (const row of rows) {
+      const customerId = Number(row.customer_id);
+      const salesOs = salesOsMap.get(customerId) ?? 0;
+      byId.set(customerId, {
+        customerId,
+        customerCode: row.customer_code,
+        customerName: row.customer_name,
+        paymentMode:  row.payment_mode ?? 'CREDIT',
+        osAmount: salesOs,
+        ledgerOs: 0,
+        salesOs,
+      });
+    }
+  }
+
+  return [...byId.values()]
+    .sort((a, b) => String(a.customerName || '').localeCompare(String(b.customerName || '')))
+    .slice(0, Math.min(Math.max(Number(limit) || 200, 1), 500));
 }
 
 export async function getCustomerOutstandingBills(authStaff, customerId) {

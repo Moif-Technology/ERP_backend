@@ -28,6 +28,10 @@ import * as authController from './controllers/auth.controller.js';
 import * as jobController from './controllers/job.controller.js';
 import * as stylistController from './controllers/stylist.controller.js';
 import * as salesController from './controllers/sales.controller.js';
+import * as supervisorController from './controllers/supervisor.controller.js';
+// Credit receipts — same service as counter-pos (customer O/S → cash_transaction).
+import * as settlementController from '../counter-pos/controllers/settlement.controller.js';
+import * as counterController from '../counter-pos/controllers/counter.controller.js';
 
 import { authMiddleware } from '../../middleware/authMiddleware.js';
 import { requireFeature } from '../../middleware/entitlementMiddleware.js';
@@ -66,6 +70,25 @@ salonPosRouter.patch('/job/:jobId/line/:lineId/stylist', jobController.reassignS
 // Settlement. Gated on pos.settlement like restaurant's, so a plan that sells
 // the job board without billing still cannot take money.
 salonPosRouter.post('/sales/settle', requireFeature('pos.settlement'), salesController.settle);
+
+// Credit receipts against sales O/S (same as counter-pos /settlement/*).
+salonPosRouter.get('/settlement/credit-customers', settlementController.listCreditCustomers);
+salonPosRouter.get('/settlement/customers/:customerId/bills', settlementController.getOutstandingBills);
+salonPosRouter.post('/settlement/save', settlementController.saveSettlement);
+salonPosRouter.get('/settlement/history', settlementController.listHistory);
+salonPosRouter.get('/settlement/receipts/:transactionId', settlementController.getReceipt);
+
+// Counter reading — X Report / Z Report (reuse counter-pos).
+salonPosRouter.get('/counter/summary', requireFeature('pos.counter_open_close'), counterController.getSummary);
+salonPosRouter.post('/counter/close', requireFeature('pos.counter_open_close'), counterController.closeCounter);
+salonPosRouter.get('/counter/cash-in-out', requireFeature('pos.cash_in_out'), counterController.getCashInOutList);
+salonPosRouter.get('/counter/cash-in-out/report', requireFeature('pos.cash_in_out'), counterController.getCashInOutReport);
+salonPosRouter.post('/counter/cash-in-out', requireFeature('pos.cash_in_out'), counterController.addCashInOut);
+salonPosRouter.get('/counter/history', requireFeature('pos.counter_open_close'), counterController.getHistory);
+salonPosRouter.get('/counter/history/:closeId', requireFeature('pos.counter_open_close'), counterController.getCloseDetail);
+
+// Supervisor approval (delete/qty on saved job lines, etc.)
+salonPosRouter.post('/supervisor/verify', supervisorController.verify);
 
 // Stylists — no restaurant equivalent.
 salonPosRouter.get('/stylists',                  stylistController.listStylists);

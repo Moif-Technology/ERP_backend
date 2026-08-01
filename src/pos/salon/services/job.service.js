@@ -205,6 +205,38 @@ export async function saveJob(pool, body, authStaff) {
   const { stationId } = await resolveSalonTill(pool, companyId, authStaff, body);
 
   const rawItems = Array.isArray(body.Items ?? body.items) ? (body.Items ?? body.items) : [];
+  const appendJobIdEarly = parseLong(
+    body.CurrentJobID ?? body.currentJobId
+      ?? body.CurrentKOTID ?? body.currentKotId ?? body.KotMasterID
+  );
+
+  // Append with no new lines = soft update of the same job (no error).
+  if (!rawItems.length && appendJobIdEarly != null) {
+    const existing = await jobRepo.findJobMaster(pool, companyId, appendJobIdEarly);
+    if (!existing) {
+      const err = new Error(`Job ${appendJobIdEarly} not found`);
+      err.status = 404;
+      throw err;
+    }
+    const lines = await jobRepo.listJobLines(pool, companyId, appendJobIdEarly);
+    const data = lines.map(mapLineForClient);
+    return {
+      ok: true,
+      success: true,
+      msg: `Job ${existing.job_no} updated.`,
+      message: `Job ${existing.job_no} updated.`,
+      jobId: String(appendJobIdEarly),
+      jobNo: existing.job_no,
+      currentJobId: String(appendJobIdEarly),
+      CurrentKOTID: String(appendJobIdEarly),
+      currentKotId: String(appendJobIdEarly),
+      newLineIds: [],
+      newKotChildIds: [],
+      data,
+      kotDetails: { success: true, data },
+    };
+  }
+
   if (!rawItems.length) throw badRequest('Add at least one item before saving the job', 'NO_ITEMS');
 
   // Normalise each line so restaurant-shaped carts (ItemName / TaxPerc / …) work.
@@ -245,7 +277,7 @@ export async function saveJob(pool, body, authStaff) {
     // Serialise id allocation. Unlike restaurant's per-company lock, this is
     // global for the table so two tenants saving at once cannot interleave.
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
-      'ops.salon_job_save',
+      'ops.job_save',
     ]);
 
     let jobId;
@@ -487,6 +519,11 @@ export async function listJobs(pool, authStaff, query = {}) {
     stationId,
     stylistId: parseLong(query.stylistId),
     search: query.search ?? query.q ?? null,
+    jobNo: query.jobNo ?? query.job_no ?? null,
+    customerName: query.customerName ?? query.customer_name ?? null,
+    mobile: query.mobile ?? query.mobileNo ?? query.mobile_no ?? null,
+    dateFrom: query.dateFrom ?? query.fromDate ?? query.from ?? null,
+    dateTo: query.dateTo ?? query.toDate ?? query.to ?? null,
   });
 
   return {
@@ -494,6 +531,7 @@ export async function listJobs(pool, authStaff, query = {}) {
     data: rows.map((r) => {
       const jobId = String(r.job_id);
       const jobNo = r.job_no ?? '';
+      const mobile = r.mobile_no ?? r.telephone ?? '';
       return {
         JobID: jobId,
         jobId,
@@ -506,10 +544,13 @@ export async function listJobs(pool, authStaff, query = {}) {
         AreaName: r.area_name ?? '',
         CustomerID: r.customer_id != null ? String(r.customer_id) : '',
         CustomerName: r.customer_name ?? 'Walk-in',
+        MobileNo: mobile,
+        mobileNo: mobile,
         PrimaryStylistID: r.primary_stylist_id != null ? String(r.primary_stylist_id) : '',
         PrimaryStylistName: r.primary_stylist_name ?? '',
         Amount: String(r.amount ?? 0),
         StartTime: r.start_time ?? null,
+        JobDate: r.job_date ?? null,
         ServiceCount: Number(r.service_count ?? 0),
         ServiceDoneCount: Number(r.service_done_count ?? 0),
 

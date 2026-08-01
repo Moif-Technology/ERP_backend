@@ -1,5 +1,5 @@
 /**
- * Data access for ops.salon_job_master + ops.salon_job_child.
+ * Data access for ops.job_master + ops.job_child.
  * Raw SQL only — no business logic (see api/CLAUDE.md conventions).
  *
  * Every id lookup and every FK is scoped by company_id. The restaurant KOT
@@ -15,7 +15,7 @@
 export async function nextJobId(client, companyId) {
   const { rows } = await client.query(
     `SELECT COALESCE(MAX(job_id), 0) + 1 AS n
-       FROM ops.salon_job_master
+       FROM ops.job_master
       WHERE company_id = $1`,
     [companyId]
   );
@@ -25,7 +25,7 @@ export async function nextJobId(client, companyId) {
 export async function nextLineId(client, companyId, jobId) {
   const { rows } = await client.query(
     `SELECT COALESCE(MAX(line_id), 0) + 1 AS n
-       FROM ops.salon_job_child
+       FROM ops.job_child
       WHERE company_id = $1 AND job_id = $2`,
     [companyId, jobId]
   );
@@ -36,7 +36,7 @@ export async function nextLineId(client, companyId, jobId) {
 export async function findOpenJobByChair(client, companyId, chairId) {
   const { rows } = await client.query(
     `SELECT job_id, job_no, job_status, primary_stylist_id
-       FROM ops.salon_job_master
+       FROM ops.job_master
       WHERE company_id = $1
         AND chair_id   = $2
         AND job_status IN ('OPEN','HELD')
@@ -54,7 +54,7 @@ export async function findJobMaster(executor, companyId, jobId) {
             start_time, end_time, appointment_id,
             sub_total, tax_1_amount, bill_discount, round_off_adj, amount,
             remarks
-       FROM ops.salon_job_master
+       FROM ops.job_master
       WHERE company_id = $1 AND job_id = $2 AND is_deleted = FALSE`,
     [companyId, jobId]
   );
@@ -71,7 +71,7 @@ export async function insertJobMaster(client, row) {
   } = row;
 
   await client.query(
-    `INSERT INTO ops.salon_job_master (
+    `INSERT INTO ops.job_master (
         company_id, branch_id, station_id,
         job_id, job_no, job_status,
         customer_id, chair_id, area_id, primary_stylist_id,
@@ -105,7 +105,7 @@ export async function insertJobChild(client, row) {
   } = row;
 
   await client.query(
-    `INSERT INTO ops.salon_job_child (
+    `INSERT INTO ops.job_child (
         company_id, branch_id, station_id, job_id, line_id,
         line_type, stylist_id, duration_minutes, service_status,
         product_id, barcode, short_description, group_id,
@@ -133,14 +133,14 @@ export async function refreshJobTotals(client, companyId, jobId, modifiedBy) {
     `SELECT COALESCE(SUM(sub_total), 0)    AS sub_total,
             COALESCE(SUM(tax_1_amount), 0) AS tax1,
             COALESCE(SUM(line_total), 0)   AS total
-       FROM ops.salon_job_child
+       FROM ops.job_child
       WHERE company_id = $1 AND job_id = $2 AND is_deleted = FALSE`,
     [companyId, jobId]
   );
   const t = rows[0];
 
   await client.query(
-    `UPDATE ops.salon_job_master
+    `UPDATE ops.job_master
         SET sub_total    = $3,
             tax_1_amount = $4,
             amount       = $5,
@@ -163,8 +163,8 @@ export async function listJobLines(executor, companyId, jobId) {
             m.job_no, m.chair_id, m.area_id, m.primary_stylist_id,
             m.customer_id, m.job_status,
             s.staff_name AS stylist_name
-       FROM ops.salon_job_child c
-       JOIN ops.salon_job_master m
+       FROM ops.job_child c
+       JOIN ops.job_master m
          ON m.company_id = c.company_id AND m.job_id = c.job_id
        LEFT JOIN core.staff_master s
          ON s.company_id = c.company_id AND s.staff_id = c.stylist_id
@@ -184,6 +184,11 @@ export async function listOpenJobs(executor, companyId, {
   stationId = null,
   stylistId = null,
   search = null,
+  jobNo = null,
+  customerName = null,
+  mobile = null,
+  dateFrom = null,
+  dateTo = null,
 } = {}) {
   const params = [companyId];
   let where = `m.company_id = $1 AND m.job_status <> 'SETTLED' AND m.is_deleted = FALSE`;
@@ -194,21 +199,52 @@ export async function listOpenJobs(executor, companyId, {
   }
   if (stylistId != null) {
     params.push(stylistId);
-    where += ` AND EXISTS (SELECT 1 FROM ops.salon_job_child c
+    where += ` AND EXISTS (SELECT 1 FROM ops.job_child c
                             WHERE c.company_id = m.company_id
                               AND c.job_id = m.job_id
                               AND c.stylist_id = $${params.length})`;
   }
+
+  // Combined free-text search: job no, customer name, mobile only
   if (search != null && String(search).trim() !== '') {
     params.push(`%${String(search).trim().toLowerCase()}%`);
     const p = `$${params.length}`;
     where += ` AND (
       LOWER(COALESCE(m.job_no, '')) LIKE ${p}
       OR LOWER(COALESCE(cu.customer_name, '')) LIKE ${p}
-      OR LOWER(COALESCE(t.table_name, '')) LIKE ${p}
-      OR LOWER(COALESCE(s.staff_name, '')) LIKE ${p}
+      OR LOWER(COALESCE(cu.mobile_no, '')) LIKE ${p}
+      OR LOWER(COALESCE(cu.telephone, '')) LIKE ${p}
       OR CAST(m.job_id AS TEXT) LIKE ${p}
     )`;
+  }
+
+  if (jobNo != null && String(jobNo).trim() !== '') {
+    params.push(`%${String(jobNo).trim().toLowerCase()}%`);
+    where += ` AND LOWER(COALESCE(m.job_no, '')) LIKE $${params.length}`;
+  }
+  if (customerName != null && String(customerName).trim() !== '') {
+    params.push(`%${String(customerName).trim().toLowerCase()}%`);
+    where += ` AND LOWER(COALESCE(cu.customer_name, '')) LIKE $${params.length}`;
+  }
+  if (mobile != null && String(mobile).trim() !== '') {
+    // Strip spaces/dashes so "050-123 4567" still matches
+    const digits = String(mobile).trim().replace(/[\s\-()]/g, '');
+    params.push(`%${digits.toLowerCase()}%`);
+    const p = `$${params.length}`;
+    where += ` AND (
+      LOWER(REPLACE(REPLACE(REPLACE(COALESCE(cu.mobile_no, ''), '-', ''), ' ', ''), '(', '')) LIKE ${p}
+      OR LOWER(REPLACE(REPLACE(REPLACE(COALESCE(cu.telephone, ''), '-', ''), ' ', ''), '(', '')) LIKE ${p}
+    )`;
+  }
+
+  // Date range on job_date (DATE column)
+  if (dateFrom != null && String(dateFrom).trim() !== '') {
+    params.push(String(dateFrom).trim().slice(0, 10));
+    where += ` AND m.job_date >= $${params.length}::date`;
+  }
+  if (dateTo != null && String(dateTo).trim() !== '') {
+    params.push(String(dateTo).trim().slice(0, 10));
+    where += ` AND m.job_date <= $${params.length}::date`;
   }
 
   const { rows } = await executor.query(
@@ -218,15 +254,17 @@ export async function listOpenJobs(executor, companyId, {
             t.table_name   AS chair_name,
             a.area_name,
             cu.customer_name,
+            cu.mobile_no,
+            cu.telephone,
             s.staff_name   AS primary_stylist_name,
-            (SELECT COUNT(*) FROM ops.salon_job_child c
+            (SELECT COUNT(*) FROM ops.job_child c
               WHERE c.company_id = m.company_id AND c.job_id = m.job_id
                 AND c.line_type = 'SERVICE' AND c.is_deleted = FALSE) AS service_count,
-            (SELECT COUNT(*) FROM ops.salon_job_child c
+            (SELECT COUNT(*) FROM ops.job_child c
               WHERE c.company_id = m.company_id AND c.job_id = m.job_id
                 AND c.line_type = 'SERVICE' AND c.service_status = 'DONE'
                 AND c.is_deleted = FALSE) AS service_done_count
-       FROM ops.salon_job_master m
+       FROM ops.job_master m
        LEFT JOIN core.table_master t
          ON t.company_id = m.company_id AND t.table_id = m.chair_id
        LEFT JOIN core.area_master a
@@ -246,7 +284,7 @@ export async function listOpenJobs(executor, companyId, {
 
 export async function updateLineServiceStatus(client, companyId, jobId, lineId, status, modifiedBy) {
   const { rowCount } = await client.query(
-    `UPDATE ops.salon_job_child
+    `UPDATE ops.job_child
         SET service_status = $4, modified_by = $5, updated_at = NOW()
       WHERE company_id = $1 AND job_id = $2 AND line_id = $3
         AND line_type = 'SERVICE' AND is_deleted = FALSE`,
@@ -257,7 +295,7 @@ export async function updateLineServiceStatus(client, companyId, jobId, lineId, 
 
 export async function updateLineStylist(client, companyId, jobId, lineId, stylistId, modifiedBy) {
   const { rowCount } = await client.query(
-    `UPDATE ops.salon_job_child
+    `UPDATE ops.job_child
         SET stylist_id = $4, modified_by = $5, updated_at = NOW()
       WHERE company_id = $1 AND job_id = $2 AND line_id = $3 AND is_deleted = FALSE`,
     [companyId, jobId, lineId, stylistId, modifiedBy]

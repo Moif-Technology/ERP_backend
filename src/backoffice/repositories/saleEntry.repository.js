@@ -225,7 +225,9 @@ export async function syncSalesPostStatusFromPostedVouchers(pool, companyId, bra
        AND vm.company_id = sm.company_id
        AND vm.branch_id = sm.branch_id
        AND vm.voucher_posted_id = sm.sales_id
-       AND vm.creation_mode = 'INVENTORYACCOUNTS'
+       AND UPPER(TRIM(COALESCE(vm.creation_mode, ''))) IN (
+             'INVENTORYACCOUNTS', 'COUNTER-POS', 'SALON-POS'
+           )
        AND UPPER(COALESCE(vm.post_status, 'PENDING')) = 'POSTED'
        AND UPPER(COALESCE(sm.post_status, 'DRAFT')) <> 'POSTED'`,
     [companyId, branchId],
@@ -278,29 +280,52 @@ export async function listSales(pool, companyId, branchId, limit, offset) {
        WHERE vm.company_id = sm.company_id
          AND vm.branch_id = sm.branch_id
          AND vm.voucher_posted_id = sm.sales_id
-         AND vm.creation_mode = 'INVENTORYACCOUNTS'
+         AND UPPER(TRIM(COALESCE(vm.creation_mode, ''))) IN (
+               'INVENTORYACCOUNTS', 'COUNTER-POS', 'SALON-POS'
+             )
          AND (vm.record_status IS NULL OR TRIM(UPPER(vm.record_status)) = 'ACTIVE')
-       ORDER BY vm.voucher_master_id ASC
+       ORDER BY
+         CASE UPPER(TRIM(COALESCE(vm.creation_mode, '')))
+           WHEN 'INVENTORYACCOUNTS' THEN 0
+           WHEN 'COUNTER-POS' THEN 1
+           WHEN 'SALON-POS' THEN 1
+           ELSE 2
+         END,
+         vm.voucher_master_id ASC
        LIMIT 1
      ) sv ON true
      LEFT JOIN LATERAL (
-       SELECT COALESCE(SUM(${VD_RECEIVABLE_OS_EXPR}), 0)::numeric AS outstanding_balance
-       FROM accounts.voucher_master vm
-       INNER JOIN accounts.voucher_detail vd
-         ON vd.company_id = vm.company_id
-        AND vd.voucher_master_id = vm.voucher_master_id
-       INNER JOIN accounts.account_head_master ah
-         ON ah.company_id = vd.company_id
-        AND ah.account_id = vd.account_id
-        AND ah.account_no = cm.customer_code
-        AND (ah.record_status IS NULL OR TRIM(UPPER(ah.record_status)) = 'ACTIVE')
-       WHERE vm.company_id = sm.company_id
-         AND vm.branch_id = sm.branch_id
-         AND vm.voucher_posted_id = sm.sales_id
-         AND vm.creation_mode = 'INVENTORYACCOUNTS'
-         AND UPPER(COALESCE(vm.post_status, 'PENDING')) = 'POSTED'
-         AND (vd.record_status IS NULL OR TRIM(UPPER(vd.record_status)) = 'ACTIVE')
-         AND vd.debit_amount > 0
+       SELECT COALESCE(
+                (
+                  SELECT SUM(${VD_RECEIVABLE_OS_EXPR})
+                  FROM accounts.voucher_master vm
+                  INNER JOIN accounts.voucher_detail vd
+                    ON vd.company_id = vm.company_id
+                   AND vd.voucher_master_id = vm.voucher_master_id
+                  INNER JOIN accounts.account_head_master ah
+                    ON ah.company_id = vd.company_id
+                   AND ah.account_id = vd.account_id
+                   AND ah.account_no = cm.customer_code
+                   AND (ah.record_status IS NULL OR TRIM(UPPER(ah.record_status)) = 'ACTIVE')
+                  WHERE vm.company_id = sm.company_id
+                    AND vm.branch_id = sm.branch_id
+                    AND vm.voucher_posted_id = sm.sales_id
+                    AND UPPER(TRIM(COALESCE(vm.creation_mode, ''))) IN (
+                          'INVENTORYACCOUNTS', 'COUNTER-POS', 'SALON-POS'
+                        )
+                    AND UPPER(COALESCE(vm.post_status, 'PENDING')) = 'POSTED'
+                    AND (vd.record_status IS NULL OR TRIM(UPPER(vd.record_status)) = 'ACTIVE')
+                    AND vd.debit_amount > 0
+                ),
+                NULLIF(sm.outstanding_balance::numeric, 0),
+                NULLIF(sm.credit_amount::numeric, 0),
+                CASE
+                  WHEN UPPER(TRIM(COALESCE(sm.payment_mode, ''))) = 'CREDIT'
+                  THEN sm.amount::numeric
+                  ELSE 0
+                END,
+                0
+              )::numeric AS outstanding_balance
      ) osb ON true
      WHERE sm.company_id = $1
        AND sm.branch_id = $2

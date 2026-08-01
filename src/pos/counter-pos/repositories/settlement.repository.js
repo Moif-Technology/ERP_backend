@@ -467,6 +467,97 @@ export async function getOutstandingBills(db, companyId, customerId) {
   return mergeOutstandingBills(voucherBills, orphanBills, salesBills);
 }
 
+/**
+ * Map of customer_id → open credit sales O/S (sales_master), for settlement lists.
+ * Includes Counter-POS and Salon-POS credit bills so customers appear even when
+ * the ledger voucher is missing / lagging.
+ */
+export async function sumOpenCreditSalesOsByCustomer(db, companyId, { q = '', limit = 200 } = {}) {
+  const cap = Math.min(Math.max(Number(limit) || 200, 1), 500);
+  const params = [companyId];
+  let searchSql = '';
+  if (String(q || '').trim()) {
+    params.push(`%${String(q).trim()}%`);
+    searchSql = `AND (
+      cm.customer_code ILIKE $2
+      OR cm.customer_name ILIKE $2
+      OR COALESCE(cm.mobile_no, '') ILIKE $2
+    )`;
+  }
+  params.push(cap);
+  const limIdx = params.length;
+
+  const { rows } = await db.query(
+    `SELECT sm.customer_id,
+            COALESCE(SUM(
+              GREATEST(
+                COALESCE(
+                  NULLIF(sm.outstanding_balance::numeric, 0),
+                  NULLIF(sm.credit_amount::numeric, 0),
+                  CASE
+                    WHEN UPPER(TRIM(COALESCE(sm.payment_mode, ''))) = 'CREDIT'
+                    THEN sm.amount::numeric
+                    ELSE 0
+                  END
+                ),
+                0
+              )
+            ), 0)::numeric AS sales_os
+       FROM ops.sales_master sm
+       INNER JOIN biz.customer_master cm
+         ON cm.company_id = sm.company_id
+        AND cm.customer_id = sm.customer_id
+      WHERE sm.company_id = $1
+        AND sm.customer_id IS NOT NULL
+        AND sm.amount > 0
+        AND (
+          UPPER(TRIM(COALESCE(sm.payment_mode, ''))) = 'CREDIT'
+          OR (
+            UPPER(TRIM(COALESCE(sm.payment_mode, ''))) IN ('MULTIPAYMENT', 'MULTIPAY')
+            AND COALESCE(sm.credit_amount, 0) > 0.005
+          )
+        )
+        AND COALESCE(UPPER(sm.transaction_type), 'SALE') NOT IN ('RETURN', 'REFUND')
+        AND COALESCE(UPPER(sm.hold_status), '') NOT IN ('HOLD', 'HELD', 'DELIVERY')
+        AND UPPER(COALESCE(sm.post_status, 'PENDING')) = 'POSTED'
+        AND COALESCE(
+              NULLIF(sm.outstanding_balance::numeric, 0),
+              NULLIF(sm.credit_amount::numeric, 0),
+              CASE
+                WHEN UPPER(TRIM(COALESCE(sm.payment_mode, ''))) = 'CREDIT'
+                THEN sm.amount::numeric
+                ELSE 0
+              END,
+              0
+            ) > 0.005
+        ${searchSql}
+      GROUP BY sm.customer_id
+      HAVING COALESCE(SUM(
+               GREATEST(
+                 COALESCE(
+                   NULLIF(sm.outstanding_balance::numeric, 0),
+                   NULLIF(sm.credit_amount::numeric, 0),
+                   CASE
+                     WHEN UPPER(TRIM(COALESCE(sm.payment_mode, ''))) = 'CREDIT'
+                     THEN sm.amount::numeric
+                     ELSE 0
+                   END
+                 ),
+                 0
+               )
+             ), 0) > 0.005
+      ORDER BY sales_os DESC
+      LIMIT $${limIdx}`,
+    params,
+  );
+
+  const map = new Map();
+  for (const r of rows) {
+    map.set(Number(r.customer_id), num(r.sales_os));
+  }
+  return map;
+}
+
 export async function getCustomerById(db, companyId, customerId) {
   const { rows } = await db.query(
     `SELECT customer_id, customer_code, customer_name, payment_mode, credit_balance
