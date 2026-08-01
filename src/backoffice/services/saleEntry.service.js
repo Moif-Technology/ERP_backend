@@ -1501,7 +1501,13 @@ async function findSaleVouchers(db, companyId, branchId, salesId) {
     || (await voucherRepo.getVoucherTypeId(db, companyId, 'ReceiptVoucherName', branchId))
     || 2;
 
-  const vouchers = await voucherRepo.listVouchersByPostedId(db, companyId, branchId, salesId, 'INVENTORYACCOUNTS');
+  const vouchers = await voucherRepo.listVouchersByPostedId(
+    db,
+    companyId,
+    branchId,
+    salesId,
+    ['INVENTORYACCOUNTS', 'COUNTER-POS', 'SALON-POS'],
+  );
   let salesVoucher = null;
   let receiptVoucher = null;
   for (const v of vouchers) {

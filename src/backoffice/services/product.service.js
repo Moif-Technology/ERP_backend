@@ -102,6 +102,9 @@ export async function listProducts(pool, authStaff, query) {
     groupId: groupIdQuery,
     subGroupId: subGroupIdQuery,
     barcode: barcodeQuery,
+    productCode: productCodeQuery,
+    search: searchQuery,
+    q: qQuery,
     limit: limitQuery,
   } = query || {};
 
@@ -122,12 +125,16 @@ export async function listProducts(pool, authStaff, query) {
   const groupId = parseOptionalLong(groupIdQuery);
   const subGroupId = parseOptionalLong(subGroupIdQuery);
   const barcode = trimOrEmpty(barcodeQuery) || null;
+  const productCode = trimOrEmpty(productCodeQuery) || null;
+  const search = trimOrEmpty(searchQuery ?? qQuery) || null;
   const limit = parseOptionalLong(limitQuery);
 
   return productRepo.listProductsByCompanyAndBranch(pool, companyId, bid, {
     groupId,
     subGroupId,
     barcode,
+    productCode,
+    search,
     limit,
   });
 }

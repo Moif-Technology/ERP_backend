@@ -20,7 +20,7 @@ BEGIN;
 -- 1. Salon job master. Composite (company_id, job_id) uniqueness — the whole
 --    point of not reusing kot_master.
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ops.salon_job_master (
+CREATE TABLE IF NOT EXISTS ops.job_master (
   id                 BIGSERIAL     PRIMARY KEY,
   company_id         BIGINT        NOT NULL,
   branch_id          BIGINT        NOT NULL,
@@ -64,8 +64,8 @@ CREATE TABLE IF NOT EXISTS ops.salon_job_master (
   created_at         TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
   updated_at         TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
 
-  CONSTRAINT uq_salon_job_master_company_job UNIQUE (company_id, job_id),
-  CONSTRAINT chk_salon_job_status
+  CONSTRAINT uq_job_master_company_job UNIQUE (company_id, job_id),
+  CONSTRAINT chk_job_status
     CHECK (job_status IN ('OPEN','HELD','SETTLED','CANCELLED'))
 );
 
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS ops.salon_job_master (
 --    to another tenant's job (the single-column FK on kot_child allows exactly
 --    that today).
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ops.salon_job_child (
+CREATE TABLE IF NOT EXISTS ops.job_child (
   id               BIGSERIAL     PRIMARY KEY,
   company_id       BIGINT        NOT NULL,
   branch_id        BIGINT        NOT NULL,
@@ -117,10 +117,10 @@ CREATE TABLE IF NOT EXISTS ops.salon_job_child (
   created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
   updated_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
 
-  CONSTRAINT uq_salon_job_child_company_job_line UNIQUE (company_id, job_id, line_id),
-  CONSTRAINT fk_salon_job_child_master
+  CONSTRAINT uq_job_child_company_job_line UNIQUE (company_id, job_id, line_id),
+  CONSTRAINT fk_job_child_master
     FOREIGN KEY (company_id, job_id)
-    REFERENCES ops.salon_job_master (company_id, job_id) ON DELETE CASCADE,
+    REFERENCES ops.job_master (company_id, job_id) ON DELETE CASCADE,
   CONSTRAINT chk_salon_line_type
     CHECK (line_type IN ('PRODUCT','SERVICE')),
   CONSTRAINT chk_salon_service_status
@@ -132,21 +132,21 @@ CREATE TABLE IF NOT EXISTS ops.salon_job_child (
     CHECK (line_type <> 'SERVICE' OR stylist_id IS NOT NULL)
 );
 
-CREATE INDEX IF NOT EXISTS idx_salon_job_master_open
-  ON ops.salon_job_master (company_id, station_id, job_status)
+CREATE INDEX IF NOT EXISTS idx_job_master_open
+  ON ops.job_master (company_id, station_id, job_status)
   WHERE job_status <> 'SETTLED' AND is_deleted = FALSE;
 
-CREATE INDEX IF NOT EXISTS idx_salon_job_master_chair
-  ON ops.salon_job_master (company_id, chair_id)
+CREATE INDEX IF NOT EXISTS idx_job_master_chair
+  ON ops.job_master (company_id, chair_id)
   WHERE job_status <> 'SETTLED' AND is_deleted = FALSE;
 
-CREATE INDEX IF NOT EXISTS idx_salon_job_child_job
-  ON ops.salon_job_child (company_id, job_id);
+CREATE INDEX IF NOT EXISTS idx_job_child_job
+  ON ops.job_child (company_id, job_id);
 
 -- One open job per chair. Restaurant has no equivalent because one waiter owns
 -- a table; a salon chair holds one client at a time.
-CREATE UNIQUE INDEX IF NOT EXISTS uq_salon_open_job_per_chair
-  ON ops.salon_job_master (company_id, chair_id)
+CREATE UNIQUE INDEX IF NOT EXISTS uq_open_job_per_chair
+  ON ops.job_master (company_id, chair_id)
   WHERE job_status IN ('OPEN','HELD') AND is_deleted = FALSE AND chair_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
@@ -164,7 +164,7 @@ ALTER TABLE core.product_master
 
 -- ---------------------------------------------------------------------------
 -- 4. Stylist must survive settlement, or commission is uncomputable.
---    salon_job_child is a working set; sales_child is the ledger.
+--    job_child is a working set; sales_child is the ledger.
 -- ---------------------------------------------------------------------------
 ALTER TABLE ops.sales_child
   ADD COLUMN IF NOT EXISTS stylist_id BIGINT NULL;
@@ -236,11 +236,11 @@ COMMIT;
 
 -- ---------------------------------------------------------------------------
 -- 7. Stylist reporting index. CONCURRENTLY cannot run inside a transaction —
---    the runner executes this separately. ops.salon_job_child is new and empty
+--    the runner executes this separately. ops.job_child is new and empty
 --    on first apply, so this is instant; CONCURRENTLY matters on re-runs.
 -- ---------------------------------------------------------------------------
 -- RUNNER_CONCURRENT_BLOCK_START
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_salon_job_child_stylist
-  ON ops.salon_job_child (company_id, stylist_id)
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_job_child_stylist
+  ON ops.job_child (company_id, stylist_id)
   WHERE stylist_id IS NOT NULL;
 -- RUNNER_CONCURRENT_BLOCK_END

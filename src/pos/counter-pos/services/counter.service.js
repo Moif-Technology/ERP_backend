@@ -1,6 +1,12 @@
 import { pool, withTransaction } from '../../../config/db.js';
 import * as repo from '../repositories/counter.repository.js';
 
+function parseBoolFlag(v) {
+  if (v === true || v === 1) return true;
+  const s = String(v ?? '').trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes' || s === 'y' || s === 'admin';
+}
+
 function parseContext(authStaff, query = {}) {
   return {
     companyId: Number(authStaff.company_id),
@@ -8,6 +14,8 @@ function parseContext(authStaff, query = {}) {
     stationId: Number(authStaff.station_id ?? authStaff.branch_id),
     staffId:   Number(authStaff.staff_id),
     counterNo: Number(query.counterNo ?? 1),
+    // Admin counter close: all cashiers' pending on this counter
+    allStaff:  parseBoolFlag(query.allStaff ?? query.admin),
   };
 }
 

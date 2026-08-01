@@ -25,9 +25,9 @@ DELETE FROM core.software_type_feature WHERE software_type_id = 8;
 DELETE FROM core.software_type_master  WHERE software_type_id = 8;
 
 -- 3. Drop the salon job tables. Child first (FK), though CASCADE covers it.
-DROP INDEX IF EXISTS ops.idx_salon_job_child_stylist;
-DROP TABLE IF EXISTS ops.salon_job_child;
-DROP TABLE IF EXISTS ops.salon_job_master;
+DROP INDEX IF EXISTS ops.idx_job_child_stylist;
+DROP TABLE IF EXISTS ops.job_child;
+DROP TABLE IF EXISTS ops.job_master;
 
 COMMIT;
 

@@ -315,6 +315,7 @@ export async function listProductsByCompanyAndBranch(pool, companyId, branchId, 
   subGroupId = null,
   barcode = null,
   productCode = null,
+  search = null,
   limit = null,
 } = {}) {
   const params = [companyId, branchId];
@@ -335,6 +336,16 @@ export async function listProductsByCompanyAndBranch(pool, companyId, branchId, 
   if (productCode != null && String(productCode).trim() !== '') {
     params.push(String(productCode).trim().toLowerCase());
     extra.push(`LOWER(m.product_code) = $${params.length}`);
+  }
+  if (search != null && String(search).trim() !== '') {
+    params.push(`%${String(search).trim().toLowerCase()}%`);
+    const p = `$${params.length}`;
+    extra.push(`(
+      LOWER(COALESCE(m.product_name, '')) LIKE ${p}
+      OR LOWER(COALESCE(m.short_name, '')) LIKE ${p}
+      OR LOWER(COALESCE(m.product_code, '')) LIKE ${p}
+      OR LOWER(COALESCE(m.barcode, '')) LIKE ${p}
+    )`);
   }
 
   const where = extra.length > 0 ? `AND ${extra.join(' AND ')}` : '';

@@ -245,15 +245,19 @@ async function loadVoucherDetails(pool, companyId, branchId, masterRow) {
 }
 
 export async function listVouchersByPostedId(pool, companyId, branchId, postedId, creationMode = 'INVENTORYACCOUNTS') {
+  const modes = Array.isArray(creationMode)
+    ? creationMode
+    : [creationMode];
   const { rows: mRows } = await pool.query(
     `SELECT vm.*, vt.voucher_name, vt.voucher_type_code
      FROM accounts.voucher_master vm
      LEFT JOIN accounts.voucher_type_master vt
        ON vt.company_id = vm.company_id AND vt.voucher_type_id = vm.voucher_type_id
      WHERE vm.company_id = $1 AND vm.branch_id = $2 AND vm.voucher_posted_id = $3
-       AND vm.creation_mode = $4 AND vm.record_status = 'ACTIVE'
+       AND UPPER(TRIM(COALESCE(vm.creation_mode, ''))) = ANY($4::text[])
+       AND vm.record_status = 'ACTIVE'
      ORDER BY vm.voucher_master_id ASC`,
-    [companyId, branchId, postedId, creationMode],
+    [companyId, branchId, postedId, modes.map((m) => String(m).trim().toUpperCase())],
   );
   const out = [];
   for (const masterRow of mRows) {
