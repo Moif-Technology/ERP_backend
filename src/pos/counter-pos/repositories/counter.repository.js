@@ -138,6 +138,97 @@ export async function getPendingSummary(pool, { companyId, stationId, counterNo,
   };
 }
 
+/**
+ * Pending sales broken down by cashier/staff for counter close UI + X/Z print.
+ * Returns: staff_id, staff_name, bill_count, sale_amount (gross of positive bills).
+ */
+export async function getPendingStaffBreakdown(pool, {
+  companyId, stationId, counterNo, staffId, allStaff = false,
+}) {
+  const params = [companyId, stationId, counterNo];
+  let staffClause = '';
+  if (!allStaff) {
+    params.push(staffId);
+    staffClause = `AND sm.staff_id = $${params.length}`;
+  }
+  const { rows } = await pool.query(
+    `SELECT
+       sm.staff_id,
+       COALESCE(NULLIF(TRIM(st.staff_name), ''), 'Staff #' || sm.staff_id::text) AS staff_name,
+       COUNT(*) FILTER (WHERE sm.amount > 0)::INT AS bill_count,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN sm.amount ELSE 0 END), 0) AS sale_amount,
+       COALESCE(SUM(CASE
+         WHEN sm.transaction_type = 'RETURN' AND sm.amount > 0 THEN sm.amount
+         WHEN sm.amount < 0 THEN ABS(sm.amount)
+         ELSE 0
+       END), 0) AS refund_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN COALESCE(sm.cash_amount, 0) ELSE 0 END), 0) AS cash_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN COALESCE(sm.credit_card_amount, 0) ELSE 0 END), 0) AS card_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN COALESCE(sm.credit_amount, 0) ELSE 0 END), 0) AS credit_amount
+     FROM ops.sales_master sm
+     LEFT JOIN LATERAL (
+       SELECT s.staff_name
+         FROM core.staff_master s
+        WHERE s.company_id = sm.company_id
+          AND (s.id = sm.staff_id OR s.staff_id = sm.staff_id)
+        ORDER BY CASE WHEN s.id = sm.staff_id THEN 0 ELSE 1 END
+        LIMIT 1
+     ) st ON TRUE
+     WHERE sm.company_id = $1
+       AND sm.station_id = $2
+       AND sm.counter_no = $3
+       ${staffClause}
+       AND COALESCE(NULLIF(TRIM(sm.counter_close_status), ''), 'PENDING') = 'PENDING'
+       AND sm.post_status = 'POSTED'
+       AND UPPER(COALESCE(sm.hold_status, '')) NOT IN ('HOLD', 'DELIVERY')
+     GROUP BY sm.staff_id, st.staff_name
+     HAVING COUNT(*) FILTER (WHERE sm.amount > 0) > 0
+         OR COALESCE(SUM(CASE WHEN sm.amount > 0 THEN sm.amount ELSE 0 END), 0) <> 0
+     ORDER BY staff_name ASC NULLS LAST, sm.staff_id ASC`,
+    params,
+  );
+  return rows;
+}
+
+/**
+ * Staff breakdown for a completed Z-close (sales linked via counter_close_status = closeId).
+ */
+export async function getStaffBreakdownForClose(pool, { companyId, closeId }) {
+  const { rows } = await pool.query(
+    `SELECT
+       sm.staff_id,
+       COALESCE(NULLIF(TRIM(st.staff_name), ''), 'Staff #' || sm.staff_id::text) AS staff_name,
+       COUNT(*) FILTER (WHERE sm.amount > 0)::INT AS bill_count,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN sm.amount ELSE 0 END), 0) AS sale_amount,
+       COALESCE(SUM(CASE
+         WHEN sm.transaction_type = 'RETURN' AND sm.amount > 0 THEN sm.amount
+         WHEN sm.amount < 0 THEN ABS(sm.amount)
+         ELSE 0
+       END), 0) AS refund_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN COALESCE(sm.cash_amount, 0) ELSE 0 END), 0) AS cash_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN COALESCE(sm.credit_card_amount, 0) ELSE 0 END), 0) AS card_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN COALESCE(sm.credit_amount, 0) ELSE 0 END), 0) AS credit_amount
+     FROM ops.sales_master sm
+     LEFT JOIN LATERAL (
+       SELECT s.staff_name
+         FROM core.staff_master s
+        WHERE s.company_id = sm.company_id
+          AND (s.id = sm.staff_id OR s.staff_id = sm.staff_id)
+        ORDER BY CASE WHEN s.id = sm.staff_id THEN 0 ELSE 1 END
+        LIMIT 1
+     ) st ON TRUE
+     WHERE sm.company_id = $1
+       AND TRIM(COALESCE(sm.counter_close_status, '')) = TRIM($2::text)
+       AND sm.post_status = 'POSTED'
+     GROUP BY sm.staff_id, st.staff_name
+     HAVING COUNT(*) FILTER (WHERE sm.amount > 0) > 0
+         OR COALESCE(SUM(CASE WHEN sm.amount > 0 THEN sm.amount ELSE 0 END), 0) <> 0
+     ORDER BY staff_name ASC NULLS LAST, sm.staff_id ASC`,
+    [companyId, String(closeId)],
+  );
+  return rows;
+}
+
 /** Credit settlement receipts (customer receipt) still pending counter close. */
 export async function getCreditReceiptTotals(pool, { companyId, stationId, counterNo, staffId, allStaff = false }) {
   try {
@@ -574,21 +665,28 @@ const RECEIPT_LATERAL_JOIN = `
 /** List past counter closes (history) with optional date range. */
 export async function getCloseHistory(pool, {
   companyId, stationId, counterNo, staffId, dateFrom, dateTo, limit,
+  allStaff = false,
 }) {
   const lim = Math.min(Math.max(Number(limit) || 100, 1), 200);
   const today = new Date().toISOString().slice(0, 10);
   const from = dateFrom || today;
   const to = dateTo || today;
-  const params = [companyId, stationId, counterNo, staffId, from, to, lim];
+  const params = [companyId, stationId, counterNo, from, to];
+  let staffClause = '';
+  if (!allStaff) {
+    params.push(staffId);
+    staffClause = `AND cc.staff_id = $${params.length}`;
+  }
+  params.push(lim);
   const where = `
      WHERE cc.company_id = $1
        AND cc.station_id = $2
        AND cc.counter_no = $3
-       AND cc.staff_id   = $4
-       AND cc.close_date::date >= $5::date
-       AND cc.close_date::date <= $6::date
+       AND cc.close_date::date >= $4::date
+       AND cc.close_date::date <= $5::date
+       ${staffClause}
      ORDER BY cc.close_date DESC, cc.id DESC
-     LIMIT $7`;
+     LIMIT $${params.length}`;
 
   const fullSql = `
     SELECT cc.id, cc.close_no, cc.report_type, cc.close_date, cc.counter_no,

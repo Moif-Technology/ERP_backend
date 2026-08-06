@@ -52,6 +52,8 @@ function mapToFlutterPayload(merged) {
     ISWaiterMandotory: num('is_waiter_mandatory'),
     ClearAfterKOTSave: num('clear_after_kot_save'),
     SaveKOTonSettlement: num('save_kot_on_settlement'),
+    autoRoundOff: num('auto_round_off'),
+    customerDisplayEnabled: num('customer_display_enabled'),
     heading1Counter: str('heading1_counter'),
     heading2Counter: str('heading2_counter'),
     heading3Counter: str('heading3_counter'),

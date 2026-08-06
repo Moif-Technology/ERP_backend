@@ -8,11 +8,15 @@ function parseBoolFlag(v) {
 }
 
 function parseContext(authStaff, query = {}) {
+  // Salon settle writes sales_master.staff_id = staff PK (authStaff.id / JWT sub).
+  // Prefer PK so non-admin close matches pending bills; fall back to business staff_id.
+  const staffPk = Number(authStaff.id ?? authStaff.staff_pk ?? authStaff.staffPk);
+  const staffBiz = Number(authStaff.staff_id);
   return {
     companyId: Number(authStaff.company_id),
     branchId:  Number(authStaff.branch_id),
     stationId: Number(authStaff.station_id ?? authStaff.branch_id),
-    staffId:   Number(authStaff.staff_id),
+    staffId:   Number.isFinite(staffPk) && staffPk > 0 ? staffPk : staffBiz,
     counterNo: Number(query.counterNo ?? 1),
     // Admin counter close: all cashiers' pending on this counter
     allStaff:  parseBoolFlag(query.allStaff ?? query.admin),
@@ -24,10 +28,11 @@ function parseContext(authStaff, query = {}) {
  * Used by both X Report (read-only) and Z Report (before closing).
  */
 async function buildSummary(ctx) {
-  const [sales, cashFlow, receipts] = await Promise.all([
+  const [sales, cashFlow, receipts, staffRows] = await Promise.all([
     repo.getPendingSummary(pool, ctx),
     repo.getCashInOutTotals(pool, ctx),
     repo.getCreditReceiptTotals(pool, ctx),
+    repo.getPendingStaffBreakdown(pool, ctx),
   ]);
 
   const totalCash    = Number(sales.total_cash);
@@ -75,7 +80,22 @@ async function buildSummary(ctx) {
     complimentBillCount: Number(sales.compliment_bill_count ?? 0),
     startBillNo:  sales.start_bill_no ? Number(sales.start_bill_no) : null,
     endBillNo:    sales.end_bill_no   ? Number(sales.end_bill_no)   : null,
+    staffSales: mapStaffSalesRows(staffRows),
   };
+}
+
+function mapStaffSalesRows(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((r) => ({
+    staffId:      r.staff_id != null ? Number(r.staff_id) : null,
+    staffName:    r.staff_name != null ? String(r.staff_name) : 'Unknown',
+    billCount:    Number(r.bill_count ?? 0),
+    saleAmount:   Number(r.sale_amount ?? 0),
+    refundAmount: Number(r.refund_amount ?? 0),
+    cashAmount:   Number(r.cash_amount ?? 0),
+    cardAmount:   Number(r.card_amount ?? 0),
+    creditAmount: Number(r.credit_amount ?? 0),
+  }));
 }
 
 function mapCashInOutRow(r) {
@@ -272,11 +292,14 @@ function mapCloseRow(r) {
 export async function getHistory(authStaff, query) {
   const ctx = parseContext(authStaff, query);
   const today = new Date().toISOString().slice(0, 10);
+  // Viewer / admin: allStaff=true lists every cashier on the counter.
+  // Default stays staff-scoped unless the client asks for all.
   const rows = await repo.getCloseHistory(pool, {
     ...ctx,
     dateFrom: query.dateFrom || today,
     dateTo:   query.dateTo   || today,
     limit:    query.limit,
+    allStaff: ctx.allStaff,
   });
   return rows.map(mapCloseRow);
 }
@@ -293,6 +316,10 @@ export async function getCloseDetail(authStaff, closeId) {
   }
   const receipts = await repo.getCreditReceiptTotalsForClose(pool, companyId, cid);
   const cashInOutRows = await repo.getCashInOutByCloseId(pool, { companyId, closeId: cid });
+  const staffRows = await repo.getStaffBreakdownForClose(pool, {
+    companyId,
+    closeId: cid,
+  });
   return {
     ...mapCloseRow({
       ...record,
@@ -300,6 +327,7 @@ export async function getCloseDetail(authStaff, closeId) {
       linked_receipt_card:  receipts.receipt_card,
       linked_receipt_count: receipts.receipt_count,
     }),
+    staffSales: mapStaffSalesRows(staffRows),
     cashInOutList: cashInOutRows.map(mapCashInOutRow),
   };
 }

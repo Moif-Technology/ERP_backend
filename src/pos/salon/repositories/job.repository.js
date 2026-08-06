@@ -249,7 +249,7 @@ export async function listOpenJobs(executor, companyId, {
 
   const { rows } = await executor.query(
     `SELECT m.job_id, m.job_no, m.job_status, m.chair_id, m.area_id,
-            m.customer_id, m.primary_stylist_id, m.amount,
+            m.customer_id, m.primary_stylist_id, m.created_by, m.amount,
             m.start_time, m.job_date, m.job_time, m.station_id,
             t.table_name   AS chair_name,
             a.area_name,

@@ -548,6 +548,8 @@ export async function listJobs(pool, authStaff, query = {}) {
         mobileNo: mobile,
         PrimaryStylistID: r.primary_stylist_id != null ? String(r.primary_stylist_id) : '',
         PrimaryStylistName: r.primary_stylist_name ?? '',
+        CreatedBy: r.created_by != null ? String(r.created_by) : '',
+        createdBy: r.created_by != null ? String(r.created_by) : '',
         Amount: String(r.amount ?? 0),
         StartTime: r.start_time ?? null,
         JobDate: r.job_date ?? null,
@@ -563,6 +565,7 @@ export async function listJobs(pool, authStaff, query = {}) {
         TableName: r.chair_name ?? '',
         ChairNo: r.chair_id != null ? String(r.chair_id) : '',
         staffName: r.primary_stylist_name ?? '',
+        staffId: r.primary_stylist_id != null ? String(r.primary_stylist_id) : '',
       };
     }),
   };

@@ -678,3 +678,228 @@ export async function settleSale(pool, body, authStaff) {
   });
 }
 
+function resolveCounterCloseStatus(row) {
+  if (row.counter_close_no != null) return String(row.counter_close_no);
+  const st = String(row.counter_close_status ?? '').trim();
+  if (!st || st === 'PENDING') return 'PENDING';
+  return st;
+}
+
+function toIsoDate(value, fallback) {
+  if (value == null || String(value).trim() === '') return fallback;
+  const s = String(value).trim();
+  // yyyy-MM-dd or full ISO
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  // dd/MM/yyyy or dd/MM/yyyy HH:mm
+  const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+  return fallback;
+}
+
+/** GET Sales Viewer list — Flutter PascalCase rows. */
+export async function listSalesViewer(pool, authStaff, query = {}) {
+  const companyId = Number(authStaff.company_id);
+  if (!Number.isFinite(companyId) || companyId < 1) {
+    throw badRequest('company_id required');
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const dateFrom = toIsoDate(query.dateFrom ?? query.fromDate ?? query.fromDateTime, today);
+  const dateTo = toIsoDate(query.dateTo ?? query.toDate ?? query.toDateTime, today);
+
+  const rows = await salesRepo.listPostedSales(pool, {
+    companyId,
+    dateFrom,
+    dateTo,
+    filterKey: query.filter ?? query.filterKey ?? null,
+    searchQuery: query.q ?? query.search ?? query.searchQuery ?? '',
+    limit: query.limit,
+  });
+
+  return rows.map((r) => ({
+    SalesID: String(r.sales_id),
+    BillNo: String(r.bill_no),
+    CounterNo: String(r.counter_no ?? ''),
+    BillDate: r.bill_date,
+    BillTime: r.bill_time ?? r.bill_date,
+    PaymentMode: normalizeBillPaymentMode(r.payment_mode ?? PM.CASH),
+    CustomerName: r.customer_name ?? 'Walk-in',
+    SalesManName: r.staff_name ?? '',
+    SubTotalM: Number(r.subtotal_amount ?? 0),
+    TaxableAmount: Number(r.taxable_amount ?? 0),
+    Tax1AmountM: Number(r.tax_1_amount ?? 0),
+    DiscountAmount: Number(r.discount_amount ?? 0),
+    RoundOffAdj: Number(r.round_off_adjustment ?? 0),
+    Amount: Number(r.amount ?? 0),
+    CreditCardNo: r.credit_card_no ?? '',
+    Remarks: r.remarks?.trim() || '',
+    CounterCloseStatus: resolveCounterCloseStatus(r),
+  }));
+}
+
+/** GET Sales Viewer bill detail — Flutter salesMaster / salesItems shape. */
+export async function getSalesViewerBill(pool, authStaff, salesIdRaw) {
+  const companyId = Number(authStaff.company_id);
+  const salesId = Number(salesIdRaw);
+  if (!Number.isFinite(companyId) || companyId < 1) {
+    throw badRequest('company_id required');
+  }
+  if (!Number.isFinite(salesId) || salesId < 1) {
+    throw badRequest('salesId required');
+  }
+
+  const detail = await salesRepo.getPostedBillDetail(pool, companyId, salesId);
+  if (!detail) {
+    const err = new Error('Bill not found');
+    err.status = 404;
+    throw err;
+  }
+
+  const m = detail.master;
+  const paymentMode = normalizeBillPaymentMode(m.payment_mode ?? PM.CASH);
+
+  return {
+    salesMaster: {
+      SalesID: String(m.sales_id),
+      BillNo: String(m.bill_no),
+      BillDate: m.bill_date,
+      BillTime: m.bill_time ?? m.bill_date,
+      PaymentMode: paymentMode,
+      CustomerName: m.customer_name ?? 'Walk-in',
+      SalesManName: m.staff_name ?? '',
+      CashierName: m.staff_name ?? '',
+      CounterNo: String(m.counter_no ?? ''),
+      CreditCardNo: m.credit_card_no ?? '',
+      SubTotalM: Number(m.subtotal_amount ?? 0),
+      TaxableAmount: Number(m.taxable_amount ?? 0),
+      Tax1AmountM: Number(m.tax_1_amount ?? 0),
+      Tax1RateM: Number(m.tax_1_rate ?? 0),
+      DiscountAmount: Number(m.discount_amount ?? 0),
+      RoundOffAdj: Number(m.round_off_adjustment ?? 0),
+      Amount: Number(m.amount ?? 0),
+      PaidAmount: Number(m.paid_amount ?? 0),
+      BalancePaid: Number(m.balance_paid ?? 0),
+      Remarks: m.remarks?.trim() || '',
+      CounterCloseStatus: resolveCounterCloseStatus(m),
+    },
+    salesItems: detail.items.map((it) => ({
+      BarCode: it.product_code ?? '',
+      ShortDescription: it.short_description ?? '',
+      Qty: Number(it.qty ?? 0),
+      UnitPrice: Number(it.unit_price ?? 0),
+      DiscountAmount: Number(it.discount_amount ?? 0),
+      SubTotalC: Number(it.subtotal_amount ?? 0),
+      Tax1AmountC: Number(it.tax_1_amount ?? 0),
+      Tax1RateC: Number(it.tax_1_rate ?? 0),
+      LineTotal: Number(it.line_total ?? 0),
+    })),
+    paymentSplits: detail.splits.map((s) => ({
+      payerNo: Number(s.payer_no),
+      payMode: s.pay_mode,
+      amount: Number(s.bill_amount ?? 0),
+      tip: Number(s.tip_amount ?? 0),
+      refNo: s.ref_no ?? '',
+    })),
+  };
+}
+
+function reportDateRange(query = {}) {
+  const today = new Date().toISOString().slice(0, 10);
+  return {
+    dateFrom: toIsoDate(query.dateFrom ?? query.fromDate ?? query.fromDateTime, today),
+    dateTo: toIsoDate(query.dateTo ?? query.toDate ?? query.toDateTime, today),
+  };
+}
+
+function optionalId(raw) {
+  if (raw == null || String(raw).trim() === '' || String(raw).trim().toLowerCase() === 'all') {
+    return null;
+  }
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function money(n) {
+  const v = Number(n);
+  return Number.isFinite(v) ? Math.round(v * 1000) / 1000 : 0;
+}
+
+/** GET salesman-wise aggregate report. */
+export async function salesmanWiseReport(pool, authStaff, query = {}) {
+  const companyId = Number(authStaff.company_id);
+  if (!Number.isFinite(companyId) || companyId < 1) {
+    throw badRequest('company_id required');
+  }
+  const { dateFrom, dateTo } = reportDateRange(query);
+  const rows = await salesRepo.salesmanWiseSales(pool, {
+    companyId,
+    dateFrom,
+    dateTo,
+    staffId: optionalId(query.staffId ?? query.salesmanId),
+  });
+  return rows.map((r) => ({
+    staffId: r.staff_id != null ? Number(r.staff_id) : null,
+    staffName: r.staff_name ?? 'UNASSIGNED',
+    billCount: Number(r.bill_count ?? 0),
+    subtotal: money(r.subtotal),
+    discount: money(r.discount),
+    taxable: money(r.taxable),
+    tax: money(r.tax),
+    roundOff: money(r.round_off),
+    net: money(r.net),
+    cash: money(r.cash),
+    card: money(r.card),
+    credit: money(r.credit),
+  }));
+}
+
+/** GET item-wise aggregate report. */
+export async function itemWiseReport(pool, authStaff, query = {}) {
+  const companyId = Number(authStaff.company_id);
+  if (!Number.isFinite(companyId) || companyId < 1) {
+    throw badRequest('company_id required');
+  }
+  const { dateFrom, dateTo } = reportDateRange(query);
+  const rows = await salesRepo.itemWiseSales(pool, {
+    companyId,
+    dateFrom,
+    dateTo,
+    productId: optionalId(query.productId ?? query.itemId),
+  });
+  return rows.map((r) => ({
+    productId: r.product_id != null ? Number(r.product_id) : null,
+    productCode: r.product_code ?? '',
+    productName: r.product_name ?? 'UNKNOWN',
+    groupName: r.group_name ?? '',
+    qty: money(r.qty),
+    subtotal: money(r.subtotal),
+    discount: money(r.discount),
+    tax: money(r.tax),
+    net: money(r.net),
+  }));
+}
+
+/** GET group-wise aggregate report. */
+export async function groupWiseReport(pool, authStaff, query = {}) {
+  const companyId = Number(authStaff.company_id);
+  if (!Number.isFinite(companyId) || companyId < 1) {
+    throw badRequest('company_id required');
+  }
+  const { dateFrom, dateTo } = reportDateRange(query);
+  const rows = await salesRepo.groupWiseSales(pool, {
+    companyId,
+    dateFrom,
+    dateTo,
+    groupId: optionalId(query.groupId),
+  });
+  return rows.map((r) => ({
+    groupId: r.group_id != null ? Number(r.group_id) : null,
+    groupName: r.group_name ?? 'UNASSIGNED',
+    billCount: Number(r.bill_count ?? 0),
+    qty: money(r.qty),
+    subtotal: money(r.subtotal),
+    discount: money(r.discount),
+    tax: money(r.tax),
+    net: money(r.net),
+  }));
+}
+

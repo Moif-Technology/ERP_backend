@@ -340,3 +340,343 @@ export async function insertPaymentSplits(client, {
   }
 }
 
+/**
+ * Posted salon bills for Sales Viewer (date + optional text filter).
+ * Scoped to entry_source = 'SALON-POS' so restaurant/counter bills never leak in.
+ */
+export async function listPostedSales(pool, {
+  companyId, dateFrom, dateTo, filterKey, searchQuery, limit,
+}) {
+  const lim = Math.min(Math.max(Number(limit) || 300, 1), 500);
+  const params = [companyId, dateFrom, dateTo];
+  let filterClause = '';
+  const q = String(searchQuery ?? '').trim();
+  if (q) {
+    const key = String(filterKey ?? 'CustomerName');
+    params.push(`%${q}%`);
+    const p = `$${params.length}`;
+    if (key === 'BillNo') {
+      filterClause = ` AND (sm.bill_no::text ILIKE ${p} OR sm.sales_id::text ILIKE ${p})`;
+    } else if (key === 'CounterNo') {
+      filterClause = ` AND sm.counter_no::text ILIKE ${p}`;
+    } else if (key === 'PaymentMode') {
+      filterClause = ` AND sm.payment_mode ILIKE ${p}`;
+    } else if (key === 'DeliveryBoyName') {
+      filterClause = ` AND st.staff_name ILIKE ${p}`;
+    } else {
+      filterClause = ` AND COALESCE(cm.customer_name, '') ILIKE ${p}`;
+    }
+  }
+  params.push(lim);
+
+  const { rows } = await pool.query(
+    `SELECT
+       sm.sales_id,
+       sm.bill_no,
+       sm.bill_date,
+       sm.bill_time,
+       sm.payment_mode,
+       sm.counter_no,
+       sm.amount,
+       sm.subtotal_amount,
+       sm.taxable_amount,
+       sm.tax_1_amount,
+       sm.discount_amount,
+       sm.round_off_adjustment,
+       sm.credit_card_no,
+       sm.remarks,
+       sm.counter_close_status,
+       cm.customer_name,
+       st.staff_name,
+       cc.close_no AS counter_close_no
+     FROM ops.sales_master sm
+     LEFT JOIN biz.customer_master cm
+       ON cm.company_id = sm.company_id AND cm.customer_id = sm.customer_id
+     LEFT JOIN LATERAL (
+       SELECT s.staff_name
+         FROM core.staff_master s
+        WHERE s.company_id = sm.company_id
+          AND (s.id = sm.staff_id OR s.staff_id = sm.staff_id)
+        ORDER BY CASE WHEN s.id = sm.staff_id THEN 0 ELSE 1 END
+        LIMIT 1
+     ) st ON TRUE
+     LEFT JOIN ops.counter_close cc
+       ON cc.company_id = sm.company_id
+      AND cc.id = CASE
+            WHEN sm.counter_close_status ~ '^[0-9]+$' THEN sm.counter_close_status::bigint
+            ELSE NULL
+          END
+     WHERE sm.company_id = $1
+       AND sm.entry_source = 'SALON-POS'
+       AND sm.post_status = 'POSTED'
+       AND COALESCE(sm.hold_status, '') NOT IN ('HOLD', 'DELIVERY', 'CANCELLED')
+       AND sm.bill_date::date >= $2::date
+       AND sm.bill_date::date <= $3::date
+       ${filterClause}
+     ORDER BY sm.bill_date DESC, sm.sales_id DESC
+     LIMIT $${params.length}`,
+    params,
+  );
+  return rows;
+}
+
+/** Single posted salon bill header + line items + payment splits. */
+export async function getPostedBillDetail(pool, companyId, salesId) {
+  const { rows: masters } = await pool.query(
+    `SELECT
+       sm.sales_id,
+       sm.bill_no,
+       sm.bill_date,
+       sm.bill_time,
+       sm.payment_mode,
+       sm.counter_no,
+       sm.subtotal_amount,
+       sm.discount_amount,
+       sm.taxable_amount,
+       sm.tax_1_amount,
+       sm.tax_1_rate,
+       sm.round_off_adjustment,
+       sm.amount,
+       sm.paid_amount,
+       sm.balance_paid,
+       sm.cash_amount,
+       sm.credit_amount,
+       sm.credit_card_amount,
+       sm.outstanding_balance,
+       sm.credit_card_no,
+       sm.remarks,
+       sm.counter_close_status,
+       cm.customer_id,
+       cm.customer_code,
+       cm.customer_name,
+       st.staff_name,
+       cc.close_no AS counter_close_no
+     FROM ops.sales_master sm
+     LEFT JOIN biz.customer_master cm
+       ON cm.company_id = sm.company_id AND cm.customer_id = sm.customer_id
+     LEFT JOIN LATERAL (
+       SELECT s.staff_name
+         FROM core.staff_master s
+        WHERE s.company_id = sm.company_id
+          AND (s.id = sm.staff_id OR s.staff_id = sm.staff_id)
+        ORDER BY CASE WHEN s.id = sm.staff_id THEN 0 ELSE 1 END
+        LIMIT 1
+     ) st ON TRUE
+     LEFT JOIN ops.counter_close cc
+       ON cc.company_id = sm.company_id
+      AND cc.id = CASE
+            WHEN sm.counter_close_status ~ '^[0-9]+$' THEN sm.counter_close_status::bigint
+            ELSE NULL
+          END
+     WHERE sm.company_id = $1
+       AND sm.sales_id = $2
+       AND sm.entry_source = 'SALON-POS'
+       AND sm.post_status = 'POSTED'
+       AND COALESCE(sm.hold_status, '') NOT IN ('HOLD', 'DELIVERY', 'CANCELLED')`,
+    [companyId, salesId],
+  );
+  if (!masters[0]) return null;
+
+  const { rows: items } = await pool.query(
+    `SELECT
+       sc.sales_child_id,
+       sc.product_id,
+       COALESCE(pm.product_code, pm.barcode, sc.product_id::text) AS product_code,
+       sc.short_description,
+       sc.qty,
+       sc.unit_price,
+       sc.discount_amount,
+       sc.subtotal_amount,
+       sc.tax_1_amount,
+       sc.tax_1_rate,
+       sc.line_total
+     FROM ops.sales_child sc
+     LEFT JOIN core.product_master pm
+       ON pm.company_id = sc.company_id AND pm.product_id = sc.product_id
+     WHERE sc.company_id = $1 AND sc.sales_id = $2
+     ORDER BY sc.sales_child_id`,
+    [companyId, salesId],
+  );
+
+  const { rows: splits } = await pool.query(
+    `SELECT payer_no, pay_mode, bill_amount, tip_amount, ref_no
+     FROM ops.sales_payment_split
+     WHERE company_id = $1 AND sales_id = $2
+     ORDER BY payer_no`,
+    [companyId, salesId],
+  );
+
+  return { master: masters[0], items, splits };
+}
+
+/** Shared posted salon bill filter for aggregate reports. */
+function salonPostedDateClause() {
+  return `
+       sm.company_id = $1
+       AND sm.entry_source = 'SALON-POS'
+       AND sm.post_status = 'POSTED'
+       AND COALESCE(sm.hold_status, '') NOT IN ('HOLD', 'DELIVERY', 'CANCELLED')
+       AND UPPER(COALESCE(sm.record_status, 'ACTIVE')) <> 'CANCELLED'
+       AND sm.bill_date::date >= $2::date
+       AND sm.bill_date::date <= $3::date`;
+}
+
+/**
+ * Salesman-wise — one row per staff_id on sales_master.
+ * net = SUM(sm.amount) — stored invoice total (do not re-derive).
+ */
+export async function salesmanWiseSales(pool, {
+  companyId, dateFrom, dateTo, staffId,
+}) {
+  const params = [companyId, dateFrom, dateTo];
+  let staffClause = '';
+  if (staffId != null && Number.isFinite(Number(staffId)) && Number(staffId) > 0) {
+    params.push(Number(staffId));
+    // Settle may store staff_master.id or staff_master.staff_id — match both (Counter Close).
+    staffClause = ` AND (
+      sm.staff_id = $${params.length}
+      OR EXISTS (
+        SELECT 1 FROM core.staff_master sx
+         WHERE sx.company_id = sm.company_id
+           AND (sx.id = sm.staff_id OR sx.staff_id = sm.staff_id)
+           AND (sx.id = $${params.length} OR sx.staff_id = $${params.length})
+      )
+    )`;
+  }
+
+  const { rows } = await pool.query(
+    `SELECT
+       sm.staff_id,
+       COALESCE(
+         NULLIF(TRIM(st.staff_name), ''),
+         CASE WHEN sm.staff_id IS NOT NULL THEN 'Staff #' || sm.staff_id::text ELSE 'UNASSIGNED' END
+       ) AS staff_name,
+       COUNT(*)::int AS bill_count,
+       COALESCE(SUM(sm.subtotal_amount), 0)::float8 AS subtotal,
+       COALESCE(SUM(sm.discount_amount), 0)::float8 AS discount,
+       COALESCE(SUM(sm.taxable_amount), 0)::float8 AS taxable,
+       COALESCE(SUM(
+         COALESCE(sm.tax_1_amount, 0)
+         + COALESCE(sm.tax_2_amount, 0)
+         + COALESCE(sm.tax_3_amount, 0)
+       ), 0)::float8 AS tax,
+       COALESCE(SUM(sm.round_off_adjustment), 0)::float8 AS round_off,
+       COALESCE(SUM(sm.amount), 0)::float8 AS net,
+       COALESCE(SUM(COALESCE(sm.cash_amount, 0)), 0)::float8 AS cash,
+       COALESCE(SUM(COALESCE(sm.credit_card_amount, 0)), 0)::float8 AS card,
+       COALESCE(SUM(COALESCE(sm.credit_amount, 0)), 0)::float8 AS credit
+     FROM ops.sales_master sm
+     LEFT JOIN LATERAL (
+       SELECT s.staff_name
+         FROM core.staff_master s
+        WHERE s.company_id = sm.company_id
+          AND (s.id = sm.staff_id OR s.staff_id = sm.staff_id)
+        ORDER BY CASE WHEN s.id = sm.staff_id THEN 0 ELSE 1 END
+        LIMIT 1
+     ) st ON TRUE
+     WHERE ${salonPostedDateClause()}
+       ${staffClause}
+     GROUP BY sm.staff_id, st.staff_name
+     ORDER BY net DESC, staff_name ASC`,
+    params,
+  );
+  return rows;
+}
+
+/**
+ * Item-wise — one row per product (sales_child).
+ * net = SUM(sc.line_total).
+ */
+export async function itemWiseSales(pool, {
+  companyId, dateFrom, dateTo, productId,
+}) {
+  const params = [companyId, dateFrom, dateTo];
+  let productClause = '';
+  if (productId != null && Number.isFinite(Number(productId)) && Number(productId) > 0) {
+    params.push(Number(productId));
+    productClause = ` AND sc.product_id = $${params.length}`;
+  }
+
+  const { rows } = await pool.query(
+    `SELECT
+       sc.product_id,
+       COALESCE(pm.product_code, '') AS product_code,
+       COALESCE(pm.product_name, sc.short_description, 'UNKNOWN') AS product_name,
+       COALESCE(g.group_description, '') AS group_name,
+       COALESCE(SUM(sc.qty), 0)::float8 AS qty,
+       COALESCE(SUM(sc.subtotal_amount), 0)::float8 AS subtotal,
+       COALESCE(SUM(sc.discount_amount), 0)::float8 AS discount,
+       COALESCE(SUM(
+         COALESCE(sc.tax_1_amount, 0)
+         + COALESCE(sc.tax_2_amount, 0)
+         + COALESCE(sc.tax_3_amount, 0)
+       ), 0)::float8 AS tax,
+       COALESCE(SUM(sc.line_total), 0)::float8 AS net
+     FROM ops.sales_child sc
+     JOIN ops.sales_master sm
+       ON sm.company_id = sc.company_id AND sm.sales_id = sc.sales_id
+     LEFT JOIN core.product_master pm
+       ON pm.company_id = sc.company_id AND pm.product_id = sc.product_id
+     LEFT JOIN biz.group_master g
+       ON g.company_id = COALESCE(sc.company_id, pm.company_id)
+      AND g.group_id = COALESCE(sc.group_id, pm.group_id)
+     WHERE ${salonPostedDateClause()}
+       ${productClause}
+     GROUP BY
+       sc.product_id,
+       COALESCE(pm.product_code, ''),
+       COALESCE(pm.product_name, sc.short_description, 'UNKNOWN'),
+       COALESCE(g.group_description, '')
+     ORDER BY net DESC, product_name ASC`,
+    params,
+  );
+  return rows;
+}
+
+/**
+ * Group-wise — one row per catalogue group.
+ * net = SUM(sc.line_total). Prefer sales_child.group_id, else product_master.group_id.
+ */
+export async function groupWiseSales(pool, {
+  companyId, dateFrom, dateTo, groupId,
+}) {
+  const params = [companyId, dateFrom, dateTo];
+  let groupClause = '';
+  if (groupId != null && Number.isFinite(Number(groupId)) && Number(groupId) > 0) {
+    params.push(Number(groupId));
+    groupClause = ` AND COALESCE(sc.group_id, pm.group_id) = $${params.length}`;
+  }
+
+  const { rows } = await pool.query(
+    `SELECT
+       COALESCE(sc.group_id, pm.group_id) AS group_id,
+       COALESCE(g.group_description, 'UNASSIGNED') AS group_name,
+       COUNT(DISTINCT sm.sales_id)::int AS bill_count,
+       COALESCE(SUM(sc.qty), 0)::float8 AS qty,
+       COALESCE(SUM(sc.subtotal_amount), 0)::float8 AS subtotal,
+       COALESCE(SUM(sc.discount_amount), 0)::float8 AS discount,
+       COALESCE(SUM(
+         COALESCE(sc.tax_1_amount, 0)
+         + COALESCE(sc.tax_2_amount, 0)
+         + COALESCE(sc.tax_3_amount, 0)
+       ), 0)::float8 AS tax,
+       COALESCE(SUM(sc.line_total), 0)::float8 AS net
+     FROM ops.sales_child sc
+     JOIN ops.sales_master sm
+       ON sm.company_id = sc.company_id AND sm.sales_id = sc.sales_id
+     LEFT JOIN core.product_master pm
+       ON pm.company_id = sc.company_id AND pm.product_id = sc.product_id
+     LEFT JOIN biz.group_master g
+       ON g.company_id = sc.company_id
+      AND g.group_id = COALESCE(sc.group_id, pm.group_id)
+     WHERE ${salonPostedDateClause()}
+       ${groupClause}
+     GROUP BY
+       COALESCE(sc.group_id, pm.group_id),
+       COALESCE(g.group_description, 'UNASSIGNED')
+     ORDER BY net DESC, group_name ASC`,
+    params,
+  );
+  return rows;
+}
+

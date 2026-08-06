@@ -35,7 +35,7 @@ import * as settlementController from '../counter-pos/controllers/settlement.con
 import * as counterController from '../counter-pos/controllers/counter.controller.js';
 
 import { authMiddleware } from '../../middleware/authMiddleware.js';
-import { requireFeature } from '../../middleware/entitlementMiddleware.js';
+import { requireFeature, requireAnyFeature } from '../../middleware/entitlementMiddleware.js';
 
 export const salonPosRouter = Router();
 
@@ -72,8 +72,37 @@ salonPosRouter.patch('/job/:jobId/line/:lineId/stylist', requireFeature('pos.sal
 // the job board without billing still cannot take money.
 salonPosRouter.post('/sales/settle', requireFeature('pos.settlement'), salesController.settle);
 
-// Credit receipts against sales O/S (same as counter-pos /settlement/*).
-salonPosRouter.get('/settlement/credit-customers', settlementController.listCreditCustomers);
+// Sales Viewer — posted bills list + bill-with-details (same idea as Counter-POS).
+// Accept pos.counter_reports OR base pos (menu treats absent counter_reports as allowed).
+salonPosRouter.get(
+  '/sales/viewer',
+  requireAnyFeature(['pos.counter_reports', 'pos']),
+  salesController.salesViewerList,
+);
+salonPosRouter.get(
+  '/sales/viewer/:salesId',
+  requireAnyFeature(['pos.counter_reports', 'pos']),
+  salesController.salesViewerBill,
+);
+
+// Aggregate sales reports (salesman / item / group).
+salonPosRouter.get(
+  '/sales/reports/salesman-wise',
+  requireAnyFeature(['pos.counter_reports', 'pos']),
+  salesController.salesmanWiseReport,
+);
+salonPosRouter.get(
+  '/sales/reports/item-wise',
+  requireAnyFeature(['pos.counter_reports', 'pos']),
+  salesController.itemWiseReport,
+);
+salonPosRouter.get(
+  '/sales/reports/group-wise',
+  requireAnyFeature(['pos.counter_reports', 'pos']),
+  salesController.groupWiseReport,
+);
+
+// Credit receipts against sales O/S (same as counter-pos /settlement/*).salonPosRouter.get('/settlement/credit-customers', settlementController.listCreditCustomers);
 salonPosRouter.get('/settlement/customers/:customerId/bills', settlementController.getOutstandingBills);
 salonPosRouter.post('/settlement/save', settlementController.saveSettlement);
 salonPosRouter.get('/settlement/history', settlementController.listHistory);
