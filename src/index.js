@@ -138,7 +138,7 @@ app.use(
     origin: config.corsOrigins,
     credentials: true, // required for httpOnly cookie exchange
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'OPTIONS', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'stationId', 'staffName', 'staffID'],
   })
 );
 app.use(express.json({ limit: '4mb' }));

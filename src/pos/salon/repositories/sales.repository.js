@@ -324,13 +324,14 @@ export async function insertPaymentSplits(client, {
 }) {
   let payerNo = 1;
   for (const s of splits) {
+    const tipAmount = Number(s.tip ?? s.tipAmount ?? 0);
     await insertSalesPaymentSplit(client, {
       companyId,
       salesId,
       payerNo: payerNo++,
       payMode: s.payMode,
       billAmount: s.amount,
-      tipAmount: s.tip ?? 0,
+      tipAmount: Number.isFinite(tipAmount) && tipAmount > 0 ? tipAmount : 0,
       branchId,
       counterId: counterNo,
       staffId,
@@ -388,7 +389,13 @@ export async function listPostedSales(pool, {
        sm.counter_close_status,
        cm.customer_name,
        st.staff_name,
-       cc.close_no AS counter_close_no
+       cc.close_no AS counter_close_no,
+       COALESCE((
+         SELECT SUM(COALESCE(sps.tip_amount, 0))
+           FROM ops.sales_payment_split sps
+          WHERE sps.company_id = sm.company_id
+            AND sps.sales_id = sm.sales_id
+       ), 0) AS tip_amount
      FROM ops.sales_master sm
      LEFT JOIN biz.customer_master cm
        ON cm.company_id = sm.company_id AND cm.customer_id = sm.customer_id

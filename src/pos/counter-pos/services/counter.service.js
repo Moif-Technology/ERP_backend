@@ -46,13 +46,18 @@ async function buildSummary(ctx) {
   const totalRoundOff = Number(sales.total_round_off);
   const totalTax     = Number(sales.total_tax);
   const grossAmount  = Number(sales.gross_amount);
+  const totalTip     = Number(sales.total_tip ?? 0);
+  const totalCashTip = Number(sales.total_cash_tip ?? 0);
+  const totalCardTip = Number(sales.total_card_tip ?? 0);
   const cashIn       = Number(cashFlow.cash_in);
   const cashOut      = Number(cashFlow.cash_out);
   const creditReceiptCash = Number(receipts.receipt_cash);
   const creditReceiptCard = Number(receipts.receipt_card);
 
-  // Physical cash in drawer = sales cash + credit receipts (cash) + cash in - cash out - refunds
-  const cashToBeCollected = totalCash + creditReceiptCash + cashIn - cashOut - totalRefund;
+  // Physical cash in drawer = sales cash + cash tips + credit receipts (cash)
+  // + cash in - cash out - refunds. Card tips do not enter the cash drawer.
+  const cashToBeCollected =
+    totalCash + totalCashTip + creditReceiptCash + cashIn - cashOut - totalRefund;
 
   return {
     totalCash,
@@ -65,6 +70,9 @@ async function buildSummary(ctx) {
     totalRefund,
     totalRoundOff,
     totalTax,
+    totalTip,
+    totalCashTip,
+    totalCardTip,
     grossAmount,
     cashIn,
     cashOut,
@@ -91,6 +99,7 @@ function mapStaffSalesRows(rows) {
     staffName:    r.staff_name != null ? String(r.staff_name) : 'Unknown',
     billCount:    Number(r.bill_count ?? 0),
     saleAmount:   Number(r.sale_amount ?? 0),
+    tipAmount:    Number(r.tip_amount ?? 0),
     refundAmount: Number(r.refund_amount ?? 0),
     cashAmount:   Number(r.cash_amount ?? 0),
     cardAmount:   Number(r.card_amount ?? 0),

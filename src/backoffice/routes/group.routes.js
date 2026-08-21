@@ -10,5 +10,6 @@ groupRouter.use(requireAnyFeature(['backoffice.product_group', 'pos.product_sear
 groupRouter.get('/next-code', groupController.nextGroupCode);
 groupRouter.get('/', groupController.listGroups);
 groupRouter.post('/', groupController.createGroup);
+groupRouter.put('/reorder', groupController.reorderGroups);
 groupRouter.patch('/:groupId', groupController.updateGroup);
 groupRouter.delete('/:groupId', groupController.deleteGroup);

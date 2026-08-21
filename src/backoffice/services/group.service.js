@@ -80,6 +80,7 @@ export async function createGroup(pool, body, authStaff) {
 
   const keyCode = legacyKeyNumeric(body.keyCode);
   const keyShift = legacyKeyNumeric(body.keyShift);
+  const sortOrderRaw = parseOptionalNumeric(body.sortOrder ?? body.sort_order);
 
   return withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
@@ -94,6 +95,10 @@ export async function createGroup(pool, body, authStaff) {
     });
 
     const groupId = await groupRepo.nextGroupId(client, companyId, branchId);
+    const sortOrder =
+      sortOrderRaw != null && sortOrderRaw >= 0
+        ? Math.floor(sortOrderRaw)
+        : await groupRepo.nextSortOrder(client, companyId, branchId);
     return groupRepo.insertGroup(client, {
       groupId,
       companyId,
@@ -103,6 +108,7 @@ export async function createGroup(pool, body, authStaff) {
       groupDescriptionArabic: descAr,
       keyCode,
       keyShift,
+      sortOrder,
       createdByStaffId: actorStaffPk(authStaff),
     });
   });
@@ -148,6 +154,8 @@ export async function updateGroup(pool, groupIdRaw, body, authStaff) {
   const descArRaw =
     body.groupDescriptionArabic != null ? String(body.groupDescriptionArabic).trim() : '';
 
+  const sortOrderRaw = parseOptionalNumeric(body.sortOrder ?? body.sort_order);
+
   const updated = await withTransaction(async (client) =>
     groupRepo.updateGroup(client, {
       groupId,
@@ -158,6 +166,7 @@ export async function updateGroup(pool, groupIdRaw, body, authStaff) {
       groupDescriptionArabic: descArRaw,
       keyCode: legacyKeyNumeric(body.keyCode),
       keyShift: legacyKeyNumeric(body.keyShift),
+      sortOrder: sortOrderRaw != null && sortOrderRaw >= 0 ? Math.floor(sortOrderRaw) : null,
       modifiedByStaffId: actorStaffPk(authStaff),
     })
   );
@@ -168,6 +177,61 @@ export async function updateGroup(pool, groupIdRaw, body, authStaff) {
     throw err;
   }
   return updated;
+}
+
+/**
+ * PUT body: { branchId, groupIds: number[] } — ordered list of business group_id values.
+ * POS / counter tiles follow this order after save.
+ */
+export async function reorderGroups(pool, body, authStaff) {
+  const branchId = parseBranchId(body?.branchId ?? authStaff.branch_id);
+  if (branchId == null) {
+    const err = new Error('branchId is required');
+    err.status = 400;
+    throw err;
+  }
+
+  const rawIds = Array.isArray(body?.groupIds)
+    ? body.groupIds
+    : Array.isArray(body?.orderedGroupIds)
+      ? body.orderedGroupIds
+      : null;
+  if (!rawIds || rawIds.length === 0) {
+    const err = new Error('groupIds must be a non-empty array');
+    err.status = 400;
+    throw err;
+  }
+
+  const orderedGroupIds = [];
+  const seen = new Set();
+  for (const raw of rawIds) {
+    const id = Number(raw);
+    if (!Number.isFinite(id) || id < 1 || seen.has(id)) continue;
+    seen.add(id);
+    orderedGroupIds.push(id);
+  }
+  if (orderedGroupIds.length === 0) {
+    const err = new Error('groupIds must contain valid group ids');
+    err.status = 400;
+    throw err;
+  }
+
+  const companyId = Number(authStaff.company_id);
+  const branchOk = await branchRepo.branchBelongsToCompany(pool, companyId, branchId);
+  if (!branchOk) {
+    const err = new Error('Invalid branch for this company');
+    err.status = 400;
+    throw err;
+  }
+
+  return withTransaction(async (client) =>
+    groupRepo.reorderGroups(client, {
+      companyId,
+      branchId,
+      orderedGroupIds,
+      modifiedByStaffId: actorStaffPk(authStaff),
+    }),
+  );
 }
 
 export async function deleteGroup(pool, groupIdRaw, body, authStaff) {

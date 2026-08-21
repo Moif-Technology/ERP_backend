@@ -210,7 +210,7 @@ export async function saveJob(pool, body, authStaff) {
       ?? body.CurrentKOTID ?? body.currentKotId ?? body.KotMasterID
   );
 
-  // Append with no new lines = soft update of the same job (no error).
+  // Append with no new lines = soft update (discount / header) of the same job.
   if (!rawItems.length && appendJobIdEarly != null) {
     const existing = await jobRepo.findJobMaster(pool, companyId, appendJobIdEarly);
     if (!existing) {
@@ -218,6 +218,20 @@ export async function saveJob(pool, body, authStaff) {
       err.status = 404;
       throw err;
     }
+    if (existing.job_status === 'SETTLED') {
+      const err = new Error(`Job ${existing.job_no} is already settled and cannot be updated`);
+      err.status = 409;
+      throw err;
+    }
+    const billDiscount = num(
+      body.BillDiscount ?? body.billDiscount ?? body.txtDiscount, 0,
+    );
+    await withTransaction(async (client) => {
+      await jobRepo.updateJobBillDiscount(
+        client, companyId, appendJobIdEarly, billDiscount, createdBy,
+      );
+      await jobRepo.refreshJobTotals(client, companyId, appendJobIdEarly, createdBy);
+    });
     const lines = await jobRepo.listJobLines(pool, companyId, appendJobIdEarly);
     const data = lines.map(mapLineForClient);
     return {
@@ -232,6 +246,7 @@ export async function saveJob(pool, body, authStaff) {
       currentKotId: String(appendJobIdEarly),
       newLineIds: [],
       newKotChildIds: [],
+      billDiscount,
       data,
       kotDetails: { success: true, data },
     };
@@ -368,6 +383,12 @@ export async function saveJob(pool, body, authStaff) {
       lineId += 1;
     }
 
+    // Always sync bill discount on create and on append (client sends txtDiscount).
+    const billDiscount = num(
+      body.BillDiscount ?? body.billDiscount ?? body.txtDiscount, 0,
+    );
+    await jobRepo.updateJobBillDiscount(client, companyId, jobId, billDiscount, createdBy);
+
     const totals = await jobRepo.refreshJobTotals(client, companyId, jobId, createdBy);
     const lines  = await jobRepo.listJobLines(client, companyId, jobId);
     const data = lines.map(mapLineForClient);
@@ -474,6 +495,14 @@ export async function getJob(pool, authStaff, jobIdRaw) {
   }
 
   const lines = await jobRepo.listJobLines(pool, companyId, jobId);
+  const sub = Number(master.sub_total ?? 0) || 0;
+  const tax = Number(master.tax_1_amount ?? 0) || 0;
+  const disc = Math.min(
+    Math.max(Number(master.bill_discount ?? 0) || 0, 0),
+    Math.max(sub, 0),
+  );
+  const ratio = sub > 0 ? (sub - disc) / sub : 1;
+  const netAmount = Math.round(((sub - disc) + tax * ratio) * 1000) / 1000;
   return {
     success: true,
     job: {
@@ -484,9 +513,13 @@ export async function getJob(pool, authStaff, jobIdRaw) {
       AreaID: master.area_id != null ? String(master.area_id) : '',
       CustomerID: master.customer_id != null ? String(master.customer_id) : '',
       PrimaryStylistID: master.primary_stylist_id != null ? String(master.primary_stylist_id) : '',
-      SubTotal: String(master.sub_total ?? 0),
-      Tax1Amount: String(master.tax_1_amount ?? 0),
-      Amount: String(master.amount ?? 0),
+      SubTotal: String(sub),
+      Tax1Amount: String(tax),
+      BillDiscount: String(disc),
+      billDiscount: disc,
+      Amount: String(netAmount),
+      NetAmount: String(netAmount),
+      netAmount,
       Remarks: master.remarks ?? '',
     },
     data: lines.map(mapLineForClient),
@@ -532,6 +565,16 @@ export async function listJobs(pool, authStaff, query = {}) {
       const jobId = String(r.job_id);
       const jobNo = r.job_no ?? '';
       const mobile = r.mobile_no ?? r.telephone ?? '';
+      // Net payable = (subtotal − bill discount) + tax scaled by discount.
+      // Older rows stored amount as line gross (pre-discount); always derive for display.
+      const sub = Number(r.sub_total ?? 0) || 0;
+      const tax = Number(r.tax_1_amount ?? 0) || 0;
+      const disc = Math.min(
+        Math.max(Number(r.bill_discount ?? 0) || 0, 0),
+        Math.max(sub, 0),
+      );
+      const ratio = sub > 0 ? (sub - disc) / sub : 1;
+      const netAmount = Math.round(((sub - disc) + tax * ratio) * 1000) / 1000;
       return {
         JobID: jobId,
         jobId,
@@ -550,7 +593,13 @@ export async function listJobs(pool, authStaff, query = {}) {
         PrimaryStylistName: r.primary_stylist_name ?? '',
         CreatedBy: r.created_by != null ? String(r.created_by) : '',
         createdBy: r.created_by != null ? String(r.created_by) : '',
-        Amount: String(r.amount ?? 0),
+        SubTotal: String(sub),
+        Tax1Amount: String(tax),
+        BillDiscount: String(disc),
+        billDiscount: disc,
+        Amount: String(netAmount),
+        NetAmount: String(netAmount),
+        netAmount,
         StartTime: r.start_time ?? null,
         JobDate: r.job_date ?? null,
         ServiceCount: Number(r.service_count ?? 0),

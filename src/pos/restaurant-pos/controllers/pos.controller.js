@@ -155,7 +155,8 @@ export async function staffList(req, res) {
 /** GET /api/pos/parameters — Flutter-shaped payload after login. */
 export async function getParameters(req, res) {
   try {
-    const data = await posParameterService.loadParametersPayload(req.authStaff.company_id);
+    const { company_id: companyId, branch_id: branchId, station_id: stationId } = req.authStaff;
+    const data = await posParameterService.loadParametersPayload(companyId, branchId, stationId);
     return res.json({ success: true, data });
   } catch (err) {
     return handlePosError(res, err, 'Could not load parameters');
@@ -185,7 +186,13 @@ export async function putParameters(req, res) {
 /** PUT /api/pos/parameters/company-details — legacy Flutter body (heading1…5, footer1, footer2, taxRegNo). */
 export async function putCompanyDetails(req, res) {
   try {
-    await posParameterService.updateCompanyDetails(req.authStaff.company_id, req.body ?? {});
+    const { company_id: companyId, branch_id: branchId, station_id: stationId } = req.authStaff;
+    await posParameterService.updateCompanyDetails(
+      companyId,
+      req.body ?? {},
+      branchId,
+      stationId,
+    );
     return res.json({ success: true });
   } catch (err) {
     return handlePosError(res, err, 'Could not save company details');

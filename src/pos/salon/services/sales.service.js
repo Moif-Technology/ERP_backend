@@ -54,6 +54,11 @@ function num(v, d = 0) {
   return Number.isFinite(n) ? n : d;
 }
 
+/** Money round — 3 dp (matches ops money columns / counter reports). */
+function roundMoney(v) {
+  return Math.round((num(v, 0) + Number.EPSILON) * 1000) / 1000;
+}
+
 function parseLong(v) {
   const n = num(v, 0);
   if (!Number.isFinite(n) || n < 1) return null;
@@ -87,17 +92,18 @@ function itemsFromBody(body) {
 
 function buildPaymentSplits(body, paymentMode, netAmount) {
   const mode = normalizeBillPaymentMode(paymentMode || PM.CASH);
-  const net = num(netAmount, 0);
+  const net = roundMoney(netAmount);
 
   if (!isMultiPaymentBillMode(mode)) return [];
 
   const raw = Array.isArray(body?.paymentSplits) ? body.paymentSplits : [];
   const norm = raw
     .map((s) => ({
-      payMode: normalizeSplitPayMode(s?.payMode),
-      amount: num(s?.amount, 0),
-      tip: num(s?.tip, 0),
-      refNo: String(s?.refNo ?? '').trim(),
+      payMode: normalizeSplitPayMode(s?.payMode ?? s?.PayMode),
+      amount: roundMoney(s?.amount ?? s?.Amount ?? s?.bill_amount),
+      // Accept tip / tipAmount / Tip from Salon + Counter clients
+      tip: roundMoney(Math.max(0, num(s?.tip ?? s?.tipAmount ?? s?.Tip ?? s?.tip_amount, 0))),
+      refNo: String(s?.refNo ?? s?.RefNo ?? '').trim(),
       creditCardTypeId:
         s?.creditCardTypeId != null ? Number(s.creditCardTypeId) : null,
     }))
@@ -107,7 +113,7 @@ function buildPaymentSplits(body, paymentMode, netAmount) {
     throw badRequest('MULTIPAYMENT requires paymentSplits', 'NO_SPLITS');
   }
 
-  const sum = norm.reduce((a, s) => a + num(s.amount, 0), 0);
+  const sum = roundMoney(norm.reduce((a, s) => a + num(s.amount, 0), 0));
   if (Math.abs(sum - net) > PAYMENT_TOLERANCE) {
     throw badRequest(
       `Split total (${sum.toFixed(3)}) must equal netAmount (${net.toFixed(3)})`,
@@ -117,36 +123,49 @@ function buildPaymentSplits(body, paymentMode, netAmount) {
   return norm;
 }
 
-function readTotals(body, paymentMode) {
+function readTotals(body, paymentMode, splits = []) {
   const mode = normalizeBillPaymentMode(paymentMode);
-  const net = num(body.netAmount, 0);
+  const net = roundMoney(body.netAmount);
   if (net <= 0) throw badRequest('netAmount must be greater than 0', 'BAD_NET');
 
-  let paid = num(body.paidAmount, 0);
+  // Multipay tip lives on split rows; single-tender tip on body.tipAmount
+  const tipAmount = isMultiPaymentBillMode(mode)
+    ? roundMoney(splits.reduce((a, s) => a + num(s.tip, 0), 0))
+    : roundMoney(Math.max(0, num(body.tipAmount ?? body.tip, 0)));
+
+  let paid = roundMoney(body.paidAmount);
   if (isCreditBillMode(mode) || isComplimentBillMode(mode)) {
     // Credit posts O/S; Compliment collects nothing.
     paid = isComplimentBillMode(mode) ? 0 : (paid > 0 ? paid : 0);
   } else if (isMultiPaymentBillMode(mode)) {
     paid = net;
-  } else if (paid + PAYMENT_TOLERANCE < net) {
-    throw badRequest('paidAmount must be at least netAmount', 'UNDERPAID');
+  } else if (paid + PAYMENT_TOLERANCE < net + tipAmount) {
+    // Paid must cover invoice + tip (change = paid - net - tip)
+    throw badRequest(
+      `paidAmount (${paid.toFixed(3)}) must cover netAmount + tip (${(net + tipAmount).toFixed(3)})`,
+      'UNDERPAID'
+    );
   }
 
-  const subTotal = num(body.subTotal ?? body.subTotalM, 0);
+  const subTotal = roundMoney(body.subTotal ?? body.subTotalM);
   return {
     net,
     paid,
+    tipAmount,
     subTotal,
-    discountAmount: num(body.discountAmount, 0),
-    taxableAmount: num(body.taxableAmount, subTotal),
-    tax1: num(body.tax1Amount ?? body.tax1AmountM, 0),
-    tax2: num(body.tax2AmountM ?? body.tax2Amount, 0),
-    tax3: num(body.tax3AmountM ?? body.tax3Amount, 0),
+    discountAmount: roundMoney(body.discountAmount),
+    taxableAmount: roundMoney(body.taxableAmount ?? subTotal),
+    tax1: roundMoney(body.tax1Amount ?? body.tax1AmountM),
+    tax2: roundMoney(body.tax2AmountM ?? body.tax2Amount),
+    tax3: roundMoney(body.tax3AmountM ?? body.tax3Amount),
     tax1Rate: num(body.tax1RateM ?? body.tax1Rate, 0),
     tax2Rate: num(body.tax2RateM ?? body.tax2Rate, 0),
     tax3Rate: num(body.tax3RateM ?? body.tax3Rate, 0),
-    roundOffAdj: num(body.roundOffAdj, 0),
-    balancePaid: Math.max(0, paid - net),
+    roundOffAdj: roundMoney(body.roundOffAdj),
+    // Multipay change is always 0 (tenders already balanced to net); tip is extra on splits
+    balancePaid: isMultiPaymentBillMode(mode)
+      ? 0
+      : Math.max(0, roundMoney(paid - net - tipAmount)),
   };
 }
 
@@ -424,8 +443,9 @@ export async function settleSale(pool, body, authStaff) {
   if (!items.length) throw badRequest('items array is required', 'NO_ITEMS');
 
   const paymentMode = normalizeBillPaymentMode(body.paymentMode ?? body.PaymentMode);
-  const totals = readTotals(body, paymentMode);
-  const splits = buildPaymentSplits(body, paymentMode, totals.net);
+  // Build splits first so multipay tip_amount is summed from rows (source of truth)
+  const splits = buildPaymentSplits(body, paymentMode, body.netAmount);
+  const totals = readTotals(body, paymentMode, splits);
   const tender = tenderAmounts(paymentMode, totals, splits);
 
   const auditBy = auditUserName(authStaff);
@@ -583,12 +603,14 @@ export async function settleSale(pool, body, authStaff) {
           : isCreditCardBillMode(paymentMode)
             ? PM.CREDITCARD
             : PM.CASH;
+      // bill_amount = invoice net; tip_amount is separate (not taxed) for reports
       await salesRepo.insertSalesPaymentSplit(client, {
         companyId,
         salesId,
         payerNo: 1,
         payMode,
-        billAmount: tender.paidAmount || totals.net,
+        billAmount: totals.net,
+        tipAmount: totals.tipAmount,
         branchId,
         counterId: counterNo,
         staffId: staffPk,
@@ -725,14 +747,23 @@ export async function listSalesViewer(pool, authStaff, query = {}) {
     CustomerName: r.customer_name ?? 'Walk-in',
     SalesManName: r.staff_name ?? '',
     SubTotalM: Number(r.subtotal_amount ?? 0),
+    subTotal: Number(r.subtotal_amount ?? 0),
     TaxableAmount: Number(r.taxable_amount ?? 0),
+    taxableAmount: Number(r.taxable_amount ?? 0),
     Tax1AmountM: Number(r.tax_1_amount ?? 0),
+    taxAmount: Number(r.tax_1_amount ?? 0),
     DiscountAmount: Number(r.discount_amount ?? 0),
+    discountAmount: Number(r.discount_amount ?? 0),
     RoundOffAdj: Number(r.round_off_adjustment ?? 0),
     Amount: Number(r.amount ?? 0),
+    amount: Number(r.amount ?? 0),
+    TipAmount: Number(r.tip_amount ?? 0),
+    tipAmount: Number(r.tip_amount ?? 0),
     CreditCardNo: r.credit_card_no ?? '',
     Remarks: r.remarks?.trim() || '',
     CounterCloseStatus: resolveCounterCloseStatus(r),
+    CounterCloseNo: r.counter_close_no != null ? String(r.counter_close_no) : resolveCounterCloseStatus(r),
+    counterCloseNo: r.counter_close_no != null ? String(r.counter_close_no) : resolveCounterCloseStatus(r),
   }));
 }
 
