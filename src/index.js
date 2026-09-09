@@ -103,6 +103,7 @@ import { servicePaymentsRouter } from './service/routes/casePayments.routes.js';
 import { serviceDashboardRouter, serviceExpiryRouter } from './service/routes/serviceDashboard.routes.js';
 import { featureAdminRouter } from './core/routes/featureAdmin.routes.js';
 import { toolsRouter } from './tools/routes/tools.routes.js';
+import { dashboardRouter } from './salonLaundryDashboard/dashboard.routes.js';
 import { systemActivityLogger } from './middleware/systemActivityLogger.js';
 import cookieParser from 'cookie-parser';
 import { authMiddleware } from './middleware/authMiddleware.js';
@@ -211,7 +212,23 @@ app.use('/api', systemActivityLogger);
 // plain GETs for latest.yml + the nsis installer, so a static dir is enough —
 // no auth, no route logic. Drop new releases into api/updates/ on deploy.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-app.use('/updates', express.static(path.join(__dirname, '../updates')));
+// The same dir also carries salon-pos/*.apk + manifest.json. Android only offers
+// "install" when the APK arrives with the vnd.android mime type, and Chrome
+// otherwise tries to render it, so force the type and the download.
+app.use(
+  '/updates',
+  express.static(path.join(__dirname, '../updates'), {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.apk')) {
+        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+        res.setHeader('Content-Disposition', `attachment; filename="${path.basename(filePath)}"`);
+      }
+      if (filePath.endsWith('manifest.json')) {
+        res.setHeader('Cache-Control', 'no-cache');
+      }
+    },
+  }),
+);
 
 // Liveness + DB readiness in one probe so the LB pulls a node with a dead DB.
 app.get('/health', async (_req, res) => {
@@ -317,6 +334,8 @@ app.use('/api/parameters', systemParameterRouter);
 app.use('/api/units', unitRouter);
 app.use('/api/user-preferences', userPreferenceRouter);
 app.use('/api/tools', toolsRouter);
+// Salon/Laundry Dashboard — read-only analytics for counter close, sales, staff, inventory
+app.use('/api/salon-dashboard', dashboardRouter);
 
 // Map common Postgres error codes to HTTP status + a safe client message.
 // Controllers that simply `next(err)` get consistent responses for free.

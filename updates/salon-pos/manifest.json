@@ -1,0 +1,23 @@
+{
+  "assumeVersion": "0.0.0",
+  "android": {
+    "latestVersion": "1.0.13",
+    "versionCode": 14,
+    "minSupportedVersion": "1.0.0",
+    "isRequired": false,
+    "description": "Printing fix",
+    "releaseNotes": "- Fixed printing problem",
+    "file": "salon-pos-1.0.13.apk",
+    "fileSize": 3395694,
+    "releasedAt": "2026-08-13T22:39:26.790Z"
+  },
+  "web": {
+    "latestVersion": "1.0.12",
+    "minSupportedVersion": "1.0.0",
+    "isRequired": false,
+    "description": "Salon POS update",
+    "releaseNotes": "- Reload the page to get the latest build",
+    "downloadUrl": "",
+    "releasedAt": "2026-08-14T00:00:00Z"
+  }
+}

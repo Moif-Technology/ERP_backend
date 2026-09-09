@@ -746,7 +746,10 @@ export async function getStaffWiseReport(authStaff, query) {
   const companyId = Number(authStaff.company_id);
   const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
   const counterNo = Number(query.counterNo ?? 1);
-  const rows = await repo.getStaffWiseSales(pool, { companyId, stationId, counterNo });
+  const today = new Date().toISOString().slice(0, 10);
+  const dateFrom = query.dateFrom || today;
+  const dateTo = query.dateTo || today;
+  const rows = await repo.getStaffWiseSales(pool, { companyId, stationId, counterNo, dateFrom, dateTo });
   return rows.map(r => ({
     staffId:      r.staff_id,
     staffName:    r.staff_name ?? `Staff #${r.staff_id}`,

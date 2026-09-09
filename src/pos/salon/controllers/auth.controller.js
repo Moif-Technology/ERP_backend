@@ -25,6 +25,7 @@
 import { pool } from '../../../config/db.js';
 import * as coreAuthService from '../../../core/services/auth.service.js';
 import * as salonAuthService from '../services/auth.service.js';
+import { resolveRelease } from '../services/appRelease.service.js';
 import * as staffRepo from '../../../core/repositories/staff.repository.js';
 import {
   registerSession,
@@ -225,5 +226,52 @@ export async function login(req, res) {
   } catch (err) {
     logFailure(clientIp);
     return fail(res, err, 'Login failed');
+  }
+}
+
+// ── App version / updates ──────────────────────────────────────────────────
+
+/**
+ * GET /app/version — Check for app updates.
+ * PUBLIC endpoint (no auth required).
+ * Used by frontend to show update notifications.
+ *
+ * Response:
+ * {
+ *   "currentVersion": "0.1.0",
+ *   "latestVersion": "0.2.0",
+ *   "updateAvailable": true,
+ *   "description": "New features and bug fixes",
+ *   "releaseNotes": "- Added ...\n- Fixed ...",
+ *   "downloadUrl": "https://...",
+ *   "isRequired": false,
+ *   "releasedAt": "2024-01-15T10:30:00Z"
+ * }
+ */
+export async function checkAppVersion(req, res) {
+  try {
+    // `current` is the build the caller is actually running. Without it we
+    // cannot say whether an update applies, so the manifest's assumeVersion
+    // stands in and old clients still get offered the new build.
+    const versionInfo = resolveRelease(req, {
+      platform: req.query?.platform,
+      currentVersion: req.query?.current ?? req.query?.currentVersion,
+    });
+
+    // Tills poll this every hour; let the CDN/browser skip a round trip but
+    // never serve a stale answer for longer than a couple of minutes.
+    res.set('Cache-Control', 'public, max-age=120');
+
+    return res.json({
+      ok: true,
+      data: versionInfo,
+    });
+  } catch (err) {
+    console.error('[app version check]', err);
+    return res.status(500).json({
+      ok: false,
+      code: 'CHECK_FAILED',
+      message: 'Failed to check app version',
+    });
   }
 }
