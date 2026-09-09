@@ -1,5 +1,26 @@
 import { pool } from '../../../config/db.js';
 import * as salesService from '../services/sales.service.js';
+import * as salesRepo from '../repositories/sales.repository.js';
+
+/**
+ * GET /api/pos/sales/next-bill-no — the number the next settle will assign.
+ *
+ * Deliberately NOT counter-pos's version: that one takes MAX(bill_no) across the
+ * whole company, while restaurant settle numbers per station
+ * (repositories/sales.repository.js nextBillNo). On a two-till restaurant the
+ * counter-pos number would preview a bill number settle never assigns.
+ */
+export async function nextBillNo(req, res) {
+  try {
+    const companyId = Number(req.authStaff.company_id);
+    const stationId = Number(req.authStaff.station_id ?? req.authStaff.branch_id);
+    const billNo = await salesRepo.nextBillNo(pool, companyId, stationId);
+    return res.json({ billNo, billNoDisplay: `B-${billNo}` });
+  } catch (err) {
+    console.error('[sales] next-bill-no failed', err);
+    return res.status(500).json({ message: 'Failed to get next bill number' });
+  }
+}
 
 export async function settle(req, res) {
   const b = req.body ?? {};

@@ -184,12 +184,26 @@ app.use('/api/counter-pos/staff-list', authLimiter);
 app.use('/api/counter-pos/pin-login', authLimiter);
 // Salon public endpoints. staff-list enumerates staff names for any companyId
 // and pin-login brute-forces a 4-6 digit PIN against every staff row, so both
-// need the limiter. (/api/pos/* still lacks this — tracked separately.)
+// need the limiter.
 app.use('/api/salon-pos/device/enroll', authLimiter);
 app.use('/api/salon-pos/device/stations', authLimiter);
 app.use('/api/salon-pos/staff-list', authLimiter);
 app.use('/api/salon-pos/pin-login', authLimiter);
 app.use('/api/salon-pos/login', authLimiter);
+// Restaurant / Quick-service POS device endpoints (Deyno Quick). /device/enroll
+// and /device/stations take admin credentials; /device/pin-login brute-forces a
+// 4-6 digit PIN.
+//
+// The three LEGACY endpoints below them — /api/pos/login, /pin-login,
+// /staff-list — are deliberately NOT limited here. They carry the same exposure
+// and should be, but the Flutter RestaurantPOS in production PIN-logs per order,
+// and 30 req/min is shared per source IP: several tills behind one NAT would
+// start getting 429s mid-service. Limiting them is a separate change that needs
+// a per-device key (or a higher ceiling) first.
+app.use('/api/pos/device/enroll', authLimiter);
+app.use('/api/pos/device/stations', authLimiter);
+app.use('/api/pos/device/staff-list', authLimiter);
+app.use('/api/pos/device/pin-login', authLimiter);
 app.use('/api', apiLimiter);
 app.use('/api', systemActivityLogger);
 
