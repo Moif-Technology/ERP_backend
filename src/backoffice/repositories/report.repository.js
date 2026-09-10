@@ -406,6 +406,9 @@ export async function attendanceReport(pool, companyId, branchId, dateFrom, date
             COALESCE(em.department, '') AS department,
             COALESCE(ad.first_in::text, '') AS first_in,
             COALESCE(ad.last_out::text, '') AS last_out,
+            CASE WHEN ad.first_in IS NOT NULL AND ad.last_out >= ad.first_in
+              THEN ROUND((EXTRACT(EPOCH FROM (ad.last_out - ad.first_in)) / 3600)::numeric, 2)
+              ELSE NULL END AS hours,
             COALESCE(ad.ot_hours, 0) AS ot_hours,
             COALESCE(ad.attendance_status, '') AS status
        FROM hr.attendance_daily ad

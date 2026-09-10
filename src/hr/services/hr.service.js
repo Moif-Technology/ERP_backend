@@ -2,6 +2,19 @@ import { withTransaction } from '../../config/db.js';
 import * as branchRepo from '../../shared/repositories/branch.repository.js';
 import * as hrRepo from '../repositories/hr.repository.js';
 import { nextDocNo } from '../../shared/services/docSequence.service.js';
+import { validAttendanceDate } from './attendanceTime.js';
+
+// Rejects garbage before it reaches a date comparison in SQL.
+function attendanceDate(value, fieldName) {
+  if (value == null || value === '') return null;
+  const s = String(value).trim().slice(0, 10);
+  if (!validAttendanceDate(s)) {
+    const err = new Error(`${fieldName} must be a real YYYY-MM-DD date`);
+    err.status = 400;
+    throw err;
+  }
+  return s;
+}
 
 function parseBranchId(authStaff, branchIdQueryOrBody) {
   const candidate = branchIdQueryOrBody ?? authStaff.branch_id;
@@ -309,7 +322,19 @@ export async function updateLeaveRequestStatus(pool, authStaff, leaveRequestId, 
 // ── Attendance ────────────────────────────────────────
 export async function listAttendanceDaily(pool, authStaff, query) {
   const { companyId, branchId } = await resolveTenant(pool, authStaff, query?.branchId);
-  return hrRepo.listAttendanceDaily(pool, companyId, branchId, query?.workDate || null, query?.employeeId || null);
+  const fromDate = attendanceDate(query?.fromDate, 'fromDate');
+  const toDate = attendanceDate(query?.toDate, 'toDate');
+  if (fromDate && toDate && toDate < fromDate) {
+    const err = new Error('toDate must be on or after fromDate');
+    err.status = 400;
+    throw err;
+  }
+  return hrRepo.listAttendanceDaily(pool, companyId, branchId, {
+    workDate: attendanceDate(query?.workDate, 'workDate'),
+    fromDate,
+    toDate,
+    employeeId: query?.employeeId || null,
+  });
 }
 
 export async function createAttendance(pool, authStaff, body) {

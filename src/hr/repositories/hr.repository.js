@@ -256,14 +256,24 @@ export async function updateLeaveRequestStatus(pool, companyId, branchId, leaveR
 }
 
 // ── Attendance ────────────────────────────────────────
-export async function listAttendanceDaily(pool, companyId, branchId, workDate, employeeId) {
+export async function listAttendanceDaily(pool, companyId, branchId, opts = {}) {
+  const { workDate, fromDate, toDate, employeeId } = opts;
   const params = [companyId, branchId];
   let filter = '';
-  if (workDate) { params.push(workDate); filter += ` AND ad.work_date = $${params.length}`; }
+  // fromDate/toDate is the range report; workDate stays the single-day view.
+  if (fromDate) { params.push(fromDate); filter += ` AND ad.work_date >= $${params.length}`; }
+  if (toDate) { params.push(toDate); filter += ` AND ad.work_date <= $${params.length}`; }
+  if (!fromDate && !toDate && workDate) { params.push(workDate); filter += ` AND ad.work_date = $${params.length}`; }
   if (employeeId) { params.push(Number(employeeId)); filter += ` AND ad.employee_id = $${params.length}`; }
   const { rows } = await pool.query(
     `SELECT ad.daily_id, ad.employee_id, em.employee_name, em.department, ad.work_date,
-            ad.shift_id, sm.shift_name, ad.first_in, ad.last_out, ad.ot_hours, ad.attendance_status
+            ad.shift_id, sm.shift_name,
+            -- first_in/last_out are 'timestamp without time zone' holding branch-local
+            -- wall clock. Sent as text so neither node-pg nor the browser re-zones them.
+            to_char(ad.first_in,  'YYYY-MM-DD HH24:MI:SS') AS first_in,
+            to_char(ad.last_out, 'YYYY-MM-DD HH24:MI:SS') AS last_out,
+            ad.ot_hours, ad.attendance_status,
+            ad.source, ad.device_pin
      FROM hr.attendance_daily ad
      LEFT JOIN hr.employee_master em ON em.company_id=ad.company_id AND em.branch_id=ad.branch_id AND em.employee_id=ad.employee_id
      LEFT JOIN hr.shift_master sm ON sm.company_id=ad.company_id AND sm.branch_id=ad.branch_id AND sm.shift_id=ad.shift_id
@@ -273,10 +283,14 @@ export async function listAttendanceDaily(pool, companyId, branchId, workDate, e
   return rows.map((r) => ({
     dailyId: Number(r.daily_id), employeeId: Number(r.employee_id),
     employeeName: r.employee_name ?? null, department: r.department ?? null,
-    workDate: r.work_date, shiftName: r.shift_name ?? null,
+    workDate: r.work_date,
+    shiftId: r.shift_id != null ? Number(r.shift_id) : null,
+    shiftName: r.shift_name ?? null,
     checkIn: r.first_in, checkOut: r.last_out,
     overtimeHours: r.ot_hours != null ? Number(r.ot_hours) : 0,
     attendanceStatus: r.attendance_status,
+    source: r.source ?? 'manual',
+    devicePin: r.device_pin ?? null,
   }));
 }
 
