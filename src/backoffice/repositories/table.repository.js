@@ -97,6 +97,7 @@ export async function listTablesByArea(pool, companyId, branchId, areaId) {
         created_at, modified_at
      FROM core.table_master
      WHERE company_id = $1 AND branch_id = $2 AND area_id = $3
+       AND is_deleted = FALSE
      ORDER BY table_no ASC`,
     [companyId, branchId, areaId]
   );
@@ -113,6 +114,7 @@ export async function listTablesByBranch(pool, companyId, branchId) {
         created_at, modified_at
      FROM core.table_master
      WHERE company_id = $1 AND branch_id = $2
+       AND is_deleted = FALSE
      ORDER BY area_id ASC, table_no ASC`,
     [companyId, branchId]
   );

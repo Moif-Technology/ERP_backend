@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import * as posController from './controllers/pos.controller.js';
+import * as deviceAuthController from './controllers/deviceAuth.controller.js';
 import { kotRouter } from './routes/kot.routes.js';
 import { salesRouter } from './routes/sales.routes.js';
 
@@ -16,6 +17,12 @@ export const posRouter = Router();
 posRouter.post('/login',      posController.login);
 posRouter.post('/pin-login',  posController.pinLogin);
 posRouter.post('/staff-list', posController.staffList);
+
+// Device enrollment (Deyno Pro / Deyno Quick). Public — no staff JWT.
+posRouter.post('/device/stations',   deviceAuthController.listStationsForEnroll);
+posRouter.post('/device/enroll',     deviceAuthController.enrollDevice);
+posRouter.post('/device/staff-list', deviceAuthController.staffList);
+posRouter.post('/device/pin-login',  deviceAuthController.pinLogin);
 
 
 

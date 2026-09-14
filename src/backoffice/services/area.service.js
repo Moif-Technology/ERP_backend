@@ -1,6 +1,11 @@
 import { withTransaction } from '../../config/db.js';
 import * as areaRepo from '../repositories/area.repository.js';
 import { actorStaffPk } from '../../utils/actorStaff.js';
+import {
+  getStationLocation,
+  locationBranchCandidates,
+  mergeByBranch,
+} from '../../shared/locationScope.js';
 
 const SUPPLY_TYPES = new Set(['DINE_IN', 'DELIVERY', 'PARCEL', 'TAKEAWAY', 'GENERAL']);
 const PRICE_LEVELS = new Set(['NORMAL', 'PRICE LEVEL 1', 'PRICE LEVEL 2']);
@@ -41,7 +46,12 @@ export async function listAreas(pool, authStaff, branchIdQuery) {
     throw err;
   }
   await assertStationBelongsToCompany(pool, companyId, stationId);
-  return areaRepo.listAreasByCompanyAndBranch(pool, companyId, stationId);
+  const location = await getStationLocation(pool, companyId, stationId);
+  return mergeByBranch(
+    locationBranchCandidates(location ?? { stationId }),
+    (branchId) => areaRepo.listAreasByCompanyAndBranch(pool, companyId, branchId),
+    (row, branchId) => `${row.branchId ?? branchId}:${row.areaId}`
+  );
 }
 
 export async function createArea(pool, body, authStaff) {

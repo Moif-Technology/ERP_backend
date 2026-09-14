@@ -61,6 +61,8 @@ export async function authMiddleware(req, res, next) {
     const POS_ALLOWED_CATALOGUE = [
       '/api/groups',
       '/api/sub-groups',
+      '/api/sub-sub-groups',
+      '/api/modifiers',
       '/api/areas',
       '/api/tables',
       '/api/products',

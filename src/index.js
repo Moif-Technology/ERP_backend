@@ -19,6 +19,7 @@ import { dealsOffersRouter } from './backoffice/routes/dealsOffers.routes.js';
 import { deliveryOrderRouter } from './backoffice/routes/deliveryOrder.routes.js';
 import { grnRouter } from './backoffice/routes/grn.routes.js';
 import { groupRouter } from './backoffice/routes/group.routes.js';
+import { modifierRouter } from './backoffice/routes/modifier.routes.js';
 import { locationRouter } from './backoffice/routes/location.routes.js';
 import { lpoRouter } from './backoffice/routes/lpo.routes.js';
 import { productRouter } from './backoffice/routes/product.routes.js';
@@ -182,6 +183,10 @@ app.use('/api/counter-pos/device/enroll', authLimiter);
 app.use('/api/counter-pos/device/stations', authLimiter);
 app.use('/api/counter-pos/staff-list', authLimiter);
 app.use('/api/counter-pos/pin-login', authLimiter);
+app.use('/api/pos/device/enroll', authLimiter);
+app.use('/api/pos/device/stations', authLimiter);
+app.use('/api/pos/device/staff-list', authLimiter);
+app.use('/api/pos/device/pin-login', authLimiter);
 // Salon public endpoints. staff-list enumerates staff names for any companyId
 // and pin-login brute-forces a 4-6 digit PIN against every staff row, so both
 // need the limiter. (/api/pos/* still lacks this — tracked separately.)
@@ -218,6 +223,7 @@ app.use('/api/branches', branchRouter);
 app.use('/api/stations', stationRouter);
 app.use('/api/staff', staffRouter);
 app.use('/api/groups', groupRouter);
+app.use('/api/modifiers', modifierRouter);
 app.use('/api/areas', areaRouter);
 app.use('/api/customers', customerRouter);
 app.use('/api/customer-receipts', customerReceiptRouter);
@@ -359,6 +365,7 @@ function printBanner() {
   console.log('  [ROUTES] POST    /api/auth/reset-password');
   console.log('  [ROUTES] GET     /api/groups');
   console.log('  [ROUTES] POST    /api/groups');
+  console.log('  [ROUTES] GET     /api/modifiers');
   console.log('  [ROUTES] GET     /api/areas');
   console.log('  [ROUTES] POST    /api/areas');
   console.log('  [ROUTES] GET     /api/customers');

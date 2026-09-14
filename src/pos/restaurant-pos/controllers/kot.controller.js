@@ -14,10 +14,10 @@ export async function saveKot(req, res) {
       });
     }
     if (err.code === '42703') {
+      console.error('[saveKot] missing column:', err.message);
       return res.status(503).json({
         ok: false,
-        message:
-          'KOT table is missing columns (e.g. created_by). Run database/migrations/017_ops_kot_audit_columns.sql on your database.',
+        message: `KOT table is missing a column (${err.message}).`,
       });
     }
     if (err.code === '23502') {

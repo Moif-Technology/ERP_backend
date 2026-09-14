@@ -31,12 +31,61 @@ export function isSupervisorRole(row) {
   );
 }
 
+const PIN_SCAN_CAP = 50;
+
+function supervisorOkPayload(row, username) {
+  return {
+    ok: true,
+    staffId: row.staff_id != null ? String(row.staff_id) : null,
+    staffPk: row.id != null ? Number(row.id) : null,
+    staffName: row.staff_name ?? username,
+    roleId: row.role_id != null ? Number(row.role_id) : null,
+    roleName: row.role_name ?? '',
+    message: 'Supervisor approved',
+  };
+}
+
 /**
- * Body: { username / login, password }
+ * Admin PIN path — any supervisor-class staff in the company whose PIN matches.
+ * Bounded scan so one request cannot become a bcrypt storm.
+ */
+export async function verifySupervisorPin(authStaff, pinRaw) {
+  const companyId = Number(authStaff.company_id);
+  if (!Number.isFinite(companyId) || companyId < 1) {
+    throw bad('Company context required', 400, 'NO_COMPANY');
+  }
+
+  const pinStr = String(pinRaw || '').trim();
+  if (!/^\d{4,6}$/.test(pinStr)) {
+    throw bad('Invalid PIN', 401, 'BAD_PIN');
+  }
+
+  const rows = await staffRepo.findAllActiveStaffWithPinForCompany(pool, companyId);
+  let sawSupervisor = false;
+  for (const row of (rows || []).slice(0, PIN_SCAN_CAP)) {
+    if (!row.staff_pin) continue;
+    const match = await bcrypt.compare(pinStr, row.staff_pin);
+    if (!match) continue;
+    if (!isSupervisorRole(row)) continue;
+    sawSupervisor = true;
+    return supervisorOkPayload(row, row.login_name);
+  }
+
+  if (!sawSupervisor && (rows || []).length === 0) {
+    throw bad('No admin PIN is set. Set a PIN on an Admin user first.', 403, 'NO_ADMIN_PIN');
+  }
+  throw bad('Invalid admin PIN', 401, 'BAD_PIN');
+}
+
+/**
+ * Body: { pin } OR { username / login, password }
  * Returns { ok, staffId, staffName, roleName } when the credentials belong to
  * a supervisor-class role in the caller's company.
  */
 export async function verifySupervisor(authStaff, body = {}) {
+  const pin = String(body.pin ?? body.adminPin ?? '').trim();
+  if (pin) return verifySupervisorPin(authStaff, pin);
+
   const companyId = Number(authStaff.company_id);
   if (!Number.isFinite(companyId) || companyId < 1) {
     throw bad('Company context required', 400, 'NO_COMPANY');
@@ -45,7 +94,7 @@ export async function verifySupervisor(authStaff, body = {}) {
   const username = String(body.username ?? body.login ?? body.loginName ?? '').trim();
   const password = String(body.password ?? '');
   if (!username || !password) {
-    throw bad('Username and password are required', 400, 'MISSING_CREDENTIALS');
+    throw bad('Admin PIN is required', 400, 'MISSING_CREDENTIALS');
   }
 
   const { rows } = await staffRepo.findLoginCandidates(pool, username);
@@ -73,15 +122,7 @@ export async function verifySupervisor(authStaff, body = {}) {
       );
     }
 
-    return {
-      ok: true,
-      staffId: row.staff_id != null ? String(row.staff_id) : null,
-      staffPk: row.id != null ? Number(row.id) : null,
-      staffName: row.staff_name ?? username,
-      roleId: row.role_id != null ? Number(row.role_id) : null,
-      roleName: row.role_name ?? '',
-      message: 'Supervisor approved',
-    };
+    return supervisorOkPayload(row, username);
   }
 
   throw bad('Invalid username or password', 401, 'BAD_CREDENTIALS');

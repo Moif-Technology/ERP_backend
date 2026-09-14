@@ -90,6 +90,79 @@ function itemsFromBody(body) {
   return Array.isArray(raw) ? raw : [];
 }
 
+function lineQty(item) {
+  return num(item.qty ?? item.Qty, 0);
+}
+
+/** True when this bill is a sales return (refund). */
+function detectSalesReturn(body, items) {
+  if (body?.isReturn === true) return true;
+  if (roundMoney(body?.netAmount) < 0) return true;
+  if (items.length > 0) return items.every((it) => lineQty(it) < 0);
+  return false;
+}
+
+/**
+ * Returns must satisfy ck_sales_child_qty / ck_sales_child_line_total and
+ * ck_sales_master_amount, which reject negatives. Store positive qty/amounts
+ * and mark transaction_type = RETURN (same as counter-POS).
+ */
+function normalizeReturnPayload(body, items) {
+  const cart = items.map((it) => {
+    const qty = Math.abs(lineQty(it));
+    const unitPrice = Math.abs(num(it.unitPrice ?? it.UnitPrice, 0));
+    const discount = Math.abs(
+      num(it.discount ?? it.Discount ?? it.itemDisc ?? it.ItemDisc, 0),
+    );
+    const subTotalC = Math.abs(
+      num(it.subTotalC ?? it.SubTotalC ?? it.subTotal ?? it.SubTotal, qty * unitPrice - discount),
+    );
+    const tax1 = Math.abs(num(it.tax1AmountC ?? it.Tax1AmountC ?? it.tax1Amount, 0));
+    const tax2 = Math.abs(num(it.tax2AmountC ?? it.Tax2AmountC, 0));
+    const tax3 = Math.abs(num(it.tax3AmountC ?? it.Tax3AmountC, 0));
+    const lineTotal = Math.abs(
+      num(it.lineTotal ?? it.LineTotal, subTotalC + tax1 + tax2 + tax3),
+    );
+    return {
+      ...it,
+      qty,
+      Qty: qty,
+      unitPrice,
+      UnitPrice: unitPrice,
+      discount,
+      subTotalC,
+      SubTotalC: subTotalC,
+      tax1AmountC: tax1,
+      Tax1AmountC: tax1,
+      tax2AmountC: tax2,
+      tax3AmountC: tax3,
+      lineTotal,
+      LineTotal: lineTotal,
+    };
+  });
+  const abs = (v) => Math.abs(roundMoney(v));
+  return {
+    body: {
+      ...body,
+      items: cart,
+      Items: cart,
+      isReturn: true,
+      netAmount: abs(body.netAmount),
+      paidAmount: abs(body.paidAmount ?? body.netAmount),
+      subTotal: abs(body.subTotal ?? body.subTotalM),
+      subTotalM: abs(body.subTotalM ?? body.subTotal),
+      discountAmount: abs(body.discountAmount),
+      taxableAmount: abs(body.taxableAmount),
+      tax1Amount: abs(body.tax1Amount ?? body.tax1AmountM),
+      tax1AmountM: abs(body.tax1AmountM ?? body.tax1Amount),
+      tax2AmountM: abs(body.tax2AmountM ?? body.tax2Amount),
+      tax3AmountM: abs(body.tax3AmountM ?? body.tax3Amount),
+      roundOffAdj: abs(body.roundOffAdj),
+    },
+    items: cart,
+  };
+}
+
 function buildPaymentSplits(body, paymentMode, netAmount) {
   const mode = normalizeBillPaymentMode(paymentMode || PM.CASH);
   const net = roundMoney(netAmount);
@@ -199,17 +272,22 @@ function resolveLine(item, ctx) {
     null;
 
   const qty = num(item.qty ?? item.Qty, 0);
-  if (qty <= 0) throw badRequest(`Invalid qty for product ${productId}`, 'BAD_QTY');
+  if (qty === 0) throw badRequest(`Invalid qty for product ${productId}`, 'BAD_QTY');
 
   const unitPrice = num(item.unitPrice ?? item.UnitPrice, 0);
   const discount = num(item.discount ?? item.Discount ?? item.itemDisc ?? item.ItemDisc, 0);
   const subTotal =
-    num(item.subTotalC ?? item.SubTotalC ?? item.subTotal ?? item.SubTotal, 0) ||
-    qty * unitPrice - discount;
+    item.subTotalC != null || item.SubTotalC != null || item.subTotal != null || item.SubTotal != null
+      ? num(item.subTotalC ?? item.SubTotalC ?? item.subTotal ?? item.SubTotal, 0)
+      : qty * unitPrice - discount;
 
   const tax1 = num(item.tax1AmountC ?? item.Tax1AmountC ?? item.tax1Amount, 0);
   const tax2 = num(item.tax2AmountC ?? item.Tax2AmountC, 0);
   const tax3 = num(item.tax3AmountC ?? item.Tax3AmountC, 0);
+  const computedLine = subTotal + tax1 + tax2 + tax3;
+  const lineTotalRaw = item.lineTotal ?? item.LineTotal;
+  const lineTotal =
+    lineTotalRaw != null && lineTotalRaw !== '' ? num(lineTotalRaw, computedLine) : computedLine;
 
   const lineType =
     item.lineType ?? item.LineType
@@ -247,7 +325,7 @@ function resolveLine(item, ctx) {
     tax1Rate: num(item.tax1RateC ?? item.Tax1RateC ?? item.taxPerc ?? item.TaxPerc, 0),
     tax2Rate: num(item.tax2RateC ?? item.Tax2RateC, 0),
     tax3Rate: num(item.tax3RateC ?? item.Tax3RateC, 0),
-    lineTotal: num(item.lineTotal ?? item.LineTotal, 0) || subTotal + tax1 + tax2 + tax3,
+    lineTotal,
     stylistId,
     lineType,
     modifier: item.modifier != null ? String(item.modifier).slice(0, 2000) : null,
@@ -378,6 +456,213 @@ async function postCreditSaleVoucher(client, args) {
   return voucherMasterId;
 }
 
+function absResolvedLine(line) {
+  return {
+    ...line,
+    qty: Math.abs(num(line.qty)),
+    unitPrice: Math.abs(num(line.unitPrice)),
+    unitCost: Math.abs(num(line.unitCost)),
+    discountAmount: Math.abs(num(line.discountAmount)),
+    subtotalAmount: Math.abs(num(line.subtotalAmount)),
+    tax1Amount: Math.abs(num(line.tax1Amount)),
+    tax2Amount: Math.abs(num(line.tax2Amount)),
+    tax3Amount: Math.abs(num(line.tax3Amount)),
+    lineTotal: Math.abs(num(line.lineTotal)),
+  };
+}
+
+function totalsFromResolved(lines) {
+  const subTotal = roundMoney(lines.reduce((s, l) => s + num(l.subtotalAmount), 0));
+  const tax1 = roundMoney(lines.reduce((s, l) => s + num(l.tax1Amount), 0));
+  const tax2 = roundMoney(lines.reduce((s, l) => s + num(l.tax2Amount), 0));
+  const tax3 = roundMoney(lines.reduce((s, l) => s + num(l.tax3Amount), 0));
+  const discountAmount = roundMoney(lines.reduce((s, l) => s + num(l.discountAmount), 0));
+  const net = roundMoney(subTotal - discountAmount + tax1 + tax2 + tax3);
+  const tax1Rate = lines.find((l) => num(l.tax1Rate) > 0)?.tax1Rate ?? 0;
+  return {
+    net,
+    paid: net,
+    tipAmount: 0,
+    subTotal,
+    discountAmount,
+    taxableAmount: roundMoney(subTotal - discountAmount),
+    tax1,
+    tax2,
+    tax3,
+    tax1Rate,
+    tax2Rate: 0,
+    tax3Rate: 0,
+    roundOffAdj: 0,
+    balancePaid: 0,
+  };
+}
+
+async function writeOneSettlement(client, ctx) {
+  const {
+    companyId,
+    branchId,
+    stationId,
+    jobId,
+    counterNo,
+    customerId,
+    paymentMode,
+    creditCardNo,
+    onlineSource,
+    lines,
+    totals,
+    tender,
+    splits,
+    isReturn,
+    body,
+    auditBy,
+    staffPk,
+    primaryStylistId,
+    job,
+    writeCreditVoucher,
+  } = ctx;
+
+  const salesId = await salesRepo.nextSalesId(client, companyId);
+  const billNo = await salesRepo.nextBillNo(client, companyId, branchId);
+
+  await salesRepo.insertSalesMaster(client, {
+    companyId,
+    salesId,
+    branchId,
+    stationId,
+    jobId,
+    counterNo,
+    billNo,
+    customerId,
+    paymentMode,
+    creditCardNo,
+    amount: totals.net,
+    cashAmount: tender.cashAmount,
+    creditAmount: tender.creditAmount,
+    creditCardAmount: tender.creditCardAmount,
+    paidAmount: tender.paidAmount,
+    balancePaid: tender.balancePaid,
+    discountAmount: totals.discountAmount,
+    subtotalAmount: totals.subTotal,
+    taxableAmount: totals.taxableAmount,
+    tax1Amount: totals.tax1,
+    tax2Amount: totals.tax2,
+    tax3Amount: totals.tax3,
+    tax1Rate: totals.tax1Rate,
+    tax2Rate: totals.tax2Rate,
+    tax3Rate: totals.tax3Rate,
+    roundOffAdj: totals.roundOffAdj,
+    stylistId: parseLong(body.stylistId ?? body.waiterId) ?? primaryStylistId,
+    chairId:
+      parseLong(body.chairId ?? body.tableId) ??
+      (job.chair_id != null ? Number(job.chair_id) : null),
+    areaId:
+      parseLong(body.areaId) ?? (job.area_id != null ? Number(job.area_id) : null),
+    noOfCustomers: Math.max(0, Math.trunc(num(body.noOfCustomer ?? body.noOfCustomers, 0))),
+    staffId: staffPk,
+    remarks: str(body.comments ?? body.remarks, 200),
+    onlineSource: isOnlineBillMode(paymentMode) ? onlineSource : null,
+    createdBy: auditBy,
+    modifiedBy: auditBy,
+    transactionType: isReturn ? 'RETURN' : 'SALE',
+  });
+
+  for (const line of lines) {
+    const salesChildId = await salesRepo.nextSalesChildId(client, companyId);
+    await salesRepo.insertSalesChild(client, {
+      companyId,
+      salesChildId,
+      salesId,
+      branchId,
+      stationId,
+      ...line,
+      createdBy: auditBy,
+      modifiedBy: auditBy,
+    });
+  }
+
+  if (isMultiPaymentBillMode(paymentMode) && splits.length) {
+    await salesRepo.insertPaymentSplits(client, {
+      companyId,
+      salesId,
+      branchId,
+      counterNo,
+      staffId: staffPk,
+      splits,
+    });
+  } else if (!isComplimentBillMode(paymentMode) && !isCreditBillMode(paymentMode)) {
+    const payMode = isOnlineBillMode(paymentMode)
+      ? PM.ONLINE
+      : isCreditCardBillMode(paymentMode)
+        ? PM.CREDITCARD
+        : PM.CASH;
+    await salesRepo.insertSalesPaymentSplit(client, {
+      companyId,
+      salesId,
+      payerNo: 1,
+      payMode,
+      billAmount: totals.net,
+      tipAmount: totals.tipAmount,
+      branchId,
+      counterId: counterNo,
+      staffId: staffPk,
+      refNo: str(body.paymentRefNo ?? onlineSource, 100),
+    });
+  } else if (isCreditBillMode(paymentMode)) {
+    await salesRepo.insertSalesPaymentSplit(client, {
+      companyId,
+      salesId,
+      payerNo: 1,
+      payMode: PM.CREDIT,
+      billAmount: totals.net,
+      branchId,
+      counterId: counterNo,
+      staffId: staffPk,
+      refNo: str(body.paymentRefNo, 100),
+    });
+  } else if (isComplimentBillMode(paymentMode)) {
+    await salesRepo.insertSalesPaymentSplit(client, {
+      companyId,
+      salesId,
+      payerNo: 1,
+      payMode: PM.COMPLIMENT,
+      billAmount: totals.net,
+      branchId,
+      counterId: counterNo,
+      staffId: staffPk,
+      refNo: str(body.complimentApprovedBy, 100),
+    });
+  }
+
+  let creditVoucherId = null;
+  const creditOs = isCreditBillMode(paymentMode)
+    ? totals.net
+    : (isMultiPaymentBillMode(paymentMode) ? tender.creditAmount : 0);
+  if (writeCreditVoucher && creditOs > PAYMENT_TOLERANCE && customerId != null) {
+    try {
+      await client.query('SAVEPOINT credit_voucher');
+      creditVoucherId = await postCreditSaleVoucher(client, {
+        companyId,
+        branchId,
+        salesId,
+        billNo,
+        customerId: Number(customerId),
+        netAmount: creditOs,
+        staffId: staffPk ?? auditBy,
+      });
+      await client.query('RELEASE SAVEPOINT credit_voucher');
+    } catch (vErr) {
+      await client.query('ROLLBACK TO SAVEPOINT credit_voucher').catch(() => {});
+      if (vErr.code === '42P01' || vErr.code === '42703') {
+        console.warn('[salon-pos] Voucher tables missing — credit OS not posted to accounts');
+      } else {
+        throw vErr;
+      }
+    }
+  }
+
+  return { salesId, billNo, creditVoucherId };
+}
+
 function tenderAmounts(mode, totals, splits) {
   if (isMultiPaymentBillMode(mode)) {
     const cash = splits.filter((s) => s.payMode === PM.CASH).reduce((a, s) => a + num(s.amount, 0), 0);
@@ -430,7 +715,6 @@ function tenderAmounts(mode, totals, splits) {
 
 export async function settleSale(pool, body, authStaff) {
   const companyId = Number(authStaff.company_id);
-  const branchId = Number(authStaff.branch_id);
 
   const requestedStationId = parseLong(
     body.stationId ?? body.StationID ?? authStaff.station_id ?? authStaff.branch_id
@@ -439,19 +723,45 @@ export async function settleSale(pool, body, authStaff) {
   const jobId = parseLong(body.jobId ?? body.kotId ?? body.JobID ?? body.kotMasterId);
   if (jobId == null) throw badRequest('jobId is required', 'NO_JOB');
 
-  const items = itemsFromBody(body);
+  let items = itemsFromBody(body);
   if (!items.length) throw badRequest('items array is required', 'NO_ITEMS');
 
-  const paymentMode = normalizeBillPaymentMode(body.paymentMode ?? body.PaymentMode);
-  // Build splits first so multipay tip_amount is summed from rows (source of truth)
-  const splits = buildPaymentSplits(body, paymentMode, body.netAmount);
-  const totals = readTotals(body, paymentMode, splits);
-  const tender = tenderAmounts(paymentMode, totals, splits);
+  const saleRaw = items.filter((it) => lineQty(it) > 0);
+  const returnRaw = items.filter((it) => lineQty(it) < 0);
+  const isMixed = saleRaw.length > 0 && returnRaw.length > 0;
+
+  let settleBody = body;
+  const isReturn = !isMixed && detectSalesReturn(body, items);
+  if (isReturn) {
+    const norm = normalizeReturnPayload(body, items);
+    settleBody = norm.body;
+    items = norm.items;
+  }
+
+  const paymentMode = normalizeBillPaymentMode(settleBody.paymentMode ?? settleBody.PaymentMode);
+  if (isMixed && isCreditBillMode(paymentMode)) {
+    throw badRequest(
+      'Cannot mix Return + Sale in CREDIT mode. Use CASH or CARD.',
+      'MIXED_CREDIT',
+    );
+  }
+  if (isMixed && isMultiPaymentBillMode(paymentMode)) {
+    throw badRequest(
+      'Cannot mix Return + Sale in Multi Payment. Use CASH or CARD.',
+      'MIXED_MULTIPAY',
+    );
+  }
+
+  const splits = isMixed
+    ? []
+    : buildPaymentSplits(settleBody, paymentMode, settleBody.netAmount);
+  const totals = isMixed ? null : readTotals(settleBody, paymentMode, splits);
+  const tender = isMixed ? null : tenderAmounts(paymentMode, totals, splits);
 
   const auditBy = auditUserName(authStaff);
   const staffPk = parseLong(authStaff.id) ?? parseLong(authStaff.staff_id);
-  const counterNo = num(body.counterNo, 1);
-  const onlineSource = str(body.onlineSource ?? body.OnlineSource, 80);
+  const counterNo = num(settleBody.counterNo, 1);
+  const onlineSource = str(settleBody.onlineSource ?? settleBody.OnlineSource, 80);
 
   return withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
@@ -485,6 +795,16 @@ export async function settleSale(pool, body, authStaff) {
       }
     }
     const stationId = jobStationId;
+    const { rows: tillRows } = await client.query(
+      `SELECT branch_id
+         FROM core.station_master
+        WHERE company_id = $1 AND station_id = $2 AND is_deleted = FALSE
+        LIMIT 1`,
+      [companyId, stationId]
+    );
+    const branchId = Number(
+      tillRows[0]?.branch_id ?? job.branch_id ?? authStaff.branch_id
+    );
 
     if (String(job.job_status).toUpperCase() === 'SETTLED' || job.sales_id != null) {
       throw conflict('Job is already settled', 'ALREADY_SETTLED');
@@ -501,6 +821,7 @@ export async function settleSale(pool, body, authStaff) {
       throw badRequest('Customer is required for Credit settlement', 'NO_CUSTOMER');
     }
     if (
+      !isMixed &&
       isMultiPaymentBillMode(paymentMode) &&
       tender.creditAmount > PAYMENT_TOLERANCE &&
       customerId == null
@@ -526,149 +847,82 @@ export async function settleSale(pool, body, authStaff) {
       throw badRequest('No valid line items (productId required)', 'NO_VALID_ITEMS');
     }
 
-    const salesId = await salesRepo.nextSalesId(client, companyId);
-    const billNo = await salesRepo.nextBillNo(client, companyId, stationId);
+    const creditCardNo =
+      isCreditCardBillMode(paymentMode) || isOnlineBillMode(paymentMode)
+        ? str(body.creditCardNo ?? body.paymentRefNo, 50)
+        : null;
 
-    await salesRepo.insertSalesMaster(client, {
+    const writeCtx = {
       companyId,
-      salesId,
       branchId,
       stationId,
       jobId,
       counterNo,
-      billNo,
       customerId,
       paymentMode,
-      creditCardNo:
-        isCreditCardBillMode(paymentMode) || isOnlineBillMode(paymentMode)
-          ? str(body.creditCardNo ?? body.paymentRefNo, 50)
-          : null,
-      amount: totals.net,
-      cashAmount: tender.cashAmount,
-      creditAmount: tender.creditAmount,
-      creditCardAmount: tender.creditCardAmount,
-      paidAmount: tender.paidAmount,
-      balancePaid: tender.balancePaid,
-      discountAmount: totals.discountAmount,
-      subtotalAmount: totals.subTotal,
-      taxableAmount: totals.taxableAmount,
-      tax1Amount: totals.tax1,
-      tax2Amount: totals.tax2,
-      tax3Amount: totals.tax3,
-      tax1Rate: totals.tax1Rate,
-      tax2Rate: totals.tax2Rate,
-      tax3Rate: totals.tax3Rate,
-      roundOffAdj: totals.roundOffAdj,
-      stylistId: parseLong(body.stylistId ?? body.waiterId) ?? primaryStylistId,
-      chairId:
-        parseLong(body.chairId ?? body.tableId) ??
-        (job.chair_id != null ? Number(job.chair_id) : null),
-      areaId:
-        parseLong(body.areaId) ?? (job.area_id != null ? Number(job.area_id) : null),
-      noOfCustomers: Math.max(0, Math.trunc(num(body.noOfCustomer ?? body.noOfCustomers, 0))),
-      staffId: staffPk,
-      remarks: str(body.comments ?? body.remarks, 200),
-      onlineSource: isOnlineBillMode(paymentMode) ? onlineSource : null,
-      createdBy: auditBy,
-      modifiedBy: auditBy,
-    });
+      creditCardNo,
+      onlineSource,
+      body,
+      auditBy,
+      staffPk,
+      primaryStylistId,
+      job,
+    };
 
-    for (const line of lines) {
-      const salesChildId = await salesRepo.nextSalesChildId(client, companyId);
-      await salesRepo.insertSalesChild(client, {
-        companyId,
-        salesChildId,
-        salesId,
-        branchId,
-        stationId,
-        ...line,
-        createdBy: auditBy,
-        modifiedBy: auditBy,
-      });
-    }
+    let saleRes;
+    let returnRes = null;
 
-    if (isMultiPaymentBillMode(paymentMode) && splits.length) {
-      await salesRepo.insertPaymentSplits(client, {
-        companyId,
-        salesId,
-        branchId,
-        counterNo,
-        staffId: staffPk,
-        splits,
-      });
-    } else if (!isComplimentBillMode(paymentMode) && !isCreditBillMode(paymentMode)) {
-      const payMode =
-        isOnlineBillMode(paymentMode)
-          ? PM.ONLINE
-          : isCreditCardBillMode(paymentMode)
-            ? PM.CREDITCARD
-            : PM.CASH;
-      // bill_amount = invoice net; tip_amount is separate (not taxed) for reports
-      await salesRepo.insertSalesPaymentSplit(client, {
-        companyId,
-        salesId,
-        payerNo: 1,
-        payMode,
-        billAmount: totals.net,
-        tipAmount: totals.tipAmount,
-        branchId,
-        counterId: counterNo,
-        staffId: staffPk,
-        refNo: str(body.paymentRefNo ?? onlineSource, 100),
-      });
-    } else if (isCreditBillMode(paymentMode)) {
-      await salesRepo.insertSalesPaymentSplit(client, {
-        companyId,
-        salesId,
-        payerNo: 1,
-        payMode: PM.CREDIT,
-        billAmount: totals.net,
-        branchId,
-        counterId: counterNo,
-        staffId: staffPk,
-        refNo: str(body.paymentRefNo, 100),
-      });
-    } else if (isComplimentBillMode(paymentMode)) {
-      await salesRepo.insertSalesPaymentSplit(client, {
-        companyId,
-        salesId,
-        payerNo: 1,
-        payMode: PM.COMPLIMENT,
-        billAmount: totals.net,
-        branchId,
-        counterId: counterNo,
-        staffId: staffPk,
-        refNo: str(body.complimentApprovedBy, 100),
-      });
-    }
+    if (isMixed) {
+      const saleLines = lines.filter((l) => num(l.qty) > 0);
+      const returnLines = lines.filter((l) => num(l.qty) < 0).map(absResolvedLine);
+      if (saleLines.length && returnLines.length) {
+        const saleTotals = totalsFromResolved(saleLines);
+        const returnTotals = totalsFromResolved(returnLines);
+        const saleTender = tenderAmounts(paymentMode, saleTotals, []);
+        const returnTender = tenderAmounts(paymentMode, returnTotals, []);
 
-    // Credit-sale accounting voucher (DR customer / CR sales) — same as Counter-pos.
-    const creditOs = isCreditBillMode(paymentMode)
-      ? totals.net
-      : (isMultiPaymentBillMode(paymentMode) ? tender.creditAmount : 0);
-    let creditVoucherId = null;
-    if (creditOs > PAYMENT_TOLERANCE && customerId != null) {
-      try {
-        await client.query('SAVEPOINT credit_voucher');
-        creditVoucherId = await postCreditSaleVoucher(client, {
-          companyId,
-          branchId,
-          salesId,
-          billNo,
-          customerId: Number(customerId),
-          netAmount: creditOs,
-          staffId: staffPk ?? auditBy,
+        saleRes = await writeOneSettlement(client, {
+          ...writeCtx,
+          lines: saleLines,
+          totals: saleTotals,
+          tender: saleTender,
+          splits: [],
+          isReturn: false,
+          writeCreditVoucher: false,
         });
-        await client.query('RELEASE SAVEPOINT credit_voucher');
-      } catch (vErr) {
-        await client.query('ROLLBACK TO SAVEPOINT credit_voucher').catch(() => {});
-        if (vErr.code === '42P01' || vErr.code === '42703') {
-          console.warn('[salon-pos] Voucher tables missing — credit OS not posted to accounts');
-        } else {
-          // Fail the settle so credit bills never save without accounts OS.
-          throw vErr;
-        }
+        returnRes = await writeOneSettlement(client, {
+          ...writeCtx,
+          lines: returnLines,
+          totals: returnTotals,
+          tender: returnTender,
+          splits: [],
+          isReturn: true,
+          writeCreditVoucher: false,
+        });
+      } else {
+        const onlyReturn = returnLines.length > 0;
+        const partLines = onlyReturn ? returnLines : saleLines;
+        const partTotals = totalsFromResolved(partLines);
+        saleRes = await writeOneSettlement(client, {
+          ...writeCtx,
+          lines: partLines,
+          totals: partTotals,
+          tender: tenderAmounts(paymentMode, partTotals, []),
+          splits: [],
+          isReturn: onlyReturn,
+          writeCreditVoucher: !onlyReturn,
+        });
       }
+    } else {
+      saleRes = await writeOneSettlement(client, {
+        ...writeCtx,
+        lines: isReturn ? lines.map(absResolvedLine) : lines,
+        totals,
+        tender,
+        splits,
+        isReturn,
+        writeCreditVoucher: !isReturn,
+      });
     }
 
     // Sales fully written — remove the working job rows.
@@ -677,25 +931,33 @@ export async function settleSale(pool, body, authStaff) {
       throw conflict('Job could not be cleared after settlement', 'JOB_DELETE_FAILED');
     }
 
+    const resultTotals = isMixed ? totalsFromResolved(lines.filter((l) => num(l.qty) > 0)) : totals;
+    const resultTender = isMixed
+      ? tenderAmounts(paymentMode, resultTotals, [])
+      : tender;
     const outstandingBalance = salesRepo.resolveSalesOutstandingBalance({
       paymentMode,
-      amount: totals.net,
-      creditAmount: tender.creditAmount,
+      amount: resultTotals.net,
+      creditAmount: resultTender.creditAmount,
     });
 
     return {
       ok: true,
       success: true,
-      salesId: String(salesId),
-      billNo: String(billNo),
+      salesId: String(saleRes.salesId),
+      billNo: String(saleRes.billNo),
+      returnSalesId: returnRes ? String(returnRes.salesId) : null,
+      returnBillNo: returnRes ? String(returnRes.billNo) : null,
       jobId: String(jobId),
       jobNo: job.job_no ?? '',
       paymentMode,
-      balancePaid: String(tender.balancePaid),
+      balancePaid: String(resultTender.balancePaid),
       outstandingBalance: String(outstandingBalance),
-      creditVoucherId: creditVoucherId != null ? String(creditVoucherId) : null,
+      creditVoucherId: saleRes.creditVoucherId != null ? String(saleRes.creditVoucherId) : null,
       lines: lines.length,
-      message: 'Settlement saved. Job cleared.',
+      message: returnRes
+        ? `Settlement saved. Sale bill ${saleRes.billNo}, return bill ${returnRes.billNo}. Job cleared.`
+        : 'Settlement saved. Job cleared.',
     };
   });
 }
@@ -735,6 +997,8 @@ export async function listSalesViewer(pool, authStaff, query = {}) {
     filterKey: query.filter ?? query.filterKey ?? null,
     searchQuery: query.q ?? query.search ?? query.searchQuery ?? '',
     limit: query.limit,
+    staffId: optionalId(query.staffId ?? query.salesmanId),
+    customerId: optionalId(query.customerId),
   });
 
   return rows.map((r) => ({

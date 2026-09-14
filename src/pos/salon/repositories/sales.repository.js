@@ -8,12 +8,12 @@
  *     each line, and threading three nullable salon columns through the
  *     restaurant writer would put salon concerns in a hot restaurant path.
  *
- * Id allocation (nextSalesId / nextSalesChildId / nextBillNo) deliberately
- * mirrors the restaurant repository, including its MAX+1 approach. These ids
- * are per company and the callers hold an advisory lock for the whole
- * transaction, so concurrent tills cannot interleave. bill_no stays a plain
- * integer because the Flutter printing and receipt code parses it as one â€” see
- * the documented exception in api/CLAUDE.md.
+ * Id allocation (nextSalesId / nextSalesChildId / nextBillNo) uses MAX+1.
+ * sales_id is per company. bill_no must be unique on (company_id, branch_id)
+ * — constraint uq_sales_master_company_branch_bill_no — so it is allocated
+ * per branch, not per station. Callers hold an advisory lock for the whole
+ * transaction. bill_no stays a plain integer because the Flutter printing and
+ * receipt code parses it as one — see the documented exception in api/CLAUDE.md.
  * After a successful settle, job rows are hard-deleted (migration 106 drops FKs).
  */
 import {
@@ -42,12 +42,12 @@ export async function nextSalesChildId(client, companyId) {
   return Number(rows[0].n);
 }
 
-export async function nextBillNo(client, companyId, stationId) {
+export async function nextBillNo(client, companyId, branchId) {
   const { rows } = await client.query(
     `SELECT COALESCE(MAX(bill_no), 0) + 1 AS n
        FROM ops.sales_master
-      WHERE company_id = $1 AND station_id = $2`,
-    [companyId, stationId]
+      WHERE company_id = $1 AND branch_id = $2`,
+    [companyId, branchId]
   );
   return Number(rows[0].n);
 }
@@ -135,6 +135,7 @@ export async function insertSalesMaster(client, row) {
     tax1Amount, tax2Amount, tax3Amount, tax1Rate, tax2Rate, tax3Rate,
     roundOffAdj, stylistId, chairId, areaId, noOfCustomers,
     staffId, remarks, onlineSource, createdBy, modifiedBy,
+    transactionType,
   } = row;
 
   const mode = normalizeBillPaymentMode(paymentMode);
@@ -251,6 +252,20 @@ export async function insertSalesMaster(client, row) {
       ]
     );
   });
+
+  const txnType = String(transactionType || '').toUpperCase() === 'RETURN' ? 'RETURN' : null;
+  if (txnType) {
+    try {
+      await client.query(
+        `UPDATE ops.sales_master
+            SET transaction_type = $3
+          WHERE company_id = $1 AND sales_id = $2`,
+        [companyId, salesId, txnType]
+      );
+    } catch (e) {
+      if (e.code !== '42703') throw e;
+    }
+  }
 }
 
 export async function insertSalesChild(client, row) {
@@ -346,27 +361,43 @@ export async function insertPaymentSplits(client, {
  * Scoped to entry_source = 'SALON-POS' so restaurant/counter bills never leak in.
  */
 export async function listPostedSales(pool, {
-  companyId, dateFrom, dateTo, filterKey, searchQuery, limit,
+  companyId, dateFrom, dateTo, filterKey, searchQuery, limit, staffId, customerId,
 }) {
   const lim = Math.min(Math.max(Number(limit) || 300, 1), 500);
   const params = [companyId, dateFrom, dateTo];
-  let filterClause = '';
+  let extraClause = '';
   const q = String(searchQuery ?? '').trim();
   if (q) {
     const key = String(filterKey ?? 'CustomerName');
     params.push(`%${q}%`);
     const p = `$${params.length}`;
     if (key === 'BillNo') {
-      filterClause = ` AND (sm.bill_no::text ILIKE ${p} OR sm.sales_id::text ILIKE ${p})`;
+      extraClause += ` AND (sm.bill_no::text ILIKE ${p} OR sm.sales_id::text ILIKE ${p})`;
     } else if (key === 'CounterNo') {
-      filterClause = ` AND sm.counter_no::text ILIKE ${p}`;
+      extraClause += ` AND sm.counter_no::text ILIKE ${p}`;
     } else if (key === 'PaymentMode') {
-      filterClause = ` AND sm.payment_mode ILIKE ${p}`;
+      extraClause += ` AND sm.payment_mode ILIKE ${p}`;
     } else if (key === 'DeliveryBoyName') {
-      filterClause = ` AND st.staff_name ILIKE ${p}`;
+      extraClause += ` AND st.staff_name ILIKE ${p}`;
     } else {
-      filterClause = ` AND COALESCE(cm.customer_name, '') ILIKE ${p}`;
+      extraClause += ` AND COALESCE(cm.customer_name, '') ILIKE ${p}`;
     }
+  }
+  if (staffId != null && Number.isFinite(Number(staffId)) && Number(staffId) > 0) {
+    params.push(Number(staffId));
+    extraClause += ` AND (
+      sm.staff_id = $${params.length}
+      OR EXISTS (
+        SELECT 1 FROM core.staff_master sx
+         WHERE sx.company_id = sm.company_id
+           AND (sx.id = sm.staff_id OR sx.staff_id = sm.staff_id)
+           AND (sx.id = $${params.length} OR sx.staff_id = $${params.length})
+      )
+    )`;
+  }
+  if (customerId != null && Number.isFinite(Number(customerId)) && Number(customerId) > 0) {
+    params.push(Number(customerId));
+    extraClause += ` AND sm.customer_id = $${params.length}`;
   }
   params.push(lim);
 
@@ -419,7 +450,7 @@ export async function listPostedSales(pool, {
        AND COALESCE(sm.hold_status, '') NOT IN ('HOLD', 'DELIVERY', 'CANCELLED')
        AND sm.bill_date::date >= $2::date
        AND sm.bill_date::date <= $3::date
-       ${filterClause}
+       ${extraClause}
      ORDER BY sm.bill_date DESC, sm.sales_id DESC
      LIMIT $${params.length}`,
     params,

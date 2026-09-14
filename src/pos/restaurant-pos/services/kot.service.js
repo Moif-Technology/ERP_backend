@@ -1,6 +1,5 @@
 import { withTransaction } from '../../../config/db.js';
 import * as kotRepo from '../repositories/kot.repository.js';
-import * as branchRepo from '../../../shared/repositories/branch.repository.js';
 
 function num(v, d = 0) {
   if (v == null || v === '') return d;
@@ -24,16 +23,84 @@ function parseCustomerId(v) {
 }
 
 function itemDgvChildId(it) {
-  const raw = it.dgvKOTChildID ?? it.dgvKotChildID ?? it.DgvKOTChildID ?? '';
+  const raw =
+    it.dgvKOTChildID ??
+    it.DgvKOTChildID ??
+    it.KotChildID ??
+    it.KOTChildID ??
+    it.kotChildID ??
+    it.kotChildId ??
+    '';
   const n = Number(String(raw).trim());
   if (!Number.isFinite(n) || n < 1) return 0;
   return n;
+}
+
+function strId(v, fallback = '') {
+  return v != null && v !== '' ? String(v) : fallback;
+}
+
+function normalizeSupplyType(raw) {
+  const u = String(raw ?? '')
+    .replace(/_/g, ' ')
+    .toUpperCase()
+    .trim();
+  if (u === 'DELIVERY') return 'DELIVERY';
+  if (u === 'PARCEL' || u === 'TAKEAWAY' || u === 'TAKE AWAY') return 'PARCEL';
+  if (u === 'DINE IN' || u === 'DINEIN') return 'DINE IN';
+  return u;
+}
+
+function kotPrintStatus(raw) {
+  if (raw === true || raw === 1) return 'PRINTED';
+  const u = String(raw ?? '').trim().toUpperCase();
+  if (u === 'PRINTED' || u === 'T' || u === 'TRUE' || u === '1') return 'PRINTED';
+  return 'PENDING';
+}
+
+function closedKotStatus(status) {
+  const s = String(status ?? '').trim().toUpperCase();
+  return ['SETTLED', 'CANCELLED', 'COMPLETED', 'SUBMIT'].includes(s);
+}
+
+function childFieldsFromItem(it) {
+  const qty = num(it.Qty ?? it.qty, 1);
+  const rate = num(it.UnitPrice ?? it.unitPrice, 0);
+  const itemDiscount = num(it.ItemDisc ?? it.ItemDiscount ?? it.itemDiscount, 0);
+  const taxP = num(it.TaxPerc ?? it.taxPerc ?? it.Tax1RateC ?? it.tax1RateC ?? it.Tax1Rate, 0);
+  const st = num(it.SubTotal ?? it.SubTotalC, qty * rate - itemDiscount);
+  const taxA = num(it.TaxAmount ?? it.taxAmount ?? it.Tax1AmountC ?? it.tax1AmountC, st * (taxP / 100));
+  const lt = num(it.LineTotal ?? it.lineTotal, st + taxA);
+  return {
+    productId: parseLong(it.ProductID ?? it.productID),
+    barcode: it.BarCode != null ? String(it.BarCode).slice(0, 50) : it.Barcode != null ? String(it.Barcode).slice(0, 50) : null,
+    shortDescription: (it.ItemName ?? it.itemName ?? it.ShortDescription ?? '').toString().slice(0, 200) || 'Item',
+    qty,
+    packQty: num(it.PackQty ?? it.packQty, 1),
+    unitCost: num(it.UnitCost ?? it.unitCost, 0),
+    unitPrice: rate,
+    amount: st,
+    itemDiscount,
+    subTotal: st,
+    lineTotal: lt,
+    tax1Amount: taxA,
+    tax2Amount: 0,
+    tax3Amount: 0,
+    tax1Rate: taxP,
+    tax2Rate: 0,
+    tax3Rate: 0,
+    groupId: parseLong(it.dgvGrpID ?? it.GroupID ?? it.groupID) ?? null,
+    modifier: (it.Modifir ?? it.Modifier ?? it.modifier ?? '').toString().slice(0, 200),
+    kotDisplayStatus: (it.KOTDisplayStatus ?? it.kotDisplayStatus ?? 'PENDING').toString().slice(0, 50),
+  };
 }
 
 function mapRowToFlutterLine(row) {
   const kmId = row.kot_master_id;
   const prefix = row.kot_prefix ?? '';
   const kotNo = row.kot_number;
+  const itemDisc = row.item_discount ?? 0;
+  const supply = normalizeSupplyType(row.supply_type);
   return {
     KotMasterID: String(kmId),
     kotMasterID: String(kmId),
@@ -42,40 +109,76 @@ function mapRowToFlutterLine(row) {
     KOTNumber: String(kotNo),
     KotNumber: String(kotNo),
     kotNumber: String(kotNo),
-    AreaID: row.area_id != null ? String(row.area_id) : '',
-    areaID: row.area_id != null ? String(row.area_id) : '',
+    KotStatus: row.kot_status ?? '',
+    KOTStatus: row.kot_status ?? '',
+    AreaID: strId(row.area_id),
+    areaID: strId(row.area_id),
     AreaName: row.area_name ?? '',
     areaName: row.area_name ?? '',
-    TableID: row.table_id != null ? String(row.table_id) : '',
-    tableID: row.table_id != null ? String(row.table_id) : '',
+    SupplyType: supply,
+    supplyType: supply,
+    TableID: strId(row.table_id),
+    tableID: strId(row.table_id),
+    TableName: row.table_name ?? '',
+    tableName: row.table_name ?? '',
     ChairNo: row.chair_no != null ? String(row.chair_no) : '0',
     chairNo: row.chair_no != null ? String(row.chair_no) : '0',
+    CustomerID: strId(row.customer_id),
+    customerID: strId(row.customer_id),
+    CustomerName: row.customer_name ?? '',
+    customerName: row.customer_name ?? '',
+    WaiterID: strId(row.waiter_id),
+    waiterID: strId(row.waiter_id),
+    WaiterName: row.waiter_name ?? '',
+    waiterName: row.waiter_name ?? '',
+    BillDiscount: String(row.bill_discount ?? 0),
+    billDiscount: String(row.bill_discount ?? 0),
+    NofCustomer: String(row.nof_customer ?? 0),
+    nofCustomer: String(row.nof_customer ?? 0),
+    HeaderRemarks: row.remarks ?? '',
+    txtRemarks: row.remarks ?? '',
+    RoundOffAdj: String(row.round_off_adj ?? 0),
+    Amount: String(row.amount ?? 0),
+    SubTotalM: String(row.sub_total_m ?? 0),
+    Tax1AmountM: String(row.tax1_amount_m ?? 0),
     KotChildID: String(row.kot_child_id),
     kotChildID: String(row.kot_child_id),
     KOTChildID: String(row.kot_child_id),
-    ProductID: row.product_id != null ? String(row.product_id) : '',
-    productID: row.product_id != null ? String(row.product_id) : '',
+    dgvKOTChildID: String(row.kot_child_id),
+    ProductID: strId(row.product_id),
+    productID: strId(row.product_id),
     Qty: String(row.qty),
     qty: String(row.qty),
     UnitPrice: String(row.unit_price),
     unitPrice: String(row.unit_price),
+    UnitCost: String(row.unit_cost ?? 0),
+    PackQty: String(row.pack_qty ?? 1),
+    ItemDiscount: String(itemDisc),
+    ItemDisc: String(itemDisc),
+    itemDiscount: String(itemDisc),
+    SubTotal: String(row.sub_total ?? 0),
+    SubTotalC: String(row.sub_total ?? 0),
     Tax1RateC: String(row.tax_1_rate ?? 0),
     tax1RateC: String(row.tax_1_rate ?? 0),
+    TaxPerc: String(row.tax_1_rate ?? 0),
     Tax1AmountC: String(row.tax_1_amount ?? 0),
     tax1AmountC: String(row.tax_1_amount ?? 0),
+    TaxAmount: String(row.tax_1_amount ?? 0),
     LineTotal: String(row.line_total ?? 0),
     lineTotal: String(row.line_total ?? 0),
     ShortDescription: row.short_description ?? '',
+    ItemName: row.short_description ?? '',
     BarCode: row.barcode ?? '',
     Barcode: row.barcode ?? '',
     GroupID: row.group_id != null ? String(row.group_id) : '0',
     groupID: row.group_id != null ? String(row.group_id) : '0',
     Modifier: row.modifier ?? '',
+    Modifir: row.modifier ?? '',
     Remarks: row.modifier ?? '',
     KOTDisplayStatus: row.kot_display_status ?? 'PENDING',
     kotDisplayStatus: row.kot_display_status ?? 'PENDING',
-    Androidprint: row.android_printed ? 'PRINTED' : 'PENDING',
-    AndroidPrint: row.android_printed ? 'PRINTED' : 'PENDING',
+    Androidprint: kotPrintStatus(row.android_printed),
+    AndroidPrint: kotPrintStatus(row.android_printed),
     UniqueProductID: '0',
     ItemCode: '',
     DescriptionArabic: '',
@@ -84,24 +187,33 @@ function mapRowToFlutterLine(row) {
 
 export async function buildKotDetailsPayload(executor, companyId, kotMasterId) {
   const rows = await kotRepo.listKotDetailRows(executor, companyId, kotMasterId);
-  const data = rows.map(mapRowToFlutterLine);
+  const seen = new Set();
+  const unique = [];
+  for (const row of rows) {
+    const id = Number(row.kot_child_id);
+    if (Number.isFinite(id) && id > 0) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+    }
+    unique.push(row);
+  }
+  const data = unique.map(mapRowToFlutterLine);
   return { success: true, data };
 }
 
-async function areaKotPrefix(client, companyId, branchId, areaId) {
-  if (areaId == null || areaId < 1) return '';
-  const { rows } = await client.query(
-    `SELECT kot_prefix FROM core.area_master
-     WHERE company_id = $1 AND branch_id = $2 AND area_id = $3`,
-    [companyId, branchId, areaId]
-  );
-  const p = rows[0]?.kot_prefix;
+async function areaKotPrefix(client, companyId, stationId, areaId) {
+  const area = await kotRepo.findArea(client, companyId, stationId, areaId);
+  const p = area?.kot_prefix;
   return p != null ? String(p).trim() : '';
 }
 
 /**
  * Legacy POS payload: mfAreaId, mfTableID, mfChairNo, mfCustomerID, StationID, Items[], lblSubTotalAmt, lblTax1Total, lblBillTotal,
  * optional CurrentKOTID, mfKotPrefix, mfKotNo for append.
+ *
+ * Mirrors Mainfrm.SaveBilDetailsToHoldTable + KOTChildInsert:
+ *   new KOT  → insert master + insert every grid row
+ *   existing → update master header, insert rows with dgvKOTChildID=0, update the rest
  */
 export async function saveKot(pool, body, authStaff, access = null) {
   const companyId = Number(authStaff.company_id);
@@ -122,51 +234,151 @@ export async function saveKot(pool, body, authStaff, access = null) {
     throw err;
   }
 
-  const items = Array.isArray(body.Items) ? body.Items : [];
+  const items = Array.isArray(body.Items) ? body.Items : Array.isArray(body.items) ? body.items : [];
   if (!items.length) {
-    const err = new Error('Items array is required');
+    const err = new Error('Enter Atleast One Item details...........');
     err.status = 400;
     throw err;
   }
 
-  const currentKotId = num(body.CurrentKOTID ?? body.currentKOTID, 0);
+  const currentKotId = num(body.CurrentKOTID ?? body.currentKOTID ?? body.currentKotId, 0);
   const isAppend = currentKotId > 0;
   const canSaveWithoutArea =
     isAppend ||
     access?.meta?.source === 'legacy-fallback' ||
     access?.features?.['pos.kot.save_without_area'] === true;
 
-  const areaId = num(body.mfAreaId, 0);
+  const areaId = num(body.mfAreaId ?? body.AreaID ?? body.areaId, 0);
   if (areaId < 1 && !canSaveWithoutArea) {
-    const err = new Error('mfAreaId is required');
+    const err = new Error('Please Select An Area...........');
     err.status = 400;
     throw err;
   }
 
-  const tableId = num(body.mfTableID, 0);
-  const chairNo = num(body.mfChairNo, 0);
-  const customerId = parseCustomerId(body.mfCustomerID);
-  const waiterId = authStaff.staff_id != null ? Number(authStaff.staff_id) : null;
+  const tableId = num(body.mfTableID ?? body.TableID ?? body.tableId, 0);
+  const chairNo = num(body.mfChairNo ?? body.ChairNo ?? body.chairNo, 0);
+  const customerId = parseCustomerId(body.mfCustomerID ?? body.CustomerID ?? body.customerId);
+  const waiterFromBody = parseLong(body.mfWaiterID ?? body.WaiterID ?? body.waiterId);
+  const waiterId =
+    waiterFromBody ??
+    (authStaff.staff_id != null ? Number(authStaff.staff_id) : null) ??
+    (authStaff.id != null ? Number(authStaff.id) : null);
 
   const lblSub = num(body.lblSubTotalAmt, 0);
   const lblTax1 = num(body.lblTax1Total, 0);
   const lblTotal = num(body.lblBillTotal, 0);
-  const billDiscount = num(body.txtDiscount, 0);
-  const nofCustomer = num(body.txtNoofCustomer, 0);
+  const billDiscount = num(body.txtDiscount ?? body.BillDiscount ?? body.billDiscount, 0);
+  const nofCustomer = num(body.txtNoofCustomer ?? body.NofCustomer ?? body.nofCustomer, 0);
   const remarks =
     body.txtRemarks != null && String(body.txtRemarks).trim() !== ''
       ? String(body.txtRemarks).slice(0, 250)
       : '';
 
-  const auditBy = parseLong(authStaff.staff_id) ?? null;
+  const waiterMandatory = num(body.ISWaiterMandatory ?? body.ISWaiterMandotory, 0) === 1;
+  const auditBy = parseLong(authStaff.staff_id) ?? parseLong(authStaff.id) ?? null;
 
   return withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
       `ops.kot_save:${companyId}`,
     ]);
 
+    const area = areaId > 0 ? await kotRepo.findArea(client, companyId, stationId, areaId) : null;
+    const supplyType = normalizeSupplyType(area?.supply_type);
+
+    if (supplyType === 'DELIVERY' && customerId == null) {
+      const err = new Error('Select a Customer...........');
+      err.status = 400;
+      throw err;
+    }
+
+    if (supplyType === 'DINE IN' && waiterMandatory) {
+      if (!(waiterId > 0)) {
+        const err = new Error('Select a Waiter. . . .');
+        err.status = 400;
+        throw err;
+      }
+    }
+
+    const tableCreationType = area?.table_creation_type != null ? Number(area.table_creation_type) : 0;
+    if (areaId > 0 && tableCreationType === 0) {
+      if (tableId <= 0) {
+        const err = new Error('Please Select A Table...........');
+        err.status = 400;
+        throw err;
+      }
+      if (chairNo < 0) {
+        const err = new Error('Please Select A Chair...........');
+        err.status = 400;
+        throw err;
+      }
+    }
+
+    const conflict = await kotRepo.findActiveTableChairConflict(client, {
+      companyId,
+      stationId,
+      areaId,
+      tableId,
+      chairNo,
+      excludeKotMasterId: isAppend ? currentKotId : 0,
+    });
+    if (conflict) {
+      const kotRef = `${conflict.kot_prefix ?? ''}${conflict.kot_number ?? ''}`;
+      const tableDisplay = (conflict.table_name || 'This table').trim();
+      const waiterName = (conflict.waiter_name || 'Unknown').trim();
+      const chairPart = chairNo > 0 ? ` (Chair ${chairNo})` : '';
+      const err = new Error(
+        `${tableDisplay}${chairPart} already has an active order (${kotRef}) under waiter : ${waiterName}.  select another table/chair.`
+      );
+      err.status = 409;
+      throw err;
+    }
+
     let kotMasterId;
     let newKotChildIds = [];
+    let prefix = (body.mfKotPrefix ?? area?.kot_prefix ?? '').toString().trim();
+
+    const headerCommon = {
+      customerId,
+      areaId: areaId > 0 ? areaId : 0,
+      tableId: tableId > 0 ? tableId : 0,
+      chairNo,
+      waiterId: Number.isFinite(waiterId) && waiterId > 0 ? waiterId : null,
+      billDiscount,
+      amount: lblTotal,
+      subTotalM: lblSub,
+      tax1AmountM: lblTax1,
+      roundOffAdj: num(body.lblRound, 0),
+      nofCustomer,
+      remarks,
+    };
+
+    async function persistChild(it, masterId) {
+      const fields = childFieldsFromItem(it);
+      const existingId = itemDgvChildId(it);
+      if (existingId > 0 && isAppend) {
+        await kotRepo.updateKotChild(client, {
+          companyId,
+          kotChildId: existingId,
+          kotMasterId: masterId,
+          ...fields,
+          modifiedBy: auditBy,
+        });
+        return existingId;
+      }
+      const kotChildId = await kotRepo.nextKotChildId(client, companyId);
+      await kotRepo.insertKotChild(client, {
+        companyId,
+        branchId,
+        stationId,
+        kotChildId,
+        kotMasterId: masterId,
+        ...fields,
+        createdBy: auditBy,
+        modifiedBy: auditBy,
+      });
+      newKotChildIds.push(kotChildId);
+      return kotChildId;
+    }
 
     if (isAppend) {
       const master = await kotRepo.findKotMaster(client, companyId, currentKotId);
@@ -175,61 +387,47 @@ export async function saveKot(pool, body, authStaff, access = null) {
         err.status = 404;
         throw err;
       }
-      if (Number(master.station_id ?? master.branch_id) !== stationId) {
+      const masterStation = Number(master.station_id) || 0;
+      const masterBranch = Number(master.branch_id) || 0;
+      if (
+        masterStation !== stationId &&
+        masterBranch !== stationId &&
+        masterBranch !== branchId
+      ) {
         const err = new Error('KOT belongs to a different branch');
         err.status = 400;
         throw err;
       }
+      if (closedKotStatus(master.kot_status)) {
+        const err = new Error('KOT already settled');
+        err.status = 400;
+        throw err;
+      }
       kotMasterId = currentKotId;
+      if (!prefix) prefix = master.kot_prefix ?? '';
 
+      await kotRepo.updateKotMasterHeader(client, {
+        companyId,
+        kotMasterId,
+        kotPrefix: prefix.slice(0, 50),
+        ...headerCommon,
+        modifiedBy: auditBy,
+      });
+
+      const seenChildIds = new Set();
       for (const it of items) {
-        if (itemDgvChildId(it) > 0) continue;
-
-        const kotChildId = await kotRepo.nextKotChildId(client, companyId);
-        const qty = num(it.Qty ?? it.qty, 1);
-        const rate = num(it.UnitPrice ?? it.unitPrice, 0);
-        const taxP = num(it.TaxPerc ?? it.taxPerc, 0);
-        const st = num(it.SubTotal, qty * rate);
-        const taxA = num(it.TaxAmount ?? it.taxAmount, st * (taxP / 100));
-        const lt = num(it.LineTotal, st + taxA);
-
-        await kotRepo.insertKotChild(client, {
-          companyId,
-          branchId,
-          stationId,
-          kotChildId,
-          kotMasterId,
-          productId: parseLong(it.ProductID ?? it.productID),
-          barcode: it.BarCode != null ? String(it.BarCode).slice(0, 50) : null,
-          shortDescription: (it.ItemName ?? it.itemName ?? '').toString().slice(0, 200) || 'Item',
-          qty,
-          packQty: num(it.PackQty, 1),
-          unitCost: num(it.UnitCost, 0),
-          unitPrice: rate,
-          amount: st,
-          itemDiscount: num(it.ItemDisc, 0),
-          subTotal: st,
-          lineTotal: lt,
-          tax1Amount: taxA,
-          tax2Amount: 0,
-          tax3Amount: 0,
-          tax1Rate: taxP,
-          tax2Rate: 0,
-          tax3Rate: 0,
-          groupId: parseLong(it.dgvGrpID ?? it.GroupID) ?? null,
-          modifier: it.Modifir != null ? String(it.Modifir).slice(0, 200) : null,
-          kotDisplayStatus: (it.KOTDisplayStatus ?? 'PENDING').toString().slice(0, 50),
-          createdBy: auditBy,
-          modifiedBy: auditBy,
-        });
-        newKotChildIds.push(kotChildId);
+        const existingId = itemDgvChildId(it);
+        if (existingId > 0) {
+          if (seenChildIds.has(existingId)) continue;
+          seenChildIds.add(existingId);
+        }
+        await persistChild(it, kotMasterId);
       }
 
       await kotRepo.updateKotMasterTotals(client, companyId, kotMasterId, auditBy);
     } else {
       kotMasterId = await kotRepo.nextKotMasterId(client, companyId);
 
-      let prefix = (body.mfKotPrefix ?? '').toString().trim();
       if (!prefix) {
         prefix = await areaKotPrefix(client, companyId, stationId, areaId);
       }
@@ -242,68 +440,25 @@ export async function saveKot(pool, body, authStaff, access = null) {
         kotMasterId,
         kotNumber,
         kotPrefix: prefix.slice(0, 50),
-        kotStatus: 'OPEN',
-        customerId,
-        areaId,
-        // Legacy schemas often use NOT NULL 0 for "no table" instead of NULL.
-        tableId: tableId > 0 ? tableId : 0,
-        chairNo,
-        waiterId: Number.isFinite(waiterId) && waiterId > 0 ? waiterId : null,
-        billDiscount,
-        amount: lblTotal,
-        subTotalM: lblSub,
-        tax1AmountM: lblTax1,
+        kotStatus: 'HOLD',
+        ...headerCommon,
         tax2AmountM: 0,
         tax3AmountM: 0,
         tax1RateM: 0,
         tax2RateM: 0,
         tax3RateM: 0,
-        roundOffAdj: num(body.lblRound, 0),
-        nofCustomer,
-        remarks,
         createdBy: auditBy,
         modifiedBy: auditBy,
       });
 
+      const seenChildIds = new Set();
       for (const it of items) {
-        const kotChildId = await kotRepo.nextKotChildId(client, companyId);
-        const qty = num(it.Qty ?? it.qty, 1);
-        const rate = num(it.UnitPrice ?? it.unitPrice, 0);
-        const taxP = num(it.TaxPerc ?? it.taxPerc, 0);
-        const st = num(it.SubTotal, qty * rate);
-        const taxA = num(it.TaxAmount ?? it.taxAmount, st * (taxP / 100));
-        const lt = num(it.LineTotal, st + taxA);
-
-        await kotRepo.insertKotChild(client, {
-          companyId,
-          branchId,
-          stationId,
-          kotChildId,
-          kotMasterId,
-          productId: parseLong(it.ProductID ?? it.productID),
-          barcode: it.BarCode != null ? String(it.BarCode).slice(0, 50) : null,
-          shortDescription: (it.ItemName ?? it.itemName ?? '').toString().slice(0, 200) || 'Item',
-          qty,
-          packQty: num(it.PackQty, 1),
-          unitCost: num(it.UnitCost, 0),
-          unitPrice: rate,
-          amount: st,
-          itemDiscount: num(it.ItemDisc, 0),
-          subTotal: st,
-          lineTotal: lt,
-          tax1Amount: taxA,
-          tax2Amount: 0,
-          tax3Amount: 0,
-          tax1Rate: taxP,
-          tax2Rate: 0,
-          tax3Rate: 0,
-          groupId: parseLong(it.dgvGrpID ?? it.GroupID) ?? null,
-          modifier: it.Modifir != null ? String(it.Modifir).slice(0, 200) : null,
-          kotDisplayStatus: (it.KOTDisplayStatus ?? 'PENDING').toString().slice(0, 50),
-          createdBy: auditBy,
-          modifiedBy: auditBy,
-        });
-        newKotChildIds.push(kotChildId);
+        const existingId = itemDgvChildId(it);
+        if (existingId > 0) {
+          if (seenChildIds.has(existingId)) continue;
+          seenChildIds.add(existingId);
+        }
+        await persistChild(it, kotMasterId);
       }
 
       await kotRepo.updateKotMasterTotals(client, companyId, kotMasterId, auditBy);
@@ -315,6 +470,8 @@ export async function saveKot(pool, body, authStaff, access = null) {
       ok: true,
       msg: 'KOT saved successfully.',
       CurrentKOTID: String(kotMasterId),
+      KotPrefix: prefix,
+      KotNumber: kotDetails.data?.[0]?.KotNumber ?? '',
       newKotChildIds: newKotChildIds.map(String),
       kotDetails,
     };
@@ -325,21 +482,41 @@ export async function listKots(pool, authStaff, query = {}) {
   const companyId = Number(authStaff.company_id);
   const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
   const areaId = query.areaId != null ? Number(query.areaId) : null;
-  const kotNumberSearch = query.search ?? null;
+  const kotNumberSearch = query.search ?? query.jobNo ?? null;
+  const supplyType = query.supplyType ?? query.SupplyType ?? null;
 
-  const rows = await kotRepo.listOpenKots(pool, companyId, stationId, { areaId, kotNumberSearch });
-  const data = rows.map((r) => ({
-    kotMasterID: String(r.kot_master_id),
-    KotMasterID: String(r.kot_master_id),
-    KotNumber: String(r.kot_number),
-    KotPrefix: r.kot_prefix ?? '',
-    KotTime: r.kot_time ? r.kot_time.toISOString() : null,
-    Amount: String(r.amount ?? 0),
-    ChairNo: String(r.chair_no ?? 0),
-    AreaName: r.area_name ?? '',
-    TableName: r.table_name ?? '',
-    SupplyType: r.supply_type ?? '',
-  }));
+  const rows = await kotRepo.listOpenKots(pool, companyId, stationId, {
+    areaId,
+    kotNumberSearch,
+    supplyType,
+  });
+  const data = rows.map((r) => {
+    const net = Number(r.amount ?? 0) - Number(r.bill_discount ?? 0);
+    const supply = normalizeSupplyType(r.supply_type);
+    return {
+      kotMasterID: String(r.kot_master_id),
+      KotMasterID: String(r.kot_master_id),
+      KotNumber: String(r.kot_number),
+      KotPrefix: r.kot_prefix ?? '',
+      KotStatus: r.kot_status ?? '',
+      KotTime: r.kot_time ? r.kot_time.toISOString() : null,
+      Amount: String(r.amount ?? 0),
+      BillDiscount: String(r.bill_discount ?? 0),
+      NetAmount: String(net),
+      ChairNo: String(r.chair_no ?? 0),
+      AreaID: r.area_id != null ? String(r.area_id) : '',
+      AreaName: r.area_name ?? '',
+      TableID: r.table_id != null ? String(r.table_id) : '',
+      TableName: r.table_name ?? '',
+      SupplyType: supply,
+      CustomerID: r.customer_id != null ? String(r.customer_id) : '',
+      CustomerName: r.customer_name ?? '',
+      WaiterID: r.waiter_id != null ? String(r.waiter_id) : '',
+      WaiterName: r.waiter_name ?? '',
+      NofCustomer: String(r.nof_customer ?? 0),
+      Remarks: r.remarks ?? '',
+    };
+  });
   return { ok: true, data };
 }
 

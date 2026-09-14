@@ -1,38 +1,20 @@
 /**
- * Salon POS device enrollment + PIN login.
+ * Restaurant POS device enrollment + PIN login.
  *
- * Mirrors the Counter-POS flow, which is the only POS flow in this codebase that
- * does device auth properly:
- *   1. Admin enters credentials  -> POST /device/stations  (list SALON_POS tills)
- *   2. Admin picks a station     -> POST /device/enroll    (pairs deviceToken)
- *   3. Device shows staff picker -> POST /staff-list       (gated by deviceToken)
- *   4. Stylist taps name + PIN   -> POST /pin-login        (one bcrypt compare)
- *
- * Why device-scoped: the staff list is not public. Counter-POS gates it behind an
- * enrolled deviceToken so staff names can't be enumerated by arbitrary callers,
- * and PIN verification targets exactly one staff row instead of scanning every
- * staff in the company (which turns one request into hundreds of bcrypt ops).
- *
- * Token scope: this path uses `buildTokensForPOSDevice`, which signs a genuinely
- * POS-scoped token (scope:'pos' + station id in `sid`). That means
- * POS_ALLOWED_PREFIXES isolation in authMiddleware actually engages here, and the
- * session must be registered as 'pos'. The username/password path in
- * controllers/auth.controller.js does NOT get a POS-scoped token and stays 'erp'.
+ * Same flow as Salon / Counter POS:
+ *   1. Admin credentials  -> POST /device/stations  (list RESTAURANT_POS tills)
+ *   2. Admin picks a till -> POST /device/enroll    (pairs deviceToken)
+ *   3. Device lists staff -> POST /device/staff-list
+ *   4. Cashier PIN        -> POST /device/pin-login (POS-scoped token, 8h)
  */
 import bcrypt from 'bcryptjs';
 import { pool } from '../../../config/db.js';
 import { buildTokensForPOSDevice } from '../../../core/services/sessionTokens.js';
-
-// Reused from counter-pos rather than duplicated: both are generic SQL over
-// shared tables (core.pos_device_enrollment, core.staff_master) with nothing
-// counter-specific in them. Duplicating would mean fixing bugs twice.
 import * as deviceRepo from '../../counter-pos/repositories/device.repository.js';
 import * as posStaffRepo from '../../counter-pos/repositories/staff.repository.js';
 
-const SALON_STATION_TYPE = 'SALON_POS';   // station_type uses UNDERSCORES
-const SALON_ROLE_TYPES = new Set(['SALON-POS', 'COUNTER-POS', 'ERP', '', null, undefined]); // roles use HYPHENS
-
-/** Same cap counter-pos uses: a legacy PIN-only login must not become a bcrypt storm. */
+const RESTAURANT_STATION_TYPE = 'RESTAURANT_POS';
+const RESTAURANT_ROLE_TYPES = new Set(['RESTAURANT-POS', 'ERP', '', null, undefined]);
 const LEGACY_PIN_SCAN_CAP = 50;
 
 function bad(message, status = 400, code = null) {
@@ -42,13 +24,14 @@ function bad(message, status = 400, code = null) {
   return err;
 }
 
-function assertSalonPosAllowed(staffRow) {
+function assertRestaurantPosAllowed(staffRow) {
   const roleType = String(staffRow.role_software_type || '').toUpperCase().trim();
-  if (roleType !== '' && !SALON_ROLE_TYPES.has(roleType)) {
+  if (roleType !== '' && !RESTAURANT_ROLE_TYPES.has(roleType)) {
     throw bad(
-      `This staff's role is '${roleType}', which is not authorised for Salon POS. ` +
-      `Allowed: SALON-POS, COUNTER-POS or ERP.`,
-      403, 'ROLE_NOT_ALLOWED'
+      `This staff's role is '${roleType}', which is not authorised for Restaurant POS. ` +
+        `Allowed: RESTAURANT-POS or ERP.`,
+      403,
+      'ROLE_NOT_ALLOWED',
     );
   }
 }
@@ -60,7 +43,6 @@ function assertEnrollmentAdmin(staffRow) {
   throw bad('Only an admin can enroll POS devices', 403, 'NOT_ADMIN');
 }
 
-/** Verify admin username + password, return the matching staff row. */
 async function authenticateAdmin(adminUsername, adminPassword) {
   if (!adminUsername || !adminPassword) {
     throw bad('Email and password are required', 400, 'MISSING_CREDENTIALS');
@@ -79,10 +61,6 @@ async function authenticateAdmin(adminUsername, adminPassword) {
   throw bad('Invalid credentials', 401, 'BAD_CREDENTIALS');
 }
 
-/**
- * Step 1 — POST /device/stations
- * Admin credentials in, the company's SALON_POS tills out.
- */
 export async function listStationsForEnroll({ adminUsername, adminPassword }) {
   const adminRow = await authenticateAdmin(adminUsername, adminPassword);
   const companyId = Number(adminRow.company_id);
@@ -97,14 +75,15 @@ export async function listStationsForEnroll({ adminUsername, adminPassword }) {
         AND sm.station_type = $2
         AND sm.is_deleted   = FALSE
       ORDER BY sm.station_name`,
-    [companyId, SALON_STATION_TYPE]
+    [companyId, RESTAURANT_STATION_TYPE],
   );
 
   if (!rows.length) {
     throw bad(
-      `No ${SALON_STATION_TYPE} station exists for this company. ` +
-      `Create one in Backoffice > Stations before enrolling a device.`,
-      400, 'NO_SALON_STATION'
+      `No ${RESTAURANT_STATION_TYPE} station exists for this company. ` +
+        `Create one in Backoffice > Stations before enrolling a device.`,
+      400,
+      'NO_RESTAURANT_STATION',
     );
   }
 
@@ -113,20 +92,15 @@ export async function listStationsForEnroll({ adminUsername, adminPassword }) {
     companyId,
     companyName: adminRow.company_name ?? null,
     stations: rows.map((s) => ({
-      stationId:   Number(s.station_id),
+      stationId: Number(s.station_id),
       stationName: s.station_name,
       stationCode: s.station_code,
-      counterNo:   s.counter_no != null ? Number(s.counter_no) : null,
-      branchName:  s.branch_name ?? null,
+      counterNo: s.counter_no != null ? Number(s.counter_no) : null,
+      branchName: s.branch_name ?? null,
     })),
   };
 }
 
-/**
- * Step 2 — POST /device/enroll
- * Pairs this device to a company + SALON_POS station. company_id comes from the
- * admin's own record, never from client input.
- */
 export async function enrollDevice({ adminUsername, adminPassword, deviceToken, stationId, label }) {
   const token = String(deviceToken || '').trim();
   if (!token) throw bad('deviceToken is required', 400, 'NO_DEVICE_TOKEN');
@@ -144,19 +118,24 @@ export async function enrollDevice({ adminUsername, adminPassword, deviceToken, 
        FROM core.station_master
       WHERE company_id = $1 AND station_id = $2 AND is_deleted = FALSE
       LIMIT 1`,
-    [companyId, sid]
+    [companyId, sid],
   );
   if (!rows.length) throw bad('Station not found for this company', 400, 'BAD_STATION');
-  if (rows[0].station_type !== SALON_STATION_TYPE) {
+  if (rows[0].station_type !== RESTAURANT_STATION_TYPE) {
     throw bad(
-      `Station "${rows[0].station_name}" is a ${rows[0].station_type}, not a ${SALON_STATION_TYPE}.`,
-      400, 'WRONG_STATION_TYPE'
+      `Station "${rows[0].station_name}" is a ${rows[0].station_type}, not a ${RESTAURANT_STATION_TYPE}.`,
+      400,
+      'WRONG_STATION_TYPE',
     );
   }
 
   const branchId = Number(rows[0].branch_id);
   await deviceRepo.upsertEnrollment(pool, {
-    deviceToken: token, companyId, branchId, stationId: sid, label,
+    deviceToken: token,
+    companyId,
+    branchId,
+    stationId: sid,
+    label,
   });
   const enrollment = await deviceRepo.findByToken(pool, token);
 
@@ -171,10 +150,6 @@ export async function enrollDevice({ adminUsername, adminPassword, deviceToken, 
   };
 }
 
-/**
- * Step 3 — POST /staff-list
- * Staff picker for the enrolled device. Only staff who actually have a PIN.
- */
 export async function listStaffForDevice({ deviceToken }) {
   const token = String(deviceToken || '').trim();
   if (!token) throw bad('deviceToken is required', 400, 'NO_DEVICE_TOKEN');
@@ -189,41 +164,32 @@ export async function listStaffForDevice({ deviceToken }) {
   return {
     ok: true,
     companyId: Number(enrollment.company_id),
-    branchId:  Number(enrollment.branch_id),
+    branchId: Number(enrollment.branch_id),
     stationId: enrollment.station_id != null ? Number(enrollment.station_id) : null,
     counterNo: Number(enrollment.counter_no ?? 1),
     staff: rows
-      // Only surface staff whose role can actually sign into a salon till —
-      // showing names that will be rejected on tap is a bad picker.
       .filter((r) => {
         const t = String(r.role_software_type || '').toUpperCase().trim();
-        return t === '' || SALON_ROLE_TYPES.has(t);
+        return t === '' || RESTAURANT_ROLE_TYPES.has(t);
       })
       .map((r) => ({
-        staffPk:   Number(r.id),
-        staffId:   Number(r.staff_id),
+        staffPk: Number(r.id),
+        staffId: Number(r.staff_id),
         staffName: r.staff_name,
         staffCode: r.staff_code ?? null,
-        roleName:  r.role_name ?? null,
+        roleName: r.role_name ?? null,
       })),
   };
 }
 
-/**
- * Step 4 — POST /pin-login
- * `staffId` here is the picker's staffPk (core.staff_master.id), so exactly one
- * bcrypt compare runs. Returns a POS-scoped token carrying the device's station.
- */
 export async function loginWithPin({ pin, companyId, staffId, deviceToken }) {
   const pinStr = String(pin || '').trim();
-  const cid    = Number(companyId);
-  const token  = String(deviceToken || '').trim();
+  const cid = Number(companyId);
+  const token = String(deviceToken || '').trim();
 
   if (!pinStr) throw bad('PIN is required', 400, 'NO_PIN');
   if (!Number.isFinite(cid) || cid < 1) throw bad('companyId is required', 400, 'NO_COMPANY');
   if (!token) throw bad('deviceToken is required', 400, 'NO_DEVICE_TOKEN');
-  // Generic message on purpose: a wrong-length PIN must not read differently
-  // from a wrong PIN.
   if (!/^\d{4,6}$/.test(pinStr)) throw bad('Invalid PIN', 401, 'BAD_PIN');
 
   const enrollment = await deviceRepo.findByToken(pool, token);
@@ -242,18 +208,26 @@ export async function loginWithPin({ pin, companyId, staffId, deviceToken }) {
     const row = await posStaffRepo.findActiveStaffByIdWithPin(pool, cid, staffPk);
     if (!row || !row.staff_pin) throw bad('Invalid PIN', 401, 'BAD_PIN');
     if (!(await bcrypt.compare(pinStr, row.staff_pin))) throw bad('Invalid PIN', 401, 'BAD_PIN');
-    assertSalonPosAllowed(row);
+    assertRestaurantPosAllowed(row);
     return { ...(await buildTokensForPOSDevice(row, stationId)), staffPk: Number(row.id) };
   }
 
-  // Legacy path: no staff selected. Bounded scan so this cannot become a DoS.
   const staffList = await posStaffRepo.findAllActiveStaffForCompany(pool, cid);
-  if (!staffList.length) throw bad('No staff with a PIN found for this company', 401, 'NO_STAFF');
+  const restaurantStaff = staffList
+    .filter((row) => {
+      const roleType = String(row.role_software_type || '').toUpperCase().trim();
+      return roleType === '' || RESTAURANT_ROLE_TYPES.has(roleType);
+    })
+    .sort((a, b) => {
+      const score = (row) =>
+        String(row.role_software_type || '').toUpperCase().trim() === 'RESTAURANT-POS' ? 0 : 1;
+      return score(a) - score(b);
+    });
+  if (!restaurantStaff.length) throw bad('No staff with a PIN found for this company', 401, 'NO_STAFF');
 
-  for (const row of staffList.slice(0, LEGACY_PIN_SCAN_CAP)) {
+  for (const row of restaurantStaff.slice(0, LEGACY_PIN_SCAN_CAP)) {
     if (!row.staff_pin) continue;
     if (!(await bcrypt.compare(pinStr, row.staff_pin))) continue;
-    assertSalonPosAllowed(row);
     return { ...(await buildTokensForPOSDevice(row, stationId)), staffPk: Number(row.id) };
   }
 

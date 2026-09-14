@@ -197,12 +197,13 @@ function buildLine(item, ctx) {
  */
 export async function saveJob(pool, body, authStaff) {
   const companyId = Number(authStaff.company_id);
-  const branchId  = Number(authStaff.branch_id ?? authStaff.station_id);
   const createdBy = authStaff.staff_id != null ? Number(authStaff.staff_id) : null;
 
   // Prefer real till station from JWT / company SALON_POS when the client still
-  // sends branchId or a BACKOFFICE station as StationID.
-  const { stationId } = await resolveSalonTill(pool, companyId, authStaff, body);
+  // sends branchId or a BACKOFFICE station as StationID. Jobs belong to the
+  // till's branch — not the staff HQ branch — so salon bills number separately.
+  const { stationId, station } = await resolveSalonTill(pool, companyId, authStaff, body);
+  const branchId = Number(station?.branch_id ?? authStaff.branch_id ?? stationId);
 
   const rawItems = Array.isArray(body.Items ?? body.items) ? (body.Items ?? body.items) : [];
   const appendJobIdEarly = parseLong(

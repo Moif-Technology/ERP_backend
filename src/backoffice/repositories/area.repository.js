@@ -84,6 +84,7 @@ export async function listAreasByCompanyAndBranch(pool, companyId, branchId) {
             price_level, created_at, modified_at
      FROM core.area_master
      WHERE company_id = $1 AND branch_id = $2
+       AND is_deleted = FALSE
      ORDER BY area_name ASC`,
     [companyId, branchId]
   );
