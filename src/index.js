@@ -34,6 +34,7 @@ import { subGroupRouter } from './backoffice/routes/subGroup.routes.js';
 import { subSubGroupRouter } from './backoffice/routes/subSubGroup.routes.js';
 import { supplierRouter } from './backoffice/routes/supplier.routes.js';
 import { tableRouter } from './backoffice/routes/table.routes.js';
+import { floorDesignRouter } from './backoffice/routes/floorDesign.routes.js';
 import { assertConfig, config } from './config.js';
 import {
   closeAllPools,
@@ -233,6 +234,7 @@ app.use('/api/sub-sub-groups', subSubGroupRouter);
 app.use('/api/products', productRouter);
 app.use('/api/locations', locationRouter);
 app.use('/api/tables', tableRouter);
+app.use('/api/floor-design', floorDesignRouter);
 app.use('/api/quotations', quotationRouter);
 app.use('/api/delivery-orders', deliveryOrderRouter);
 app.use('/api/sales', saleEntryRouter);
@@ -377,6 +379,8 @@ function printBanner() {
   console.log('  [ROUTES] GET     /api/tables');
   console.log('  [ROUTES] POST    /api/tables');
   console.log('  [ROUTES] POST    /api/pos/kot/save');
+  console.log('  [ROUTES] POST    /api/pos/kot/:id/cancel');
+  console.log('  [ROUTES] POST    /api/pos/kot/:id/items/cancel');
   console.log('  [ROUTES] GET     /api/pos/kot/:kotMasterId');
   console.log('  [ROUTES] POST    /api/pos/sales/settle');
   console.log('  [ROUTES] GET/POST /api/quotations');

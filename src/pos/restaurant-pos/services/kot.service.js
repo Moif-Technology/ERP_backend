@@ -1,5 +1,6 @@
 import { withTransaction } from '../../../config/db.js';
 import * as kotRepo from '../repositories/kot.repository.js';
+import { requireChiefCashierOrAdmin } from './adminApproval.service.js';
 
 function num(v, d = 0) {
   if (v == null || v === '') return d;
@@ -61,6 +62,20 @@ function kotPrintStatus(raw) {
 function closedKotStatus(status) {
   const s = String(status ?? '').trim().toUpperCase();
   return ['SETTLED', 'CANCELLED', 'COMPLETED', 'SUBMIT'].includes(s);
+}
+
+/** Mainfrm.SaveBilDetailsToHoldTable: .Remarks = txtRemarks.Text (KOTMaster header). */
+function pickHeaderRemarks(body) {
+  const raw =
+    body?.txtRemarks ??
+    body?.HeaderRemarks ??
+    body?.headerRemarks ??
+    body?.KotRemarks ??
+    body?.Remarks ??
+    body?.remarks ??
+    body?.comments ??
+    '';
+  return String(raw ?? '').slice(0, 250);
 }
 
 function childFieldsFromItem(it) {
@@ -133,10 +148,15 @@ function mapRowToFlutterLine(row) {
     waiterName: row.waiter_name ?? '',
     BillDiscount: String(row.bill_discount ?? 0),
     billDiscount: String(row.bill_discount ?? 0),
+    DiscountType: Number(row.discount_type) === 2 ? 2 : 0,
+    discountType: Number(row.discount_type) === 2 ? 2 : 0,
     NofCustomer: String(row.nof_customer ?? 0),
     nofCustomer: String(row.nof_customer ?? 0),
     HeaderRemarks: row.remarks ?? '',
+    headerRemarks: row.remarks ?? '',
     txtRemarks: row.remarks ?? '',
+    KotRemarks: row.remarks ?? '',
+    kotRemarks: row.remarks ?? '',
     RoundOffAdj: String(row.round_off_adj ?? 0),
     Amount: String(row.amount ?? 0),
     SubTotalM: String(row.sub_total_m ?? 0),
@@ -268,11 +288,9 @@ export async function saveKot(pool, body, authStaff, access = null) {
   const lblTax1 = num(body.lblTax1Total, 0);
   const lblTotal = num(body.lblBillTotal, 0);
   const billDiscount = num(body.txtDiscount ?? body.BillDiscount ?? body.billDiscount, 0);
+  const discountType = Number(body.DiscountType ?? body.discountType) === 2 ? 2 : 0;
   const nofCustomer = num(body.txtNoofCustomer ?? body.NofCustomer ?? body.nofCustomer, 0);
-  const remarks =
-    body.txtRemarks != null && String(body.txtRemarks).trim() !== ''
-      ? String(body.txtRemarks).slice(0, 250)
-      : '';
+  const remarks = pickHeaderRemarks(body);
 
   const waiterMandatory = num(body.ISWaiterMandatory ?? body.ISWaiterMandotory, 0) === 1;
   const auditBy = parseLong(authStaff.staff_id) ?? parseLong(authStaff.id) ?? null;
@@ -337,6 +355,7 @@ export async function saveKot(pool, body, authStaff, access = null) {
     let newKotChildIds = [];
     let prefix = (body.mfKotPrefix ?? area?.kot_prefix ?? '').toString().trim();
 
+    const tax1RateM = num(body.gvTax1Percentage ?? body.Tax1RateM ?? body.tax1RateM, 0);
     const headerCommon = {
       customerId,
       areaId: areaId > 0 ? areaId : 0,
@@ -344,9 +363,11 @@ export async function saveKot(pool, body, authStaff, access = null) {
       chairNo,
       waiterId: Number.isFinite(waiterId) && waiterId > 0 ? waiterId : null,
       billDiscount,
+      discountType,
       amount: lblTotal,
       subTotalM: lblSub,
       tax1AmountM: lblTax1,
+      tax1RateM,
       roundOffAdj: num(body.lblRound, 0),
       nofCustomer,
       remarks,
@@ -424,7 +445,7 @@ export async function saveKot(pool, body, authStaff, access = null) {
         await persistChild(it, kotMasterId);
       }
 
-      await kotRepo.updateKotMasterTotals(client, companyId, kotMasterId, auditBy);
+      await kotRepo.updateKotMasterTotals(client, companyId, kotMasterId, auditBy, tax1RateM);
     } else {
       kotMasterId = await kotRepo.nextKotMasterId(client, companyId);
 
@@ -444,7 +465,6 @@ export async function saveKot(pool, body, authStaff, access = null) {
         ...headerCommon,
         tax2AmountM: 0,
         tax3AmountM: 0,
-        tax1RateM: 0,
         tax2RateM: 0,
         tax3RateM: 0,
         createdBy: auditBy,
@@ -461,7 +481,7 @@ export async function saveKot(pool, body, authStaff, access = null) {
         await persistChild(it, kotMasterId);
       }
 
-      await kotRepo.updateKotMasterTotals(client, companyId, kotMasterId, auditBy);
+      await kotRepo.updateKotMasterTotals(client, companyId, kotMasterId, auditBy, tax1RateM);
     }
 
     const kotDetails = await buildKotDetailsPayload(client, companyId, kotMasterId);
@@ -484,11 +504,26 @@ export async function listKots(pool, authStaff, query = {}) {
   const areaId = query.areaId != null ? Number(query.areaId) : null;
   const kotNumberSearch = query.search ?? query.jobNo ?? null;
   const supplyType = query.supplyType ?? query.SupplyType ?? null;
+  const joinListRaw = query.joinList ?? query.forJoin ?? query.JoinList;
+  const joinList =
+    joinListRaw === true ||
+    joinListRaw === 1 ||
+    String(joinListRaw ?? '').toLowerCase() === '1' ||
+    String(joinListRaw ?? '').toLowerCase() === 'true';
+  const kotExactRaw = query.kotExact ?? query.KotExact;
+  const kotExact =
+    joinList ||
+    kotExactRaw === true ||
+    kotExactRaw === 1 ||
+    String(kotExactRaw ?? '').toLowerCase() === '1' ||
+    String(kotExactRaw ?? '').toLowerCase() === 'true';
 
   const rows = await kotRepo.listOpenKots(pool, companyId, stationId, {
     areaId,
     kotNumberSearch,
     supplyType,
+    joinList,
+    kotExact,
   });
   const data = rows.map((r) => {
     const net = Number(r.amount ?? 0) - Number(r.bill_discount ?? 0);
@@ -508,6 +543,7 @@ export async function listKots(pool, authStaff, query = {}) {
       AreaName: r.area_name ?? '',
       TableID: r.table_id != null ? String(r.table_id) : '',
       TableName: r.table_name ?? '',
+      TableNo: r.table_no != null ? String(r.table_no) : '',
       SupplyType: supply,
       CustomerID: r.customer_id != null ? String(r.customer_id) : '',
       CustomerName: r.customer_name ?? '',
@@ -515,6 +551,9 @@ export async function listKots(pool, authStaff, query = {}) {
       WaiterName: r.waiter_name ?? '',
       NofCustomer: String(r.nof_customer ?? 0),
       Remarks: r.remarks ?? '',
+      remarks: r.remarks ?? '',
+      txtRemarks: r.remarks ?? '',
+      HeaderRemarks: r.remarks ?? '',
     };
   });
   return { ok: true, data };
@@ -535,4 +574,749 @@ export async function getKot(pool, authStaff, kotMasterIdRaw) {
     throw err;
   }
   return buildKotDetailsPayload(pool, companyId, kotMasterId);
+}
+
+function bad(message, status = 400, code = null) {
+  const err = new Error(message);
+  err.status = status;
+  if (code) err.code = code;
+  return err;
+}
+
+async function loadOpenKot(client, companyId, kotMasterId) {
+  if (!Number.isFinite(kotMasterId) || kotMasterId < 1) {
+    throw bad('Please Select A KOT.......', 400, 'NO_KOT');
+  }
+  const master = await kotRepo.findKotMaster(client, companyId, kotMasterId);
+  if (!master) throw bad('KOT not found', 404, 'NOT_FOUND');
+  if (closedKotStatus(master.kot_status)) {
+    throw bad('KOT already settled', 400, 'KOT_CLOSED');
+  }
+  return master;
+}
+
+function remainingAmount(children, removeIds) {
+  let amount = 0;
+  for (const row of children) {
+    if (removeIds.has(Number(row.kot_child_id))) continue;
+    amount += Number(row.line_total ?? 0);
+  }
+  return amount;
+}
+
+/**
+ * btnBillCancel_Click:
+ *   admin gate → confirm (UI) → KotStatus='CANCELLED' → print (client) → delete KOTMaster
+ */
+export async function cancelKot(pool, authStaff, kotMasterIdRaw, body = {}) {
+  const companyId = Number(authStaff.company_id);
+  const kotMasterId = Number(kotMasterIdRaw);
+  const auditBy = parseLong(authStaff.staff_id) ?? parseLong(authStaff.id);
+
+  await requireChiefCashierOrAdmin(authStaff, body);
+
+  return withTransaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
+      `ops.kot_cancel:${companyId}:${kotMasterId}`,
+    ]);
+
+    const master = await loadOpenKot(client, companyId, kotMasterId);
+    const kotRef = `${master.kot_prefix ?? ''}${master.kot_number ?? ''}`;
+
+    await kotRepo.updateKotStatus(client, companyId, kotMasterId, 'CANCELLED', auditBy);
+    const deleted = await kotRepo.deleteKotMaster(client, companyId, kotMasterId);
+    if (!(deleted > 0)) {
+      throw bad('Unable To Cancel KOT', 500, 'DELETE_FAILED');
+    }
+
+    return {
+      ok: true,
+      msg: 'KOT Cancelled...............',
+      CurrentKOTID: 0,
+      kotMasterId,
+      kotRef,
+    };
+  });
+}
+
+/**
+ * ItemRemovefrm.btnremove_Click + deleteItemClearTable:
+ *   admin gate → cannot remove last/all → ItemClearTable insert → DELETE KOTChild → recalc amount
+ */
+export async function cancelKotItems(pool, authStaff, kotMasterIdRaw, body = {}) {
+  const companyId = Number(authStaff.company_id);
+  const kotMasterId = Number(kotMasterIdRaw);
+  const auditBy = parseLong(authStaff.staff_id) ?? parseLong(authStaff.id);
+  const cashierId = parseLong(authStaff.staff_id) ?? parseLong(authStaff.id);
+  const counterNo = num(body.gvCounterNo ?? body.counterNo, Number(authStaff.station_id) || 1);
+
+  const approval = await requireChiefCashierOrAdmin(authStaff, body);
+
+  const requested = Array.isArray(body.kotChildIds ?? body.items)
+    ? (body.kotChildIds ?? body.items)
+    : [];
+  const removeIds = new Set(
+    requested
+      .map((v) => {
+        if (v && typeof v === 'object') return Number(v.kotChildId ?? v.KotChildID ?? v.dgvKOTChildID);
+        return Number(v);
+      })
+      .filter((n) => Number.isFinite(n) && n > 0),
+  );
+
+  if (!removeIds.size) {
+    throw bad('Select an Item. . .', 400, 'NO_SELECTION');
+  }
+
+  return withTransaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
+      `ops.kot_cancel:${companyId}:${kotMasterId}`,
+    ]);
+
+    const master = await loadOpenKot(client, companyId, kotMasterId);
+    const children = await kotRepo.listKotChildren(client, companyId, kotMasterId);
+    if (!children.length) {
+      throw bad('NO Item for KOT', 400, 'NO_ITEMS');
+    }
+    if (children.length === 1) {
+      throw bad('Only one item Remains in KOT.You have to make BILL CANCEL.......', 400, 'LAST_ITEM');
+    }
+
+    const byId = new Map(children.map((r) => [Number(r.kot_child_id), r]));
+    const toRemove = [];
+    for (const id of removeIds) {
+      const row = byId.get(id);
+      if (!row) throw bad('Select an Item. . .', 400, 'NO_SELECTION');
+      toRemove.push(row);
+    }
+    if (toRemove.length >= children.length) {
+      throw bad('All Items Cannot Remove..Make Cancel Bill. . .', 400, 'ALL_ITEMS');
+    }
+
+    const branchId = await kotRepo.resolveItemClearBranchId(
+      client,
+      companyId,
+      master.station_id ?? authStaff.station_id,
+      master.branch_id ?? authStaff.branch_id,
+    );
+
+    for (const row of toRemove) {
+      await kotRepo.insertItemClear(client, {
+        companyId,
+        branchId,
+        productId: row.product_id,
+        cashierId,
+        supervisorId: approval.supervisorId,
+        counterNo,
+        billNo: kotMasterId,
+        barcode: row.barcode ?? '',
+        description: String(row.short_description ?? '').replace(/['",]/g, ':'),
+        groupId: row.group_id,
+        qty: row.qty,
+        unitCost: row.unit_cost,
+        unitPrice: row.unit_price,
+        lineTotal: row.line_total,
+      });
+      await kotRepo.deleteKotChild(
+        client,
+        companyId,
+        kotMasterId,
+        Number(row.kot_child_id),
+        row.product_id,
+      );
+    }
+
+    const amount = remainingAmount(children, removeIds);
+    const discountType = Number(masterDiscountType(await kotRepo.findKotMaster(client, companyId, kotMasterId)));
+    let discountReset = false;
+    if (discountType === 0) {
+      await kotRepo.resetKotDiscount(client, companyId, kotMasterId, amount, auditBy);
+      discountReset = true;
+    } else {
+      await kotRepo.updateKotAmount(client, companyId, kotMasterId, amount, auditBy);
+    }
+    await kotRepo.updateKotMasterTotals(client, companyId, kotMasterId, auditBy);
+
+    const kotDetails = await buildKotDetailsPayload(client, companyId, kotMasterId);
+    return {
+      ok: true,
+      msg: discountReset ? 'Discount Reset....... ' : 'Item cancelled',
+      discountReset,
+      CurrentKOTID: String(kotMasterId),
+      kotMasterId,
+      kotDetails,
+    };
+  });
+}
+
+function masterDiscountType(master) {
+  if (!master) return 0;
+  const raw = master.discount_type ?? master.DiscountType;
+  if (raw == null || raw === '') return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function roundMoney(n) {
+  return Math.round(Number(n) * 100) / 100;
+}
+
+function qtyChangeAmounts(row, newQty) {
+  const unitPrice = num(row.unit_price, 0);
+  const oldQty = num(row.qty, 0);
+  const oldGross = unitPrice * oldQty;
+  const discPerc = oldGross > 0 ? (num(row.item_discount, 0) / oldGross) * 100 : 0;
+  const taxRate = num(row.tax_1_rate, 0);
+  const itemDiscount = roundMoney(unitPrice * newQty * (discPerc / 100));
+  const subTotal = roundMoney(unitPrice * newQty - itemDiscount);
+  const tax1Amount = roundMoney(subTotal * (taxRate / 100));
+  return {
+    itemDiscount,
+    subTotal,
+    tax1Amount,
+    lineTotal: roundMoney(subTotal + tax1Amount),
+  };
+}
+
+/**
+ * ItemRemovefrm.btnDone_Click + InsertItemClearTable:
+ *   admin → Invalid Qty if <= 0 → ItemClear of reduced qty → UPDATE KOTChild amounts
+ */
+export async function updateKotItemQty(pool, authStaff, kotMasterIdRaw, body = {}) {
+  const companyId = Number(authStaff.company_id);
+  const kotMasterId = Number(kotMasterIdRaw);
+  const auditBy = parseLong(authStaff.staff_id) ?? parseLong(authStaff.id);
+  const cashierId = parseLong(authStaff.staff_id) ?? parseLong(authStaff.id);
+  const counterNo = num(body.gvCounterNo ?? body.counterNo, Number(authStaff.station_id) || 1);
+  const kotChildId = Number(body.kotChildId ?? body.KotChildID ?? body.dgvKOTChildID);
+  const newQty = num(body.qty ?? body.Qty ?? body.newQty ?? body.txtNewQty, 0);
+
+  const approval = await requireChiefCashierOrAdmin(authStaff, body);
+
+  if (!Number.isFinite(kotChildId) || kotChildId < 1) {
+    throw bad('Select an Item. . .', 400, 'NO_SELECTION');
+  }
+  if (!(newQty > 0)) {
+    throw bad('Invalid Qty. . .', 400, 'INVALID_QTY');
+  }
+
+  return withTransaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
+      `ops.kot_cancel:${companyId}:${kotMasterId}`,
+    ]);
+
+    const master = await loadOpenKot(client, companyId, kotMasterId);
+    const children = await kotRepo.listKotChildren(client, companyId, kotMasterId);
+    const row = children.find((r) => Number(r.kot_child_id) === kotChildId);
+    if (!row) throw bad('Select an Item. . .', 400, 'NO_SELECTION');
+
+    const oldQty = num(row.qty, 0);
+    if (oldQty > newQty) {
+      const branchId = await kotRepo.resolveItemClearBranchId(
+        client,
+        companyId,
+        master.station_id ?? authStaff.station_id,
+        master.branch_id ?? authStaff.branch_id,
+      );
+      const diff = roundMoney(oldQty - newQty);
+      await kotRepo.insertItemClear(client, {
+        companyId,
+        branchId,
+        productId: row.product_id,
+        cashierId,
+        supervisorId: approval.supervisorId,
+        counterNo,
+        billNo: kotMasterId,
+        barcode: row.barcode ?? '',
+        description: String(row.short_description ?? '').replace(/['",]/g, ':'),
+        groupId: row.group_id,
+        qty: diff,
+        unitCost: row.unit_cost,
+        unitPrice: row.unit_price,
+        lineTotal: roundMoney(num(row.unit_price, 0) * diff),
+      });
+    }
+
+    const amounts = qtyChangeAmounts(row, newQty);
+    await kotRepo.updateKotChildQty(client, {
+      companyId,
+      kotMasterId,
+      kotChildId,
+      qty: newQty,
+      itemDiscount: amounts.itemDiscount,
+      subTotal: amounts.subTotal,
+      tax1Amount: amounts.tax1Amount,
+      lineTotal: amounts.lineTotal,
+      modifiedBy: auditBy,
+    });
+    await kotRepo.updateKotMasterTotals(client, companyId, kotMasterId, auditBy);
+
+    const kotDetails = await buildKotDetailsPayload(client, companyId, kotMasterId);
+    return {
+      ok: true,
+      msg: 'Quantity Change',
+      CurrentKOTID: String(kotMasterId),
+      kotMasterId,
+      kotDetails,
+    };
+  });
+}
+
+/** ItemRemovefrm.btnNoOfCust_Click */
+export async function updateKotCovers(pool, authStaff, kotMasterIdRaw, body = {}) {
+  const companyId = Number(authStaff.company_id);
+  const kotMasterId = Number(kotMasterIdRaw);
+  const auditBy = parseLong(authStaff.staff_id) ?? parseLong(authStaff.id);
+  const nofCustomer = Math.trunc(num(body.nofCustomer ?? body.NofCustomer ?? body.covers, 0));
+  if (nofCustomer <= 0) {
+    throw bad('Invalid Qty. . .', 400, 'INVALID_COVERS');
+  }
+
+  return withTransaction(async (client) => {
+    await loadOpenKot(client, companyId, kotMasterId);
+    await kotRepo.updateKotNofCustomer(client, companyId, kotMasterId, nofCustomer, auditBy);
+    return { ok: true, nofCustomer, CurrentKOTID: String(kotMasterId) };
+  });
+}
+
+function areaChangeJoinable(status) {
+  const s = String(status ?? '').trim().toUpperCase();
+  return s !== 'CANCELLED' && s !== 'COMPLETED';
+}
+
+function tableDisplay(row) {
+  if (!row) return '';
+  const tno = String(row.table_no ?? '').trim();
+  const tname = String(row.table_name ?? '').trim();
+  if (tno && tname) return `T${tno} - ${tname}`;
+  if (tno) return `T${tno}`;
+  if (tname) return tname;
+  return `TableID ${row.table_id}`;
+}
+
+/**
+ * TableFloorRuntimeFrmAreaChange.UpdateKotTable:
+ * occupied select → vacant confirm → UPDATE KOTMaster.TableId + AreaID (ChairNo kept).
+ */
+export async function changeKotTable(pool, authStaff, kotMasterIdRaw, body = {}) {
+  const companyId = Number(authStaff.company_id);
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
+  const auditBy = parseLong(authStaff.staff_id) ?? parseLong(authStaff.id);
+  const kotMasterId = Number(kotMasterIdRaw);
+  const newTableId = Math.trunc(num(body.tableId ?? body.TableId ?? body.newTableId, 0));
+  const newAreaId = Math.trunc(num(body.areaId ?? body.AreaID ?? body.newAreaId, 0));
+
+  if (!Number.isFinite(kotMasterId) || kotMasterId < 1) {
+    throw bad('Please Select A KOT.......', 400, 'NO_KOT');
+  }
+  if (newTableId < 1) throw bad('Select a vacant table.', 400, 'NO_TABLE');
+  if (newAreaId < 1) throw bad('Select an area.', 400, 'NO_AREA');
+
+  return withTransaction(async (client) => {
+    const master = await kotRepo.findKotMaster(client, companyId, kotMasterId);
+    if (!master) throw bad('KOT not found', 404, 'NOT_FOUND');
+    if (Number(master.station_id) !== stationId) {
+      throw bad('KOT not found', 404, 'NOT_FOUND');
+    }
+    if (!areaChangeJoinable(master.kot_status)) {
+      throw bad(`KOT ${kotRefNo(master) || kotMasterId} is ${master.kot_status}`, 400, 'KOT_STATUS');
+    }
+
+    const destArea = await kotRepo.findArea(client, companyId, stationId, newAreaId);
+    if (!destArea) throw bad('Invalid Area...', 404, 'AREA');
+    if (Number(destArea.table_creation_type) !== 0) {
+      throw bad('Select a Manual table area.', 400, 'AREA_TYPE');
+    }
+
+    const destTable = await kotRepo.findTable(client, companyId, stationId, newTableId);
+    if (!destTable) throw bad('Table not Found. . .', 404, 'TABLE');
+    if (Number(destTable.area_id) !== newAreaId) {
+      throw bad('Table does not belong to this area.', 400, 'TABLE_AREA');
+    }
+
+    const occupying = await kotRepo.findActiveKotOnTable(
+      client,
+      companyId,
+      stationId,
+      newTableId,
+      kotMasterId,
+    );
+    if (occupying) {
+      throw bad('Table is occupied.', 400, 'TABLE_OCCUPIED');
+    }
+
+    const updated = await kotRepo.updateKotAreaTable(
+      client,
+      companyId,
+      stationId,
+      kotMasterId,
+      newTableId,
+      newAreaId,
+      auditBy,
+    );
+    if (!updated) throw bad('Transfer failed.', 400, 'TRANSFER_FAILED');
+
+    const fromArea = await kotRepo.findArea(client, companyId, stationId, master.area_id);
+    const fromTable = await kotRepo.findTable(client, companyId, stationId, master.table_id);
+
+    return {
+      ok: true,
+      CurrentKOTID: String(kotMasterId),
+      KotMasterID: String(kotMasterId),
+      AreaID: String(newAreaId),
+      AreaName: destArea.area_name ?? '',
+      TableID: String(newTableId),
+      TableName: destTable.table_name ?? '',
+      TableNo: destTable.table_no != null ? String(destTable.table_no) : '',
+      FromAreaID: master.area_id != null ? String(master.area_id) : '',
+      FromAreaName: fromArea?.area_name ?? '',
+      FromTableID: master.table_id != null ? String(master.table_id) : '',
+      FromTableDisplay: tableDisplay(fromTable),
+      ToTableDisplay: tableDisplay(destTable),
+      ChairNo: String(master.chair_no ?? 0),
+    };
+  });
+}
+
+function kotRefNo(row) {
+  if (!row) return '';
+  return `${row.kot_prefix ?? ''}${row.kot_number ?? ''}`;
+}
+
+function joinableStatus(status) {
+  const s = String(status ?? '').trim().toUpperCase();
+  return s !== 'CANCELLED' && s !== 'COMPLETED';
+}
+
+/**
+ * KotJoinFrm.Join_Save_OldStyle:
+ *   1) UPDATE target KOTMaster AreaID/TableID/NofCustomer (station scoped)
+ *   2) UPDATE KOTChild SET KotMasterID = target WHERE KotMasterID IN delList
+ *   3) DELETE other KOTMaster rows (station scoped)
+ *   4) Recalc SubTotalM / Tax1AmountM / Amount from children
+ */
+export async function joinKots(pool, authStaff, body = {}) {
+  const companyId = Number(authStaff.company_id);
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
+  const auditBy = parseLong(authStaff.staff_id) ?? parseLong(authStaff.id);
+  const targetKotId = parseLong(body.targetKotId ?? body.TargetKotId ?? body.targetKotMasterId);
+  const rawSources = Array.isArray(body.sourceKotIds)
+    ? body.sourceKotIds
+    : Array.isArray(body.SourceKotIds)
+      ? body.SourceKotIds
+      : [];
+  const sourceKotIds = [
+    ...new Set(rawSources.map((id) => parseLong(id)).filter((id) => id != null && id !== targetKotId)),
+  ];
+  const targetAreaId = Math.trunc(num(body.targetAreaId ?? body.TargetAreaId ?? body.areaId, 0));
+  const targetTableId = Math.trunc(num(body.targetTableId ?? body.TargetTableId ?? body.tableId, 0));
+  let finalPax = Math.trunc(num(body.finalPax ?? body.FinalPax ?? body.nofCustomer, 0));
+
+  if (!targetKotId) {
+    throw bad('Select minimum 2 KOTs to Join.', 400, 'JOIN_TARGET');
+  }
+  if (sourceKotIds.length < 1) {
+    throw bad('Nothing to JOIN.', 400, 'JOIN_NONE');
+  }
+  if (sourceKotIds.length + 1 < 2) {
+    throw bad('Select minimum 2 KOTs to Join.', 400, 'JOIN_MIN');
+  }
+  if (finalPax <= 0) finalPax = 1;
+
+  try {
+    return await withTransaction(async (client) => {
+      const allIds = [targetKotId, ...sourceKotIds];
+      const masters = await kotRepo.findKotMastersByIds(client, companyId, stationId, allIds);
+      if (!masters.some((m) => Number(m.kot_master_id) === targetKotId)) {
+        throw bad('JOIN Failed: Target KOT not found', 404, 'JOIN_TARGET_MISSING');
+      }
+      for (const id of allIds) {
+        const row = masters.find((m) => Number(m.kot_master_id) === id);
+        if (!row) {
+          throw bad(`JOIN Failed: KOT ${id} not found`, 404, 'JOIN_MISSING');
+        }
+        if (!joinableStatus(row.kot_status)) {
+          throw bad(`JOIN Failed: KOT ${kotRefNo(row) || id} is ${row.kot_status}`, 400, 'JOIN_STATUS');
+        }
+      }
+
+      const updated = await kotRepo.updateKotMasterJoinTarget(
+        client,
+        companyId,
+        stationId,
+        targetKotId,
+        targetAreaId,
+        targetTableId,
+        finalPax,
+        auditBy,
+      );
+      if (!updated) {
+        throw bad('JOIN Failed: Target KOT not found', 404, 'JOIN_TARGET_MISSING');
+      }
+
+      await kotRepo.reassignKotChildren(client, companyId, targetKotId, sourceKotIds, auditBy);
+      await kotRepo.deleteKotMastersOnly(client, companyId, stationId, sourceKotIds);
+      const totals = await kotRepo.updateKotMasterTotals(client, companyId, targetKotId, auditBy);
+
+      return {
+        ok: true,
+        msg: 'Bill Joined Successfully.',
+        CurrentKOTID: String(targetKotId),
+        targetKotId,
+        sourceKotIds,
+        targetAreaId,
+        targetTableId,
+        finalPax,
+        ...totals,
+      };
+    });
+  } catch (err) {
+    if (err.status) throw err;
+    throw bad(`JOIN Failed: ${err.message}`, 500, 'JOIN_FAILED');
+  }
+}
+
+function round2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+function rowDec(row, ...keys) {
+  for (const key of keys) {
+    if (row && row[key] != null && row[key] !== '') {
+      const n = Number(row[key]);
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return 0;
+}
+
+async function splitMoveChildRow(client, {
+  companyId,
+  sourceKotId,
+  newKotId,
+  sourceKotChildId,
+  splitQty,
+  splitSubTotal,
+  splitTax1Amount,
+  splitLineTotal,
+  auditBy,
+  stationId,
+  branchId,
+}) {
+  if (!(sourceKotChildId > 0) || !(splitQty > 0)) {
+    throw bad('Invalid split item qty.', 400, 'SPLIT_QTY');
+  }
+  const src = await kotRepo.findKotChild(client, companyId, sourceKotId, sourceKotChildId);
+  if (!src) {
+    throw bad(`Split item not found. KotChildID: ${sourceKotChildId}`, 400, 'SPLIT_ITEM');
+  }
+  const dbQty = Number(src.qty) || 0;
+  if (dbQty <= 0) {
+    throw bad(`Invalid source item qty. KotChildID: ${sourceKotChildId}`, 400, 'SPLIT_SRC_QTY');
+  }
+  if (splitQty > dbQty + 1e-9) {
+    throw bad(`Split qty is greater than source qty. KotChildID: ${sourceKotChildId}`, 400, 'SPLIT_QTY_GT');
+  }
+
+  if (splitQty >= dbQty) {
+    await kotRepo.moveKotChildToMaster(client, companyId, sourceKotChildId, sourceKotId, newKotId, auditBy);
+    return;
+  }
+
+  const ratio = splitQty / dbQty;
+  const splitAmount = round2(rowDec(src, 'amount') * ratio);
+  const splitDiscount = round2(rowDec(src, 'item_discount') * ratio);
+  const splitTax2Amount = round2(rowDec(src, 'tax_2_amount') * ratio);
+  const splitTax3Amount = round2(rowDec(src, 'tax_3_amount') * ratio);
+  let sub = Number(splitSubTotal) || 0;
+  let tax1 = Number(splitTax1Amount) || 0;
+  let line = Number(splitLineTotal) || 0;
+  if (sub <= 0) sub = round2(rowDec(src, 'sub_total') * ratio);
+  if (tax1 <= 0) tax1 = round2(rowDec(src, 'tax_1_amount') * ratio);
+  if (line <= 0) line = round2(rowDec(src, 'line_total') * ratio);
+
+  await kotRepo.updateKotChildSplitRemain(client, {
+    companyId,
+    kotMasterId: sourceKotId,
+    kotChildId: sourceKotChildId,
+    qty: dbQty - splitQty,
+    amount: round2(rowDec(src, 'amount') - splitAmount),
+    itemDiscount: round2(rowDec(src, 'item_discount') - splitDiscount),
+    lineTotal: round2(rowDec(src, 'line_total') - line),
+    subTotal: round2(rowDec(src, 'sub_total') - sub),
+    tax1Amount: round2(rowDec(src, 'tax_1_amount') - tax1),
+    tax2Amount: round2(rowDec(src, 'tax_2_amount') - splitTax2Amount),
+    tax3Amount: round2(rowDec(src, 'tax_3_amount') - splitTax3Amount),
+    modifiedBy: auditBy,
+  });
+
+  const newChildId = await kotRepo.nextKotChildId(client, companyId);
+  await kotRepo.insertKotChild(client, {
+    companyId,
+    branchId: src.branch_id || branchId,
+    stationId: src.station_id || stationId,
+    kotChildId: newChildId,
+    kotMasterId: newKotId,
+    productId: src.product_id,
+    barcode: src.barcode,
+    shortDescription: src.short_description,
+    qty: splitQty,
+    packQty: src.pack_qty ?? 1,
+    unitCost: src.unit_cost ?? 0,
+    unitPrice: src.unit_price ?? 0,
+    amount: splitAmount,
+    itemDiscount: splitDiscount,
+    subTotal: sub,
+    lineTotal: line,
+    tax1Amount: tax1,
+    tax2Amount: splitTax2Amount,
+    tax3Amount: splitTax3Amount,
+    tax1Rate: src.tax_1_rate ?? 0,
+    tax2Rate: src.tax_2_rate ?? 0,
+    tax3Rate: src.tax_3_rate ?? 0,
+    groupId: src.group_id,
+    modifier: src.modifier ?? '',
+    kotDisplayStatus: src.kot_display_status || 'PENDING',
+    createdBy: auditBy,
+    modifiedBy: auditBy,
+  });
+}
+
+/**
+ * KotSplitFrm.Split_Save_ToChair1_UsingKOTMasterClass + SplitMoveChildRow.
+ */
+export async function splitKot(pool, authStaff, body = {}) {
+  const companyId = Number(authStaff.company_id);
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
+  const branchId = Number(authStaff.branch_id ?? stationId);
+  const auditBy = parseLong(authStaff.staff_id) ?? parseLong(authStaff.id);
+  const sourceKotId = parseLong(body.sourceKotId ?? body.SourceKotMasterID ?? body.sourceKotMasterId);
+  const targetAreaId = Math.trunc(num(body.targetAreaId ?? body.TargetAreaId, 0));
+  const targetTableId = Math.trunc(num(body.targetTableId ?? body.TargetTableId, 0));
+  const targetChairNo = 1;
+  let targetPax = Math.trunc(num(body.targetPax ?? body.TargetPax ?? body.nofCustomer, 0));
+  const rawItems = Array.isArray(body.items) ? body.items : Array.isArray(body.Items) ? body.Items : [];
+
+  if (!sourceKotId) throw bad('Invalid Source KOT.', 400, 'SPLIT_SOURCE');
+  if (!rawItems.length) {
+    throw bad('Please move at least one item to New KOT side.', 400, 'SPLIT_NO_ITEMS');
+  }
+  if (targetAreaId <= 0 || targetTableId <= 0) {
+    throw bad('Please select a target table first.', 400, 'SPLIT_NO_TABLE');
+  }
+  if (targetPax <= 0) targetPax = 1;
+
+  const moveItems = rawItems
+    .map((it) => ({
+      kotChildId: parseLong(it.kotChildId ?? it.KotChildID ?? it.SourceKotChildID),
+      qty: num(it.qty ?? it.Qty, 0),
+      subTotal: num(it.subTotal ?? it.SubTotalC ?? it.SubTotal, 0),
+      tax1Amount: num(it.tax1Amount ?? it.Tax1AmountC ?? it.Tax1Amount, 0),
+      lineTotal: num(it.lineTotal ?? it.LineTotal, 0),
+    }))
+    .filter((it) => it.kotChildId && it.qty > 0);
+
+  if (!moveItems.length) throw bad('Please select items to split.', 400, 'SPLIT_NO_ITEMS');
+
+  try {
+    return await withTransaction(async (client) => {
+      const source = await kotRepo.findKotMaster(client, companyId, sourceKotId);
+      if (!source || Number(source.station_id) !== stationId) {
+        throw bad('Source KOT not found.', 404, 'SPLIT_SOURCE_MISSING');
+      }
+      if (!joinableStatus(source.kot_status)) {
+        throw bad(`Split failed: KOT is ${source.kot_status}`, 400, 'SPLIT_STATUS');
+      }
+
+      const area = await kotRepo.findArea(client, companyId, stationId, targetAreaId);
+      if (!area) throw bad('Please select target table.', 400, 'SPLIT_AREA');
+      const prefix = String(area.kot_prefix ?? '').trim().slice(0, 50);
+      const kotNumber = await kotRepo.nextKotNumber(client, companyId, stationId, prefix);
+      const newKotId = await kotRepo.nextKotMasterId(client, companyId);
+
+      let subTot = 0;
+      let vat = 0;
+      let tot = 0;
+      for (const it of moveItems) {
+        subTot += it.subTotal;
+        vat += it.tax1Amount;
+        tot += it.lineTotal;
+      }
+
+      let customerId = parseCustomerId(source.customer_id);
+      if (!(customerId > 0)) customerId = 1;
+
+      await kotRepo.insertKotMaster(client, {
+        companyId,
+        branchId: Number(source.branch_id) || branchId,
+        stationId,
+        kotMasterId: newKotId,
+        kotNumber,
+        kotPrefix: prefix,
+        kotStatus: source.kot_status || 'HOLD',
+        customerId,
+        areaId: targetAreaId,
+        tableId: targetTableId,
+        chairNo: targetChairNo,
+        waiterId: parseLong(source.waiter_id),
+        billDiscount: 0,
+        discountType: Number(source.discount_type) === 2 ? 2 : 0,
+        amount: tot,
+        subTotalM: subTot,
+        tax1AmountM: vat,
+        tax2AmountM: 0,
+        tax3AmountM: 0,
+        tax1RateM: 0,
+        tax2RateM: 0,
+        tax3RateM: 0,
+        roundOffAdj: 0,
+        nofCustomer: Math.max(1, targetPax),
+        remarks: '',
+        createdBy: auditBy,
+        modifiedBy: auditBy,
+      });
+
+      for (const it of moveItems) {
+        await splitMoveChildRow(client, {
+          companyId,
+          sourceKotId,
+          newKotId,
+          sourceKotChildId: it.kotChildId,
+          splitQty: it.qty,
+          splitSubTotal: it.subTotal,
+          splitTax1Amount: it.tax1Amount,
+          splitLineTotal: it.lineTotal,
+          auditBy,
+          stationId,
+          branchId: Number(source.branch_id) || branchId,
+        });
+      }
+
+      await kotRepo.updateKotMasterTotals(client, companyId, sourceKotId, auditBy);
+      await kotRepo.updateKotMasterTotals(client, companyId, newKotId, auditBy);
+
+      const srcChildCount = await kotRepo.countKotChildren(client, companyId, sourceKotId);
+      const sourceEmptyAfterSplit = srcChildCount <= 0;
+      let orphanMasterDeleted = false;
+      if (sourceEmptyAfterSplit) {
+        const deleted = await kotRepo.deleteKotMastersOnly(client, companyId, stationId, [sourceKotId]);
+        orphanMasterDeleted = deleted > 0;
+      }
+
+      const newKotNo = `${prefix}${kotNumber}`;
+      return {
+        ok: true,
+        msg: `Bill Splitted Successfully. New KOT: ${newKotNo} (Chair 1)`,
+        sourceKotId,
+        newKotId,
+        newKotNo,
+        targetChairNo,
+        sourceEmptyAfterSplit,
+        orphanMasterDeleted,
+      };
+    });
+  } catch (err) {
+    if (err.status) throw err;
+    throw bad(`Split failed: ${err.message}`, 500, 'SPLIT_FAILED');
+  }
 }

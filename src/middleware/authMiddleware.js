@@ -65,6 +65,7 @@ export async function authMiddleware(req, res, next) {
       '/api/modifiers',
       '/api/areas',
       '/api/tables',
+      '/api/floor-design',
       '/api/products',
       '/api/customers',
     ];

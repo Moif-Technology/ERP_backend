@@ -42,6 +42,10 @@ function mergeSettings(definitions, storedJson) {
       value_type: def.value_type,
     };
   }
+  if (result.is_table_popup && stored.is_table_popup == null) {
+    const legacy = stored.IsTablePopup ?? stored.isTablePopup;
+    if (legacy != null) result.is_table_popup = { value: legacy, value_type: 'number' };
+  }
   // Include saved company-detail keys even if definitions were not seeded yet.
   for (const key of repo.RECEIPT_SETTING_KEYS) {
     if (result[key]) continue;
@@ -75,6 +79,10 @@ function mapToFlutterPayload(merged) {
 
   return {
     Tax1: num('tax1'),
+    Tax1Name: str('tax1_name') || 'VAT',
+    DiscountButton1: num('discount_button_1') ?? 5,
+    DiscountButton2: num('discount_button_2') ?? 10,
+    DiscountButton3: num('discount_button_3') ?? 15,
     currencyPrecession: currencyPrec == null ? null : String(currencyPrec),
     reportStartTime: str('report_start_time'),
     reportEndTime: str('report_end_time'),
@@ -82,9 +90,10 @@ function mapToFlutterPayload(merged) {
     ISWaiterMandotory: num('is_waiter_mandatory'),
     ClearAfterKOTSave: num('clear_after_kot_save'),
     SaveKOTonSettlement: num('save_kot_on_settlement'),
-    IsTablePopup: num('is_table_popup'),
-    IsTablesBasedOnWaiter: num('is_tables_based_on_waiter'),
-    DefaultAreaName: num('default_area_name'),
+    IsTablePopup: num('is_table_popup') ?? 0,
+    is_table_popup: num('is_table_popup') ?? 0,
+    IsTablesBasedOnWaiter: num('is_tables_based_on_waiter') ?? 0,
+    DefaultAreaName: num('default_area_name') ?? 1,
     autoRoundOff: num('auto_round_off'),
     customerDisplayEnabled: num('customer_display_enabled'),
     heading1Counter: str('heading1_counter'),
@@ -137,6 +146,16 @@ export async function loadParametersPayload(companyId, branchId = null, stationI
         hasStation ? sid : null,
       );
       overlayReceiptSettings(payload, counterSettings);
+      const tablePopup = await repo.getCounterTablePopup(
+        client,
+        cid,
+        hasBranch ? bid : null,
+        hasStation ? sid : null,
+      );
+      if (tablePopup != null) {
+        payload.IsTablePopup = tablePopup;
+        payload.is_table_popup = tablePopup;
+      }
     }
 
     return payload;

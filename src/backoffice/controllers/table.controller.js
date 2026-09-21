@@ -28,7 +28,7 @@ export async function createTable(req, res) {
       const msg = c.includes('table_no')
         ? 'A table with this number already exists in this area'
         : c.includes('table_name')
-        ? 'A table with this name already exists in this area'
+        ? 'Table Name. already existing...'
         : 'Duplicate table row.';
       return res.status(409).json({ message: msg, constraint: c || undefined });
     }
@@ -37,5 +37,41 @@ export async function createTable(req, res) {
     }
     console.error(err);
     return res.status(500).json({ message: 'Could not create table' });
+  }
+}
+
+export async function updateTable(req, res) {
+  try {
+    const updated = await tableService.updateTable(pool, req.params.tableId, req.body, req.authStaff);
+    return res.json(updated);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    if (err.code === '23505') {
+      return res.status(409).json({ message: 'Table Name. already existing...' });
+    }
+    console.error(err);
+    return res.status(500).json({ message: 'Could not update table' });
+  }
+}
+
+export async function nextTableNumber(req, res) {
+  try {
+    const out = await tableService.nextTableNumber(pool, req.authStaff, req.query.branchId);
+    return res.json(out);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    console.error(err);
+    return res.status(500).json({ message: 'Could not load next table number' });
+  }
+}
+
+export async function listWaiters(req, res) {
+  try {
+    const waiters = await tableService.listWaiters(pool, req.authStaff);
+    return res.json({ waiters });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    console.error(err);
+    return res.status(500).json({ message: 'Could not load waiters' });
   }
 }

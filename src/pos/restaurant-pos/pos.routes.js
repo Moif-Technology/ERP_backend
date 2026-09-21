@@ -4,6 +4,7 @@ import * as posController from './controllers/pos.controller.js';
 import * as deviceAuthController from './controllers/deviceAuth.controller.js';
 import { kotRouter } from './routes/kot.routes.js';
 import { salesRouter } from './routes/sales.routes.js';
+import { counterRouter } from './routes/counter.routes.js';
 
 import { authMiddleware } from '../../middleware/authMiddleware.js';
 import { requireFeature } from '../../middleware/entitlementMiddleware.js';
@@ -32,6 +33,7 @@ posRouter.use(requireFeature('pos'));
 posRouter.use('/kot', kotRouter);
 
 posRouter.use('/sales', salesRouter);
+posRouter.use('/counter', counterRouter);
 
 posRouter.get('/parameters', posController.getParameters);
 
@@ -42,5 +44,7 @@ posRouter.put('/parameters', posController.putParameters);
 posRouter.put('/parameters/company-details', posController.putCompanyDetails);
 
 posRouter.get('/privileges', posController.getPrivileges);
+
+posRouter.post('/supervisor/verify', posController.verifyAdmin);
 
 

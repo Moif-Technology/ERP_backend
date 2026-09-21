@@ -44,6 +44,43 @@ export async function firstNonEmptyByBranch(candidates, listFn) {
   return last;
 }
 
+/**
+ * Branch used for Area/Table master writes.
+ * Prefer the candidate that already has areas (restaurant data lives on the
+ * physical branch; salon seeds store masters on station_id).
+ */
+export async function resolveMasterBranchId(db, companyId, authStaff) {
+  const stationId = Number(authStaff?.station_id);
+  const physical = Number(authStaff?.branch_id);
+  const location = Number.isFinite(stationId) && stationId > 0
+    ? await getStationLocation(db, companyId, stationId)
+    : null;
+  const candidates = locationBranchCandidates(
+    location ?? { stationId, physicalBranchId: physical },
+  );
+  for (const id of candidates) {
+    const { rows } = await db.query(
+      `SELECT 1
+         FROM core.area_master
+        WHERE company_id = $1 AND branch_id = $2 AND COALESCE(is_deleted, FALSE) = FALSE
+        LIMIT 1`,
+      [companyId, id],
+    );
+    if (rows.length) return id;
+  }
+  for (const id of candidates) {
+    const { rows } = await db.query(
+      `SELECT 1
+         FROM core.table_master
+        WHERE company_id = $1 AND branch_id = $2 AND COALESCE(is_deleted, FALSE) = FALSE
+        LIMIT 1`,
+      [companyId, id],
+    );
+    if (rows.length) return id;
+  }
+  return location?.physicalBranchId || candidates[0] || (Number.isFinite(physical) && physical > 0 ? physical : null) || (Number.isFinite(stationId) && stationId > 0 ? stationId : null);
+}
+
 /** Union rows from station + physical so a till-scoped area does not hide location areas. */
 export async function mergeByBranch(candidates, listFn, keyFn) {
   const seen = new Set();

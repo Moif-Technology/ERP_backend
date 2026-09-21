@@ -5,15 +5,50 @@ import {
   getStationLocation,
   locationBranchCandidates,
   mergeByBranch,
+  resolveMasterBranchId,
 } from '../../shared/locationScope.js';
 
 const SUPPLY_TYPES = new Set(['DINE_IN', 'DELIVERY', 'PARCEL', 'TAKEAWAY', 'GENERAL']);
-const PRICE_LEVELS = new Set(['NORMAL', 'PRICE LEVEL 1', 'PRICE LEVEL 2']);
+const PRICE_LEVELS = new Set([
+  'NORMAL',
+  'PRICE LEVEL 1',
+  'PRICE LEVEL 2',
+  'PRICE LEVEL 3',
+  'PRICE LEVEL 4',
+  'PRICE LEVEL 5',
+]);
 
 function parseStationId(raw) {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1) return null;
   return n;
+}
+
+function bad(message, status = 400) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
+function normalizeSupplyType(raw) {
+  const u = String(raw ?? '')
+    .replace(/_/g, ' ')
+    .toUpperCase()
+    .trim();
+  if (u === 'DINE IN' || u === 'DINEIN') return 'DINE_IN';
+  if (u === 'PARCEL' || u === 'TAKEAWAY' || u === 'TAKE AWAY') return 'PARCEL';
+  if (u === 'DELIVERY') return 'DELIVERY';
+  if (u === 'GENERAL') return 'GENERAL';
+  return '';
+}
+
+function normalizePriceLevel(raw) {
+  const u = String(raw ?? '').trim().toUpperCase();
+  if (!u) return '';
+  if (u === 'NORMAL') return 'Normal';
+  const m = u.match(/^PRICE LEVEL ([1-5])$/);
+  if (m) return `Price Level ${m[1]}`;
+  return '';
 }
 
 async function assertStationBelongsToCompany(pool, companyId, stationId) {
@@ -56,66 +91,71 @@ export async function listAreas(pool, authStaff, branchIdQuery) {
 
 export async function createArea(pool, body, authStaff) {
   const nameRaw = (body.areaName ?? '').trim();
-  if (!nameRaw) {
-    const err = new Error('areaName is required');
-    err.status = 400;
-    throw err;
+  const arabicRaw = body.areaNameArabic != null ? String(body.areaNameArabic).trim() : '';
+  if (!nameRaw && !arabicRaw) {
+    throw bad('Enter Area name...');
   }
-  const areaName = nameRaw.slice(0, 150);
 
-  const stationId = resolveStationId(body.stationId ?? body.branchId, authStaff);
-  if (stationId == null) {
-    const err = new Error('stationId is required');
-    err.status = 400;
-    throw err;
+  const supplyType = normalizeSupplyType(body.supplyType);
+  if (!supplyType || !SUPPLY_TYPES.has(supplyType)) {
+    throw bad('Select a Supply Type...');
+  }
+
+  const kotRaw = body.kotPrefix != null ? String(body.kotPrefix).trim() : '';
+  if (!kotRaw) {
+    throw bad('Enter Prefix...');
+  }
+
+  const priceLevel = normalizePriceLevel(body.priceLevel);
+  if (!priceLevel || !PRICE_LEVELS.has(priceLevel.toUpperCase())) {
+    throw bad('Select Price Level...');
   }
 
   const companyId = Number(authStaff.company_id);
-  await assertStationBelongsToCompany(pool, companyId, stationId);
-
-  let supplyType = String(body.supplyType ?? 'GENERAL').trim().toUpperCase() || 'GENERAL';
-  if (!SUPPLY_TYPES.has(supplyType)) {
-    const err = new Error(`supplyType must be one of: ${[...SUPPLY_TYPES].join(', ')}`);
-    err.status = 400;
-    throw err;
+  const stationId = resolveStationId(body.stationId ?? body.branchId, authStaff);
+  if (stationId != null) {
+    await assertStationBelongsToCompany(pool, companyId, stationId);
+  }
+  const branchId = await resolveMasterBranchId(pool, companyId, authStaff);
+  if (branchId == null) {
+    throw bad('stationId is required');
   }
 
-  const arRaw = body.areaNameArabic != null ? String(body.areaNameArabic).trim() : '';
-  const areaNameArabic = arRaw ? arRaw.slice(0, 50) : null;
+  const areaName = (nameRaw || ' ').toUpperCase().slice(0, 150);
+  const areaNameArabic = arabicRaw ? arabicRaw.slice(0, 50) : ' ';
 
   let tableCreationType = Number(body.tableCreationType ?? 0);
   if (!Number.isFinite(tableCreationType)) tableCreationType = 0;
-  tableCreationType = Math.max(0, Math.min(32767, Math.trunc(tableCreationType)));
-
-  const kotRaw = body.kotPrefix != null ? String(body.kotPrefix).trim() : '';
-  const kotPrefix = kotRaw ? kotRaw.slice(0, 50) : null;
-
-  let priceLevel = String(body.priceLevel ?? 'NORMAL').trim().toUpperCase() || 'NORMAL';
-  if (!PRICE_LEVELS.has(priceLevel)) {
-    const err = new Error(`priceLevel must be one of: ${[...PRICE_LEVELS].join(', ')}`);
-    err.status = 400;
-    throw err;
-  }
+  tableCreationType = body.tableCreationType === 1 || body.tableCreationType === '1' || body.rbtnAuto === true
+    ? 1
+    : Math.max(0, Math.min(1, Math.trunc(tableCreationType)));
 
   let isTabletShow = true;
-  if (body.isTabletShow === false || body.isTabletShow === 'false') {
+  if (body.isTabletShow === false || body.isTabletShow === 'false' || body.isTabletShow === 0 || body.isTabletShow === '0') {
     isTabletShow = false;
+  }
+
+  const exists = await areaRepo.findAreaByName(pool, companyId, branchId, areaName);
+  if (exists) {
+    throw bad('AreaName already  exist......');
   }
 
   return withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
-      `core.area_master:${companyId}:${stationId}`,
+      `core.area_master:${companyId}:${branchId}`,
     ]);
-    const areaId = await areaRepo.nextAreaId(client, companyId, stationId);
+    const dup = await areaRepo.findAreaByName(client, companyId, branchId, areaName);
+    if (dup) throw bad('AreaName already  exist......');
+    const areaId = await areaRepo.nextAreaId(client, companyId, branchId);
     return areaRepo.insertArea(client, {
       areaId,
       companyId,
-      branchId: stationId,
+      branchId,
       areaName,
       areaNameArabic,
       tableCreationType,
       supplyType,
-      kotPrefix,
+      kotPrefix: kotRaw.slice(0, 50),
       priceLevel,
       isTabletShow,
       createdBy: null,
@@ -128,40 +168,49 @@ export async function createArea(pool, body, authStaff) {
 export async function updateArea(pool, areaIdRaw, body, authStaff) {
   const areaId = Number(areaIdRaw);
   if (!Number.isFinite(areaId) || areaId < 1) {
-    const err = new Error('Invalid areaId'); err.status = 400; throw err;
+    throw bad('Invalid Area...');
   }
   const nameRaw = (body.areaName ?? '').trim();
-  if (!nameRaw) {
-    const err = new Error('areaName is required'); err.status = 400; throw err;
+  const arabicRaw = body.areaNameArabic != null ? String(body.areaNameArabic).trim() : '';
+  if (!nameRaw && !arabicRaw) {
+    throw bad('Enter Area name...');
   }
-  const stationId = resolveStationId(body.stationId ?? body.branchId, authStaff);
-  if (stationId == null) {
-    const err = new Error('stationId is required'); err.status = 400; throw err;
-  }
-  const companyId = Number(authStaff.company_id);
-  await assertStationBelongsToCompany(pool, companyId, stationId);
-  let supplyType = String(body.supplyType ?? 'GENERAL').trim().toUpperCase() || 'GENERAL';
-  if (!SUPPLY_TYPES.has(supplyType)) supplyType = 'GENERAL';
-  const arRaw = body.areaNameArabic != null ? String(body.areaNameArabic).trim() : '';
-  const areaNameArabic = arRaw ? arRaw.slice(0, 50) : null;
+  const supplyType = normalizeSupplyType(body.supplyType);
+  if (!supplyType) throw bad('Select a Supply Type...');
   const kotRaw = body.kotPrefix != null ? String(body.kotPrefix).trim() : '';
-  const kotPrefix = kotRaw ? kotRaw.slice(0, 50) : null;
+  if (!kotRaw) throw bad('Enter Prefix...');
+  const priceLevel = normalizePriceLevel(body.priceLevel);
+  if (!priceLevel) throw bad('Select Price Level...');
+
+  const companyId = Number(authStaff.company_id);
+  const branchId = await resolveMasterBranchId(pool, companyId, authStaff);
+  if (branchId == null) throw bad('stationId is required');
+
+  const areaName = (nameRaw || ' ').toUpperCase().slice(0, 150);
+  const exists = await areaRepo.findAreaByName(pool, companyId, branchId, areaName, areaId);
+  if (exists) throw bad('AreaName already  exist......');
+
   let tableCreationType = Number(body.tableCreationType ?? 0);
   if (!Number.isFinite(tableCreationType)) tableCreationType = 0;
-  tableCreationType = Math.max(0, Math.min(32767, Math.trunc(tableCreationType)));
-  let priceLevel = String(body.priceLevel ?? 'NORMAL').trim().toUpperCase() || 'NORMAL';
-  if (!PRICE_LEVELS.has(priceLevel)) priceLevel = 'NORMAL';
+  tableCreationType = Math.max(0, Math.min(1, Math.trunc(tableCreationType)));
   let isTabletShow = true;
-  if (body.isTabletShow === false || body.isTabletShow === 'false') isTabletShow = false;
-  const row = await areaRepo.updateArea(pool, {
-    companyId, branchId: stationId, areaId,
-    areaName: nameRaw.slice(0, 150),
-    areaNameArabic, tableCreationType, supplyType, kotPrefix, priceLevel,
-    isTabletShow, modifiedBy: null,
-  });
-  if (!row) {
-    const err = new Error('Area not found'); err.status = 404; throw err;
+  if (body.isTabletShow === false || body.isTabletShow === 'false' || body.isTabletShow === 0 || body.isTabletShow === '0') {
+    isTabletShow = false;
   }
+  const row = await areaRepo.updateArea(pool, {
+    companyId,
+    branchId,
+    areaId,
+    areaName,
+    areaNameArabic: arabicRaw ? arabicRaw.slice(0, 50) : ' ',
+    tableCreationType,
+    supplyType,
+    kotPrefix: kotRaw.slice(0, 50),
+    priceLevel,
+    isTabletShow,
+    modifiedBy: null,
+  });
+  if (!row) throw bad('Area not Found...', 404);
   return row;
 }
 

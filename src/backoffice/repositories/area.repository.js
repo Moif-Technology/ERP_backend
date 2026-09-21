@@ -77,6 +77,42 @@ export async function insertArea(client, params) {
   return mapRow(rows[0]);
 }
 
+export async function findAreaByName(pool, companyId, branchId, areaName, excludeAreaId = null) {
+  const name = String(areaName ?? '').trim().toUpperCase();
+  if (!name) return null;
+  const params = [companyId, branchId, name];
+  let excludeSql = '';
+  if (excludeAreaId != null && Number(excludeAreaId) > 0) {
+    params.push(Number(excludeAreaId));
+    excludeSql = ` AND area_id <> $${params.length}`;
+  }
+  const { rows } = await pool.query(
+    `SELECT area_id
+       FROM core.area_master
+      WHERE company_id = $1 AND branch_id = $2
+        AND UPPER(TRIM(area_name)) = $3
+        AND COALESCE(is_deleted, FALSE) = FALSE
+        ${excludeSql}
+      LIMIT 1`,
+    params,
+  );
+  return rows[0] ? Number(rows[0].area_id) : null;
+}
+
+export async function findArea(pool, companyId, branchId, areaId) {
+  const { rows } = await pool.query(
+    `SELECT area_id, company_id, branch_id, created_by_staff_id, area_name, area_name_arabic,
+            table_creation_type, supply_type, kot_prefix, is_tablet_show,
+            price_level, created_at, modified_at
+       FROM core.area_master
+      WHERE company_id = $1 AND branch_id = $2 AND area_id = $3
+        AND COALESCE(is_deleted, FALSE) = FALSE
+      LIMIT 1`,
+    [companyId, branchId, areaId],
+  );
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
 export async function listAreasByCompanyAndBranch(pool, companyId, branchId) {
   const { rows } = await pool.query(
     `SELECT area_id, company_id, branch_id, created_by_staff_id, area_name, area_name_arabic,

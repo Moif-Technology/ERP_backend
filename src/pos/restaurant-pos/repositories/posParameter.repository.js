@@ -135,6 +135,52 @@ export async function getCounterReceiptSettings(client, companyId, branchId, sta
   }
 }
 
+/** ParameterTableCounter IsTablePopup for this company/branch/station. */
+export async function getCounterTablePopup(client, companyId, branchId, stationId) {
+  if (!companyId) return null;
+  const params = [companyId];
+  let sql = `
+    SELECT numeric_value, string_value, station_id, counter_id
+    FROM core.counter_parameter
+    WHERE company_id = $1
+      AND is_active IS NOT FALSE
+      AND COALESCE(is_deleted, FALSE) = FALSE
+      AND (
+        LOWER(parameter_key) IN ('istablepopup', 'is_table_popup')
+        OR LOWER(REPLACE(COALESCE(parameter_name, ''), ' ', '')) = 'istablepopup'
+      )`;
+  if (branchId) {
+    params.push(branchId);
+    sql += ` AND branch_id = $${params.length}`;
+  }
+  params.push(stationId ?? null);
+  const sidIdx = params.length;
+  sql += `
+      AND (
+        $${sidIdx}::bigint IS NULL
+        OR station_id IS NULL
+        OR station_id = $${sidIdx}
+        OR counter_id = $${sidIdx}
+      )
+    ORDER BY
+      CASE WHEN station_id = $${sidIdx} OR counter_id = $${sidIdx} THEN 0 WHEN station_id IS NULL THEN 1 ELSE 2 END,
+      modified_at DESC NULLS LAST
+    LIMIT 1`;
+  try {
+    const { rows } = await client.query(sql, params);
+    const row = rows[0];
+    if (!row) return null;
+    const n = Number(row.numeric_value);
+    if (Number.isFinite(n)) return n === 1 ? 1 : 0;
+    const s = Number(row.string_value);
+    if (Number.isFinite(s)) return s === 1 ? 1 : 0;
+    return null;
+  } catch (err) {
+    if (isMissingTableError(err)) return null;
+    throw err;
+  }
+}
+
 function canonicalReceiptKey(parameterKey, parameterName) {
   const candidates = [
     String(parameterKey ?? '').trim().toLowerCase(),

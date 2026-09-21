@@ -2,6 +2,7 @@ import * as authService from '../../../core/services/auth.service.js';
 import * as staffRepo from '../../../core/repositories/staff.repository.js';
 import { pool } from '../../../config/db.js';
 import * as posParameterService from '../services/posParameter.service.js';
+import * as adminApprovalService from '../services/adminApproval.service.js';
 import { resolvePosPrivilegesForStaff } from '../../../core/services/entitlement.service.js';
 import {
   getSessionLimits,
@@ -206,5 +207,24 @@ export async function getPrivileges(req, res) {
     return res.json({ success: true, privileges });
   } catch (err) {
     return handlePosError(res, err, 'Could not load privileges');
+  }
+}
+
+/** POST /api/pos/supervisor/verify — AdminLoginFrm (ADMIN / CHIEF CASHIER). */
+export async function verifyAdmin(req, res) {
+  try {
+    const out = await adminApprovalService.verifyAdminCredentials(req.authStaff, req.body ?? {});
+    return res.json(out);
+  } catch (err) {
+    if (err.status) {
+      return res.status(err.status).json({
+        ok: false,
+        IsAdmin: 0,
+        code: err.code ?? null,
+        message: err.message,
+      });
+    }
+    console.error('[pos verifyAdmin]', err);
+    return res.status(500).json({ ok: false, IsAdmin: 0, message: 'Admin verification failed' });
   }
 }
