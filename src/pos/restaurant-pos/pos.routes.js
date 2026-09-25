@@ -5,6 +5,9 @@ import * as deviceAuthController from './controllers/deviceAuth.controller.js';
 import { kotRouter } from './routes/kot.routes.js';
 import { salesRouter } from './routes/sales.routes.js';
 import { counterRouter } from './routes/counter.routes.js';
+import { inventoryRouter } from './routes/inventory.routes.js';
+import { stockEntryRouter } from './routes/stockEntry.routes.js';
+import { recipeRouter } from './routes/recipe.routes.js';
 
 import { authMiddleware } from '../../middleware/authMiddleware.js';
 import { requireFeature } from '../../middleware/entitlementMiddleware.js';
@@ -34,6 +37,9 @@ posRouter.use('/kot', kotRouter);
 
 posRouter.use('/sales', salesRouter);
 posRouter.use('/counter', counterRouter);
+posRouter.use('/inventory', inventoryRouter);
+posRouter.use('/stock-entry', stockEntryRouter);
+posRouter.use('/recipes', recipeRouter);
 
 posRouter.get('/parameters', posController.getParameters);
 
