@@ -14,6 +14,7 @@ const RECEIPT_FLUTTER_KEYS = {
   heading6_counter: 'heading6Counter',
   heading7_counter: 'heading7Counter',
   tax_registration_no: 'taxRegistrationNo',
+  dummy_bill_name: 'dummyBillName',
 };
 
 function coerceNum(raw) {
@@ -104,6 +105,7 @@ function mapToFlutterPayload(merged) {
     heading6Counter: str('heading6_counter'),
     heading7Counter: str('heading7_counter'),
     taxRegistrationNo: str('tax_registration_no'),
+    dummyBillName: str('dummy_bill_name'),
   };
 }
 

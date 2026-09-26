@@ -1,14 +1,22 @@
 /**
- * RptCounterCloseDetailsPending — DisplayDetails + PrintSalesReportSummary (Z).
- * Counter Close ALL: every pending RESTAURANT-POS bill on this station.
+ * Counter close.
+ * allStaff true  = RptCounterCloseDetailsPending (admin, whole station).
+ * allStaff false = RptCounterCloseDetails (logged-in cashier only).
  */
 import { withTransaction } from '../../../config/db.js';
 import * as repo from '../repositories/counter.repository.js';
 import * as sharedRepo from '../../counter-pos/repositories/counter.repository.js';
+import { loadParametersPayload } from './posParameter.service.js';
 
 function num(v, d = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
+}
+
+function wantsAllStaff(src) {
+  const v = src.allStaff ?? src.AllStaff;
+  if (v === false || v === 0 || v === '0' || v === 'false') return false;
+  return true;
 }
 
 function parseCtx(authStaff, src = {}) {
@@ -19,12 +27,20 @@ function parseCtx(authStaff, src = {}) {
   const stationId = fromBody > 0 ? fromBody : fromAuth;
   const counterRaw = num(src.counterNo ?? src.gvCounterNo ?? authStaff.counter_no, 0);
   const branchId = num(authStaff.branch_id, 0) || stationId;
+  const allStaff = wantsAllStaff(src);
+  const staffIds = [];
+  if (Number.isFinite(staffPk) && staffPk > 0) staffIds.push(staffPk);
+  if (Number.isFinite(staffBiz) && staffBiz > 0 && staffBiz !== staffPk) staffIds.push(staffBiz);
+  const cashierName = String(authStaff.staff_name ?? authStaff.name ?? '').trim();
   return {
     companyId: num(authStaff.company_id, 0),
     branchId: branchId > 0 ? branchId : stationId,
     stationId,
     counterNo: counterRaw > 0 ? counterRaw : (stationId > 0 ? stationId : 1),
     staffId: Number.isFinite(staffPk) && staffPk > 0 ? staffPk : Number.isFinite(staffBiz) && staffBiz > 0 ? staffBiz : 1,
+    allStaff,
+    staffIds: allStaff ? null : (staffIds.length ? staffIds : [-1]),
+    cashierName: cashierName || 'Cashier',
   };
 }
 
@@ -127,7 +143,8 @@ async function buildSummary(pool, ctx) {
     endBillTime: sales.end_bill_time ?? null,
     staffSales: mapStaff(staffRows),
     waiterSales: mapWaiters(waiterRows),
-    cashierName: 'ALL',
+    cashierName: ctx.allStaff ? 'ALL' : ctx.cashierName,
+    allStaff: ctx.allStaff,
     counterNo: ctx.counterNo,
     stationId: ctx.stationId,
   };
@@ -173,7 +190,14 @@ export async function closeCounter(pool, authStaff, body) {
     throw err;
   }
 
-  if (summary.pendingKotCount > 0) {
+  let pendingKotCheck = 1;
+  try {
+    const params = await loadParametersPayload(ctx.companyId, ctx.branchId, ctx.stationId);
+    pendingKotCheck = Number(params?.pendingKotCheck);
+  } catch {
+    pendingKotCheck = 1;
+  }
+  if (pendingKotCheck === 1 && summary.pendingKotCount > 0) {
     const err = new Error(`${summary.pendingKotCount} KOT's Pending...........`);
     err.status = 409;
     err.code = 'PENDING_KOT';
@@ -220,7 +244,7 @@ export async function closeCounter(pool, authStaff, body) {
     const inserted = await sharedRepo.insertCounterClose(client, closeData);
     const billsClosed = await repo.markSalesAsClosed(client, { ...ctx, closeNo });
     await repo.markSplitsAsClosed(client, { ...ctx, closeNo });
-    await repo.markCashInOutAsClosed(client, { ...ctx, closeId: inserted.id });
+    await repo.markCashInOutAsClosed(client, { ...ctx, closeId: inserted.id, closeNo });
     await repo.markCreditReceiptsAsClosed(client, { ...ctx, closeNo });
     if (billsClosed < 1 && num(summary.billCount) > 0) {
       const err = new Error('Could not mark sales as closed');

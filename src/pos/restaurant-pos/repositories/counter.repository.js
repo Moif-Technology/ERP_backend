@@ -1,13 +1,14 @@
 /**
- * Restaurant Counter Close ALL — RptCounterCloseDetailsPending.DisplayDetails.
- * Station-wide PENDING RESTAURANT-POS bills (no cashier filter).
+ * Counter close readings.
+ * staffIds null = RptCounterCloseDetailsPending (admin, whole station).
+ * staffIds set  = RptCounterCloseDetails (this cashier only).
  */
 const ENTRY = 'RESTAURANT-POS';
 
 const SALE_SQL = `UPPER(COALESCE(sm.transaction_type, '')) NOT IN ('RETURN', 'R')`;
 const RET_SQL = `UPPER(COALESCE(sm.transaction_type, '')) IN ('RETURN', 'R')`;
 
-export async function getPendingSummary(pool, { companyId, stationId }) {
+export async function getPendingSummary(pool, { companyId, stationId, staffIds = null }) {
   const { rows } = await pool.query(
     `WITH sm AS (
        SELECT
@@ -19,6 +20,7 @@ export async function getPendingSummary(pool, { companyId, stationId }) {
          AND station_id = $2
          AND entry_source = '${ENTRY}'
          AND COALESCE(NULLIF(TRIM(counter_close_status), ''), 'PENDING') = 'PENDING'
+         AND ($3::bigint[] IS NULL OR staff_id = ANY($3::bigint[]))
      ),
      bill_pay AS (
        SELECT
@@ -168,12 +170,12 @@ export async function getPendingSummary(pool, { companyId, stationId }) {
        MIN(sm.bill_time) FILTER (WHERE ${SALE_SQL} AND sm.amount > 0) AS start_bill_time,
        MAX(sm.bill_time) FILTER (WHERE ${SALE_SQL} AND sm.amount > 0) AS end_bill_time
      FROM sm`,
-    [companyId, stationId],
+    [companyId, stationId, staffIds],
   );
   return rows[0] ?? {};
 }
 
-export async function getPendingStaffBreakdown(pool, { companyId, stationId }) {
+export async function getPendingStaffBreakdown(pool, { companyId, stationId, staffIds = null }) {
   const { rows } = await pool.query(
     `SELECT
        sm.staff_id,
@@ -196,10 +198,11 @@ export async function getPendingStaffBreakdown(pool, { companyId, stationId }) {
        AND sm.station_id = $2
        AND sm.entry_source = '${ENTRY}'
        AND COALESCE(NULLIF(TRIM(sm.counter_close_status), ''), 'PENDING') = 'PENDING'
+       AND ($3::bigint[] IS NULL OR sm.staff_id = ANY($3::bigint[]))
      GROUP BY sm.staff_id, st.staff_name
      HAVING COUNT(*) FILTER (WHERE sm.amount > 0) > 0
      ORDER BY staff_name ASC NULLS LAST`,
-    [companyId, stationId],
+    [companyId, stationId, staffIds],
   );
   return rows;
 }
@@ -228,7 +231,7 @@ export async function listPendingKots(pool, { companyId, stationId }) {
   }
 }
 
-export async function getCashInOutTotals(pool, { companyId, stationId }) {
+export async function getCashInOutTotals(pool, { companyId, stationId, staffIds = null }) {
   try {
     const { rows } = await pool.query(
       `SELECT
@@ -237,8 +240,9 @@ export async function getCashInOutTotals(pool, { companyId, stationId }) {
        FROM ops.cash_in_out
        WHERE company_id = $1
          AND station_id = $2
-         AND COALESCE(close_status, 'PENDING') = 'PENDING'`,
-      [companyId, stationId],
+         AND COALESCE(close_status, 'PENDING') = 'PENDING'
+         AND ($3::bigint[] IS NULL OR staff_id = ANY($3::bigint[]))`,
+      [companyId, stationId, staffIds],
     );
     return rows[0] ?? { cash_in: 0, cash_out: 0 };
   } catch (e) {
@@ -247,7 +251,14 @@ export async function getCashInOutTotals(pool, { companyId, stationId }) {
   }
 }
 
-export async function getCreditReceiptTotals(pool, { companyId, stationId }) {
+export async function getCreditReceiptTotals(pool, { companyId, counterNo, stationId, staffIds = null }) {
+  const till = Number(counterNo) > 0 ? Number(counterNo) : Number(stationId);
+  const params = [companyId, till];
+  let staffSql = '';
+  if (staffIds?.length) {
+    params.push(staffIds);
+    staffSql = `AND created_by = ANY($${params.length}::bigint[])`;
+  }
   try {
     const { rows } = await pool.query(
       `SELECT
@@ -260,15 +271,16 @@ export async function getCreditReceiptTotals(pool, { companyId, stationId }) {
          COUNT(*)::INT AS receipt_count
        FROM accounts.cash_transaction_master
        WHERE company_id = $1
-         AND (station_id = $2 OR counter_no = $2)
+         AND counter_no = $2
          AND UPPER(COALESCE(status, 'ACTIVE')) = 'ACTIVE'
          AND UPPER(COALESCE(transaction_type, '')) IN ('CUSTOMER RECEIPT', 'CUSTOMER_RECEIPT', 'RECEIPT', 'CREDITRECEIPT')
-         AND COALESCE(NULLIF(TRIM(counter_close_status), ''), 'PENDING') = 'PENDING'`,
-      [companyId, stationId],
+         AND COALESCE(NULLIF(TRIM(counter_close_status), ''), 'PENDING') = 'PENDING'
+         ${staffSql}`,
+      params,
     );
     return rows[0] ?? { receipt_cash: 0, receipt_card: 0, receipt_count: 0 };
   } catch (e) {
-    if (e.code === '42P01' || e.code === '42703') {
+    if (e.code === '42P01' || e.code === '42703' || e.code === '42804' || e.code === '42883') {
       return { receipt_cash: 0, receipt_card: 0, receipt_count: 0 };
     }
     throw e;
@@ -307,7 +319,7 @@ export async function getNextCloseSeq(client, { companyId, stationId, counterNo 
   }
 }
 
-export async function getPendingWaiterBreakdown(pool, { companyId, stationId }) {
+export async function getPendingWaiterBreakdown(pool, { companyId, stationId, staffIds = null }) {
   try {
     const { rows } = await pool.query(
       `SELECT
@@ -336,11 +348,12 @@ export async function getPendingWaiterBreakdown(pool, { companyId, stationId }) 
          AND sm.entry_source = '${ENTRY}'
          AND COALESCE(NULLIF(TRIM(sm.counter_close_status), ''), 'PENDING') = 'PENDING'
          AND UPPER(REPLACE(COALESCE(sm.payment_mode, ''), ' ', '')) NOT IN ('COMPLIMENT', 'COMPLIMENTARY')
+         AND ($3::bigint[] IS NULL OR sm.staff_id = ANY($3::bigint[]))
        GROUP BY st.staff_name
        HAVING COUNT(*) FILTER (WHERE sm.amount > 0) > 0
            OR COALESCE(SUM(tip.tip_amt), 0) <> 0
        ORDER BY waiter_name ASC NULLS LAST`,
-      [companyId, stationId],
+      [companyId, stationId, staffIds],
     );
     return rows;
   } catch (e) {
@@ -349,15 +362,16 @@ export async function getPendingWaiterBreakdown(pool, { companyId, stationId }) 
   }
 }
 
-export async function markSalesAsClosed(client, { companyId, stationId, closeNo }) {
+export async function markSalesAsClosed(client, { companyId, stationId, closeNo, staffIds = null }) {
   const sql = `
     UPDATE ops.sales_master
        SET counter_close_status = $1
      WHERE company_id = $2
        AND station_id = $3
        AND entry_source = '${ENTRY}'
-       AND COALESCE(NULLIF(TRIM(counter_close_status), ''), 'PENDING') = 'PENDING'`;
-  const { rowCount } = await client.query(sql, [closeNo, companyId, stationId]);
+       AND COALESCE(NULLIF(TRIM(counter_close_status), ''), 'PENDING') = 'PENDING'
+       AND ($4::bigint[] IS NULL OR staff_id = ANY($4::bigint[]))`;
+  const { rowCount } = await client.query(sql, [closeNo, companyId, stationId, staffIds]);
   return rowCount;
 }
 
@@ -391,32 +405,49 @@ export async function markSplitsAsClosed(client, { companyId, stationId, closeNo
   }
 }
 
-export async function markCashInOutAsClosed(client, { companyId, stationId, closeId }) {
+export async function markCashInOutAsClosed(client, { companyId, stationId, closeId, closeNo, staffIds = null }) {
   try {
+    await client.query('SAVEPOINT rest_cashio_close');
     await client.query(
       `UPDATE ops.cash_in_out
-          SET close_status = 'CLOSED', counter_close_id = $1
-        WHERE company_id = $2
-          AND station_id = $3
-          AND COALESCE(close_status, 'PENDING') = 'PENDING'`,
-      [closeId, companyId, stationId],
+          SET close_status = $1, counter_close_id = $2
+        WHERE company_id = $3
+          AND station_id = $4
+          AND COALESCE(NULLIF(TRIM(close_status), ''), 'PENDING') = 'PENDING'
+          AND ($5::bigint[] IS NULL OR staff_id = ANY($5::bigint[]))`,
+      [closeNo, closeId, companyId, stationId, staffIds],
     );
+    await client.query('RELEASE SAVEPOINT rest_cashio_close');
   } catch (e) {
+    await client.query('ROLLBACK TO SAVEPOINT rest_cashio_close').catch(() => {});
     if (e.code !== '42P01' && e.code !== '42703') throw e;
   }
 }
 
-export async function markCreditReceiptsAsClosed(client, { companyId, stationId, closeNo }) {
+export async function markCreditReceiptsAsClosed(client, { companyId, counterNo, stationId, closeNo, staffIds = null }) {
+  const till = Number(counterNo) > 0 ? Number(counterNo) : Number(stationId);
+  const params = [closeNo, companyId, till];
+  let staffSql = '';
+  if (staffIds?.length) {
+    params.push(staffIds);
+    staffSql = `AND created_by = ANY($${params.length}::bigint[])`;
+  }
   try {
+    await client.query('SAVEPOINT rest_receipt_close');
     await client.query(
       `UPDATE accounts.cash_transaction_master
           SET counter_close_status = $1
         WHERE company_id = $2
-          AND (station_id = $3 OR counter_no = $3)
-          AND COALESCE(NULLIF(TRIM(counter_close_status), ''), 'PENDING') = 'PENDING'`,
-      [closeNo, companyId, stationId],
+          AND counter_no = $3
+          AND UPPER(COALESCE(status, 'ACTIVE')) = 'ACTIVE'
+          AND UPPER(COALESCE(transaction_type, '')) IN ('CUSTOMER RECEIPT', 'CUSTOMER_RECEIPT', 'RECEIPT', 'CREDITRECEIPT')
+          AND COALESCE(NULLIF(TRIM(counter_close_status), ''), 'PENDING') = 'PENDING'
+          ${staffSql}`,
+      params,
     );
+    await client.query('RELEASE SAVEPOINT rest_receipt_close');
   } catch (e) {
-    if (e.code !== '42P01' && e.code !== '42703') throw e;
+    await client.query('ROLLBACK TO SAVEPOINT rest_receipt_close').catch(() => {});
+    if (e.code !== '42P01' && e.code !== '42703' && e.code !== '42804' && e.code !== '42883') throw e;
   }
 }

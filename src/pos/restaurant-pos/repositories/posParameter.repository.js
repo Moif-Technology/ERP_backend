@@ -13,6 +13,7 @@ export const RECEIPT_SETTING_KEYS = [
   'heading6_counter',
   'heading7_counter',
   'tax_registration_no',
+  'dummy_bill_name',
 ];
 
 const RECEIPT_KEY_LOOKUP = RECEIPT_SETTING_KEYS.flatMap((key) => {

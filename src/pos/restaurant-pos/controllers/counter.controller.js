@@ -9,7 +9,7 @@ function handleError(res, err, fallback) {
   return res.status(500).json({ ok: false, message: err.message || fallback });
 }
 
-/** GET /api/pos/counter/summary — RptCounterCloseDetailsPending.DisplayDetails */
+/** GET /api/pos/counter/summary — cashier (allStaff=0) or admin station reading */
 export async function getSummary(req, res) {
   try {
     const data = await counterService.getSummary(pool, req.authStaff, req.query ?? {});
@@ -19,7 +19,7 @@ export async function getSummary(req, res) {
   }
 }
 
-/** POST /api/pos/counter/close — PrintSalesReportSummary (Z) / X-Report snapshot */
+/** POST /api/pos/counter/close — X prints only; Z closes then prints */
 export async function closeCounter(req, res) {
   try {
     const result = await counterService.closeCounter(pool, req.authStaff, req.body ?? {});
