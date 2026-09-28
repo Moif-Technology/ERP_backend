@@ -127,17 +127,42 @@ export async function insertJobChild(client, row) {
   );
 }
 
-/** Recompute header totals from the lines. Single source of truth is the child rows. */
+/** Persist bill-level discount on an open job (append / soft update). */
+export async function updateJobBillDiscount(client, companyId, jobId, billDiscount, modifiedBy) {
+  await client.query(
+    `UPDATE ops.job_master
+        SET bill_discount = $3,
+            modified_by   = $4,
+            updated_at    = NOW()
+      WHERE company_id = $1 AND job_id = $2 AND is_deleted = FALSE`,
+    [companyId, jobId, billDiscount, modifiedBy],
+  );
+}
+
+/**
+ * Recompute header totals from lines + bill_discount.
+ * amount = net payable (subtotal − discount + tax scaled by discount ratio).
+ */
 export async function refreshJobTotals(client, companyId, jobId, modifiedBy) {
   const { rows } = await client.query(
-    `SELECT COALESCE(SUM(sub_total), 0)    AS sub_total,
-            COALESCE(SUM(tax_1_amount), 0) AS tax1,
-            COALESCE(SUM(line_total), 0)   AS total
-       FROM ops.job_child
-      WHERE company_id = $1 AND job_id = $2 AND is_deleted = FALSE`,
+    `SELECT COALESCE(SUM(c.sub_total), 0)    AS sub_total,
+            COALESCE(SUM(c.tax_1_amount), 0) AS tax1,
+            COALESCE(MAX(m.bill_discount), 0) AS bill_discount
+       FROM ops.job_master m
+       LEFT JOIN ops.job_child c
+         ON c.company_id = m.company_id
+        AND c.job_id = m.job_id
+        AND c.is_deleted = FALSE
+      WHERE m.company_id = $1 AND m.job_id = $2
+      GROUP BY m.job_id`,
     [companyId, jobId]
   );
-  const t = rows[0];
+  const t = rows[0] ?? { sub_total: 0, tax1: 0, bill_discount: 0 };
+  const sub = Number(t.sub_total) || 0;
+  const tax = Number(t.tax1) || 0;
+  const disc = Math.min(Math.max(Number(t.bill_discount) || 0, 0), Math.max(sub, 0));
+  const ratio = sub > 0 ? (sub - disc) / sub : 1;
+  const net = Math.round(((sub - disc) + tax * ratio) * 1000) / 1000;
 
   await client.query(
     `UPDATE ops.job_master
@@ -147,10 +172,10 @@ export async function refreshJobTotals(client, companyId, jobId, modifiedBy) {
             modified_by  = $6,
             updated_at   = NOW()
       WHERE company_id = $1 AND job_id = $2`,
-    [companyId, jobId, t.sub_total, t.tax1, t.total, modifiedBy]
+    [companyId, jobId, sub, tax, net, modifiedBy]
   );
 
-  return { subTotal: Number(t.sub_total), tax1: Number(t.tax1), total: Number(t.total) };
+  return { subTotal: sub, tax1: tax, billDiscount: disc, total: net };
 }
 
 export async function listJobLines(executor, companyId, jobId) {
@@ -249,7 +274,8 @@ export async function listOpenJobs(executor, companyId, {
 
   const { rows } = await executor.query(
     `SELECT m.job_id, m.job_no, m.job_status, m.chair_id, m.area_id,
-            m.customer_id, m.primary_stylist_id, m.created_by, m.amount,
+            m.customer_id, m.primary_stylist_id, m.created_by,
+            m.amount, m.sub_total, m.tax_1_amount, m.bill_discount,
             m.start_time, m.job_date, m.job_time, m.station_id,
             t.table_name   AS chair_name,
             a.area_name,

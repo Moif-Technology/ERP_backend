@@ -255,12 +255,21 @@ export async function loginWithPin({ pin, companyId, staffId, deviceToken }) {
 
   // Legacy path: no staff selected. Bounded scan so this cannot become a DoS.
   const staffList = await posStaffRepo.findAllActiveStaffForCompany(pool, cid);
-  if (!staffList.length) throw bad('No staff with a PIN found for this company', 401, 'NO_STAFF');
+  const restaurantStaff = staffList
+    .filter((row) => {
+      const roleType = String(row.role_software_type || '').toUpperCase().trim();
+      return roleType === '' || RESTAURANT_ROLE_TYPES.has(roleType);
+    })
+    .sort((a, b) => {
+      const score = (row) =>
+        String(row.role_software_type || '').toUpperCase().trim() === 'RESTAURANT-POS' ? 0 : 1;
+      return score(a) - score(b);
+    });
+  if (!restaurantStaff.length) throw bad('No staff with a PIN found for this company', 401, 'NO_STAFF');
 
-  for (const row of staffList.slice(0, LEGACY_PIN_SCAN_CAP)) {
+  for (const row of restaurantStaff.slice(0, LEGACY_PIN_SCAN_CAP)) {
     if (!row.staff_pin) continue;
     if (!(await bcrypt.compare(pinStr, row.staff_pin))) continue;
-    assertRestaurantPosAllowed(row);
     return { ...(await buildTokensForPOSDevice(row, stationId)), staffPk: Number(row.id), counterNo };
   }
 

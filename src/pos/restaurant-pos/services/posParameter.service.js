@@ -5,6 +5,18 @@ import * as repo from '../repositories/posParameter.repository.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
+const RECEIPT_FLUTTER_KEYS = {
+  heading1_counter: 'heading1Counter',
+  heading2_counter: 'heading2Counter',
+  heading3_counter: 'heading3Counter',
+  heading4_counter: 'heading4Counter',
+  heading5_counter: 'heading5Counter',
+  heading6_counter: 'heading6Counter',
+  heading7_counter: 'heading7Counter',
+  tax_registration_no: 'taxRegistrationNo',
+  dummy_bill_name: 'dummyBillName',
+};
+
 function coerceNum(raw) {
   if (raw == null) return null;
   const n = Number(raw);
@@ -12,8 +24,9 @@ function coerceNum(raw) {
 }
 
 function coerceStr(raw) {
-  if (raw == null) return null;
-  return String(raw);
+  if (raw == null) return '';
+  const s = String(raw).trim();
+  return s.toLowerCase() === 'null' ? '' : s;
 }
 
 // ---------------------------------------------------------------------------
@@ -30,7 +43,29 @@ function mergeSettings(definitions, storedJson) {
       value_type: def.value_type,
     };
   }
+  if (result.is_table_popup && stored.is_table_popup == null) {
+    const legacy = stored.IsTablePopup ?? stored.isTablePopup;
+    if (legacy != null) result.is_table_popup = { value: legacy, value_type: 'number' };
+  }
+  // Include saved company-detail keys even if definitions were not seeded yet.
+  for (const key of repo.RECEIPT_SETTING_KEYS) {
+    if (result[key]) continue;
+    if (Object.prototype.hasOwnProperty.call(stored, key)) {
+      result[key] = { value: stored[key], value_type: 'text' };
+    }
+  }
   return result;
+}
+
+function overlayReceiptSettings(payload, receiptPatch) {
+  if (!receiptPatch || typeof receiptPatch !== 'object') return payload;
+  for (const [storageKey, flutterKey] of Object.entries(RECEIPT_FLUTTER_KEYS)) {
+    const val = receiptPatch[storageKey];
+    if (val != null && String(val).trim() !== '') {
+      payload[flutterKey] = String(val).trim();
+    }
+  }
+  return payload;
 }
 
 // ---------------------------------------------------------------------------
@@ -45,6 +80,10 @@ function mapToFlutterPayload(merged) {
 
   return {
     Tax1: num('tax1'),
+    Tax1Name: str('tax1_name') || 'VAT',
+    DiscountButton1: num('discount_button_1') ?? 5,
+    DiscountButton2: num('discount_button_2') ?? 10,
+    DiscountButton3: num('discount_button_3') ?? 15,
     currencyPrecession: currencyPrec == null ? null : String(currencyPrec),
     reportStartTime: str('report_start_time'),
     reportEndTime: str('report_end_time'),
@@ -52,6 +91,10 @@ function mapToFlutterPayload(merged) {
     ISWaiterMandotory: num('is_waiter_mandatory'),
     ClearAfterKOTSave: num('clear_after_kot_save'),
     SaveKOTonSettlement: num('save_kot_on_settlement'),
+    IsTablePopup: num('is_table_popup') ?? 0,
+    is_table_popup: num('is_table_popup') ?? 0,
+    IsTablesBasedOnWaiter: num('is_tables_based_on_waiter') ?? 0,
+    DefaultAreaName: num('default_area_name') ?? 1,
     autoRoundOff: num('auto_round_off'),
     customerDisplayEnabled: num('customer_display_enabled'),
     heading1Counter: str('heading1_counter'),
@@ -62,6 +105,7 @@ function mapToFlutterPayload(merged) {
     heading6Counter: str('heading6_counter'),
     heading7Counter: str('heading7_counter'),
     taxRegistrationNo: str('tax_registration_no'),
+    dummyBillName: str('dummy_bill_name'),
   };
 }
 
@@ -80,7 +124,7 @@ function assertCompanyId(companyId) {
 }
 
 /** GET /api/pos/parameters — Flutter-shaped payload. */
-export async function loadParametersPayload(companyId) {
+export async function loadParametersPayload(companyId, branchId = null, stationId = null) {
   const cid = assertCompanyId(companyId);
   const client = await pool.connect();
   try {
@@ -89,7 +133,34 @@ export async function loadParametersPayload(companyId) {
       repo.getCompanyPosValues(client, cid),
     ]);
     const merged = mergeSettings(definitions, storedJson);
-    return mapToFlutterPayload(merged);
+    const payload = mapToFlutterPayload(merged);
+
+    const bid = Number(branchId);
+    const sid = Number(stationId);
+    const hasBranch = Number.isFinite(bid) && bid > 0;
+    const hasStation = Number.isFinite(sid) && sid > 0;
+
+    if (hasBranch || hasStation) {
+      const counterSettings = await repo.getCounterReceiptSettings(
+        client,
+        cid,
+        hasBranch ? bid : null,
+        hasStation ? sid : null,
+      );
+      overlayReceiptSettings(payload, counterSettings);
+      const tablePopup = await repo.getCounterTablePopup(
+        client,
+        cid,
+        hasBranch ? bid : null,
+        hasStation ? sid : null,
+      );
+      if (tablePopup != null) {
+        payload.IsTablePopup = tablePopup;
+        payload.is_table_popup = tablePopup;
+      }
+    }
+
+    return payload;
   } finally {
     client.release();
   }
@@ -170,8 +241,9 @@ export async function updateParameters(companyId, body) {
 /**
  * PUT /api/pos/parameters/company-details — legacy Flutter body shape.
  * Maps heading1…5, footer1, footer2, taxRegNo → snake_case keys.
+ * Also writes branch/station rows to core.counter_parameter when context is available.
  */
-export async function updateCompanyDetails(companyId, body) {
+export async function updateCompanyDetails(companyId, body, branchId = null, stationId = null) {
   const cid = assertCompanyId(companyId);
 
   const patch = {
@@ -189,6 +261,13 @@ export async function updateCompanyDetails(companyId, body) {
   try {
     await client.query('BEGIN');
     await repo.upsertCompanyPosValues(client, cid, patch);
+
+    const bid = Number(branchId);
+    const sid = Number(stationId);
+    if (Number.isFinite(bid) && bid > 0 && Number.isFinite(sid) && sid > 0) {
+      await repo.upsertCounterReceiptSettings(client, cid, bid, sid, patch);
+    }
+
     await client.query('COMMIT');
     return { ok: true };
   } catch (e) {

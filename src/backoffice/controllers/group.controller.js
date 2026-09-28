@@ -96,3 +96,21 @@ export async function deleteGroup(req, res) {
     return res.status(500).json({ message: 'Could not delete group' });
   }
 }
+
+export async function reorderGroups(req, res) {
+  try {
+    const groups = await groupService.reorderGroups(pool, req.body, req.authStaff);
+    return res.json({ groups });
+  } catch (err) {
+    if (err.status) {
+      return res.status(err.status).json({ message: err.message });
+    }
+    if (err.code === '42703') {
+      return res.status(503).json({
+        message: 'Group sort_order column missing. Run migration 114_group_master_sort_order.sql',
+      });
+    }
+    console.error(err);
+    return res.status(500).json({ message: 'Could not reorder groups' });
+  }
+}

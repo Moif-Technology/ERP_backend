@@ -2,6 +2,7 @@ import * as authService from '../../../core/services/auth.service.js';
 import * as staffRepo from '../../../core/repositories/staff.repository.js';
 import { pool } from '../../../config/db.js';
 import * as posParameterService from '../services/posParameter.service.js';
+import * as adminApprovalService from '../services/adminApproval.service.js';
 import { resolvePosPrivilegesForStaff } from '../../../core/services/entitlement.service.js';
 import {
   getSessionLimits,
@@ -155,7 +156,8 @@ export async function staffList(req, res) {
 /** GET /api/pos/parameters — Flutter-shaped payload after login. */
 export async function getParameters(req, res) {
   try {
-    const data = await posParameterService.loadParametersPayload(req.authStaff.company_id);
+    const { company_id: companyId, branch_id: branchId, station_id: stationId } = req.authStaff;
+    const data = await posParameterService.loadParametersPayload(companyId, branchId, stationId);
     return res.json({ success: true, data });
   } catch (err) {
     return handlePosError(res, err, 'Could not load parameters');
@@ -185,7 +187,13 @@ export async function putParameters(req, res) {
 /** PUT /api/pos/parameters/company-details — legacy Flutter body (heading1…5, footer1, footer2, taxRegNo). */
 export async function putCompanyDetails(req, res) {
   try {
-    await posParameterService.updateCompanyDetails(req.authStaff.company_id, req.body ?? {});
+    const { company_id: companyId, branch_id: branchId, station_id: stationId } = req.authStaff;
+    await posParameterService.updateCompanyDetails(
+      companyId,
+      req.body ?? {},
+      branchId,
+      stationId,
+    );
     return res.json({ success: true });
   } catch (err) {
     return handlePosError(res, err, 'Could not save company details');
@@ -199,5 +207,24 @@ export async function getPrivileges(req, res) {
     return res.json({ success: true, privileges });
   } catch (err) {
     return handlePosError(res, err, 'Could not load privileges');
+  }
+}
+
+/** POST /api/pos/supervisor/verify — AdminLoginFrm (ADMIN / CHIEF CASHIER). */
+export async function verifyAdmin(req, res) {
+  try {
+    const out = await adminApprovalService.verifyAdminCredentials(req.authStaff, req.body ?? {});
+    return res.json(out);
+  } catch (err) {
+    if (err.status) {
+      return res.status(err.status).json({
+        ok: false,
+        IsAdmin: 0,
+        code: err.code ?? null,
+        message: err.message,
+      });
+    }
+    console.error('[pos verifyAdmin]', err);
+    return res.status(500).json({ ok: false, IsAdmin: 0, message: 'Admin verification failed' });
   }
 }

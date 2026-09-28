@@ -58,7 +58,10 @@ export async function getPendingSummary(pool, { companyId, stationId, counterNo,
            WHEN COALESCE(split.split_rows, 0) > 0 THEN COALESCE(split.voucher_amt, 0)
            WHEN UPPER(COALESCE(sm.payment_mode, '')) = 'VOUCHER' THEN sm.amount
            ELSE 0
-         END AS voucher_amt
+         END AS voucher_amt,
+         COALESCE(split.tip_amt, 0) AS tip_amt,
+         COALESCE(split.cash_tip_amt, 0) AS cash_tip_amt,
+         COALESCE(split.card_tip_amt, 0) AS card_tip_amt
        FROM sm
        LEFT JOIN LATERAL (
          SELECT
@@ -77,9 +80,17 @@ export async function getPendingSummary(pool, { companyId, stationId, counterNo,
            ), 0) AS voucher_amt,
            COALESCE(SUM(sps.bill_amount) FILTER (
              WHERE UPPER(TRIM(COALESCE(sps.pay_mode, ''))) = 'CREDIT'
-           ), 0) AS credit_amt
+           ), 0) AS credit_amt,
+           COALESCE(SUM(COALESCE(sps.tip_amount, 0)), 0) AS tip_amt,
+           COALESCE(SUM(COALESCE(sps.tip_amount, 0)) FILTER (
+             WHERE UPPER(TRIM(COALESCE(sps.pay_mode, ''))) = 'CASH'
+           ), 0) AS cash_tip_amt,
+           COALESCE(SUM(COALESCE(sps.tip_amount, 0)) FILTER (
+             WHERE UPPER(TRIM(COALESCE(sps.pay_mode, ''))) IN ('CARD', 'CREDITCARD', 'CREDIT CARD')
+           ), 0) AS card_tip_amt
          FROM ops.sales_payment_split sps
-         WHERE sps.company_id = sm.company_id AND sps.sales_id = sm.sales_id
+         WHERE sps.company_id = sm.company_id
+           AND sps.sales_id = sm.sales_id
        ) split ON true
      )
      SELECT
@@ -113,6 +124,18 @@ export async function getPendingSummary(pool, { companyId, stationId, counterNo,
        COALESCE(SUM(CASE WHEN amount > 0 THEN round_off_adjustment ELSE 0 END), 0) AS total_round_off,
        COALESCE(SUM(CASE WHEN amount > 0 THEN tax_1_amount        ELSE 0 END), 0)  AS total_tax,
        COALESCE(SUM(CASE WHEN amount > 0 THEN amount              ELSE 0 END), 0)  AS gross_amount,
+       COALESCE((
+         SELECT SUM(CASE WHEN transaction_type = 'RETURN' THEN 0 ELSE tip_amt END)
+         FROM bill_pay
+       ), 0) AS total_tip,
+       COALESCE((
+         SELECT SUM(CASE WHEN transaction_type = 'RETURN' THEN 0 ELSE cash_tip_amt END)
+         FROM bill_pay
+       ), 0) AS total_cash_tip,
+       COALESCE((
+         SELECT SUM(CASE WHEN transaction_type = 'RETURN' THEN 0 ELSE card_tip_amt END)
+         FROM bill_pay
+       ), 0) AS total_card_tip,
        COALESCE(SUM(CASE
          WHEN transaction_type = 'RETURN' AND amount > 0 THEN amount
          WHEN amount < 0 THEN ABS(amount)
@@ -132,6 +155,7 @@ export async function getPendingSummary(pool, { companyId, stationId, counterNo,
   return rows[0] ?? {
     total_cash: 0, total_credit: 0, total_card: 0, total_online: 0, total_voucher: 0,
     total_discount: 0, item_discount_total: 0, total_round_off: 0, total_tax: 0, gross_amount: 0,
+    total_tip: 0, total_cash_tip: 0, total_card_tip: 0,
     total_refund: 0, bill_count: 0, cash_bill_count: 0, credit_bill_count: 0,
     card_bill_count: 0, multi_bill_count: 0, compliment_bill_count: 0,
     start_bill_no: null, end_bill_no: null,
@@ -140,7 +164,7 @@ export async function getPendingSummary(pool, { companyId, stationId, counterNo,
 
 /**
  * Pending sales broken down by cashier/staff for counter close UI + X/Z print.
- * Returns: staff_id, staff_name, bill_count, sale_amount (gross of positive bills).
+ * Returns: staff_id, staff_name, bill_count, sale_amount, tip_amount.
  */
 export async function getPendingStaffBreakdown(pool, {
   companyId, stationId, counterNo, staffId, allStaff = false,
@@ -157,6 +181,7 @@ export async function getPendingStaffBreakdown(pool, {
        COALESCE(NULLIF(TRIM(st.staff_name), ''), 'Staff #' || sm.staff_id::text) AS staff_name,
        COUNT(*) FILTER (WHERE sm.amount > 0)::INT AS bill_count,
        COALESCE(SUM(CASE WHEN sm.amount > 0 THEN sm.amount ELSE 0 END), 0) AS sale_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN COALESCE(tip.tip_amt, 0) ELSE 0 END), 0) AS tip_amount,
        COALESCE(SUM(CASE
          WHEN sm.transaction_type = 'RETURN' AND sm.amount > 0 THEN sm.amount
          WHEN sm.amount < 0 THEN ABS(sm.amount)
@@ -174,6 +199,12 @@ export async function getPendingStaffBreakdown(pool, {
         ORDER BY CASE WHEN s.id = sm.staff_id THEN 0 ELSE 1 END
         LIMIT 1
      ) st ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT COALESCE(SUM(COALESCE(sps.tip_amount, 0)), 0) AS tip_amt
+         FROM ops.sales_payment_split sps
+        WHERE sps.company_id = sm.company_id
+          AND sps.sales_id = sm.sales_id
+     ) tip ON TRUE
      WHERE sm.company_id = $1
        AND sm.station_id = $2
        AND sm.counter_no = $3
@@ -200,6 +231,7 @@ export async function getStaffBreakdownForClose(pool, { companyId, closeId }) {
        COALESCE(NULLIF(TRIM(st.staff_name), ''), 'Staff #' || sm.staff_id::text) AS staff_name,
        COUNT(*) FILTER (WHERE sm.amount > 0)::INT AS bill_count,
        COALESCE(SUM(CASE WHEN sm.amount > 0 THEN sm.amount ELSE 0 END), 0) AS sale_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN COALESCE(tip.tip_amt, 0) ELSE 0 END), 0) AS tip_amount,
        COALESCE(SUM(CASE
          WHEN sm.transaction_type = 'RETURN' AND sm.amount > 0 THEN sm.amount
          WHEN sm.amount < 0 THEN ABS(sm.amount)
@@ -217,6 +249,12 @@ export async function getStaffBreakdownForClose(pool, { companyId, closeId }) {
         ORDER BY CASE WHEN s.id = sm.staff_id THEN 0 ELSE 1 END
         LIMIT 1
      ) st ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT COALESCE(SUM(COALESCE(sps.tip_amount, 0)), 0) AS tip_amt
+         FROM ops.sales_payment_split sps
+        WHERE sps.company_id = sm.company_id
+          AND sps.sales_id = sm.sales_id
+     ) tip ON TRUE
      WHERE sm.company_id = $1
        AND TRIM(COALESCE(sm.counter_close_status, '')) = TRIM($2::text)
        AND sm.post_status = 'POSTED'

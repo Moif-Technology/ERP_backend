@@ -163,7 +163,8 @@ export async function createProduct(pool, body, authStaff) {
     throw err;
   }
 
-  const branchId = parseBranchId(body.branchId);
+  let branchId = parseBranchId(body.branchId);
+  if (branchId == null) branchId = parseBranchId(authStaff.branch_id);
   if (branchId == null) {
     const err = new Error('branchId is required');
     err.status = 400;
@@ -536,7 +537,8 @@ export async function updateProduct(pool, productId, body, authStaff) {
     throw err;
   }
  
-  const branchId = parseBranchId(body.branchId);
+  let branchId = parseBranchId(body.branchId);
+  if (branchId == null) branchId = parseBranchId(authStaff.branch_id);
   if (branchId == null) {
     const err = new Error('branchId is required');
     err.status = 400;

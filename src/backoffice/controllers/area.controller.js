@@ -28,7 +28,7 @@ export async function createArea(req, res) {
         c.includes('area_name') || c.includes('company_branch_area_name');
       return res.status(409).json({
         message: looksName
-          ? 'An area with this name already exists for this company and branch'
+          ? 'AreaName already  exist......'
           : 'Duplicate area row.',
         constraint: c || undefined,
       });

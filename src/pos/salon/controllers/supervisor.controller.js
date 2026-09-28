@@ -12,7 +12,7 @@ function fail(res, err, fallback) {
   return res.status(500).json({ ok: false, code: 'INTERNAL', message: fallback });
 }
 
-/** POST /supervisor/verify — { username, password } */
+/** POST /supervisor/verify — { pin } or { username, password } */
 export async function verify(req, res) {
   try {
     return res.json(await supervisorService.verifySupervisor(req.authStaff, req.body));

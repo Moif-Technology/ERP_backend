@@ -190,6 +190,8 @@ export async function updateCustomer(pool, customerId, body, authStaff) {
       const err = new Error('Customer not found'); err.status = 404; throw err;
     }
 
+    // POS edit often omits code — keep the existing one unless a new code is sent.
+    if (!code) code = trimOrEmpty(existing.customerCode);
     if (!code && Boolean(body.newBarcode || body.autoCode)) {
       code = await generateScopedAutoCode(client, {
         tableName: 'biz.customer_master',

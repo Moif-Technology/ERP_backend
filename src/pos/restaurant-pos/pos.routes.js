@@ -6,14 +6,9 @@
  *   - Deyno Quick (React/Vite): device-enrolled till — enroll, PIN login, KOT,
  *     settle, counter X/Z reading, cash in/out, sales viewer, credit receipts.
  *
- * DESIGN NOTE — why counter-pos controllers appear here.
- * Counter reading, credit settlement and the sales viewer are not
- * counter-specific: they read and write the same ops.sales_master /
- * ops.sales_child / ops.sales_payment_split rows this product already writes,
- * and every one of them is driven purely by `req.authStaff` (company, branch,
- * station). Salon-POS reuses them for exactly this reason. Forking them would
- * mean maintaining a third copy of ~2,500 lines and fixing every bug three
- * times. A fix applied once in counter-pos reaches all three products.
+ * Restaurant routes own sales viewing and counter close. Shared counter-pos
+ * controllers still provide cash movements, history, staff reports and credit
+ * receipts. Each URL is mounted once so neither client's handler is shadowed.
  *
  * TWO AUTH PATHS with different token scopes — see deviceAuth.controller.js.
  * Do not merge them onto one endpoint: `/pin-login` issues an ERP-scoped token,
@@ -26,6 +21,10 @@ import * as posController from './controllers/pos.controller.js';
 import * as deviceAuthController from './controllers/deviceAuth.controller.js';
 import { kotRouter } from './routes/kot.routes.js';
 import { salesRouter } from './routes/sales.routes.js';
+import { counterRouter } from './routes/counter.routes.js';
+import { inventoryRouter } from './routes/inventory.routes.js';
+import { stockEntryRouter } from './routes/stockEntry.routes.js';
+import { recipeRouter } from './routes/recipe.routes.js';
 
 // Reused verbatim from counter-pos — generic over req.authStaff, same tables.
 import * as counterSalesController from '../counter-pos/controllers/sales.controller.js';
@@ -35,9 +34,8 @@ import * as counterController from '../counter-pos/controllers/counter.controlle
 // queries are plain company + date-range aggregates over ops.sales_master —
 // nothing salon-specific — and restaurant settle writes every column they read.
 import * as salonSalesController from '../salon/controllers/sales.controller.js';
-// Reused from salon — verifies username/password against staff_master in the
-// caller's own company and checks the role is supervisor-class. No salon logic.
-import * as supervisorController from '../salon/controllers/supervisor.controller.js';
+// Quick supervisor/PIN approval and restaurant chief-cashier approval.
+import * as supervisorController from './controllers/supervisor.controller.js';
 
 import { authMiddleware } from '../../middleware/authMiddleware.js';
 import { requireFeature, requireAnyFeature } from '../../middleware/entitlementMiddleware.js';
@@ -68,20 +66,11 @@ posRouter.use(requireFeature('pos'));
 // KOT (kitchen order tickets) and settle — the core order lifecycle.
 posRouter.use('/kot', kotRouter);
 posRouter.use('/sales', salesRouter);
+posRouter.use('/counter', counterRouter);
+posRouter.use('/inventory', inventoryRouter);
+posRouter.use('/stock-entry', stockEntryRouter);
+posRouter.use('/recipes', recipeRouter);
 
-// Sales viewer — posted bills list + bill detail for reprint.
-// Accepts pos.counter_reports OR base pos, matching salon: a plan that does not
-// itemise counter_reports still gets its own bill list.
-posRouter.get(
-  '/sales/viewer',
-  requireAnyFeature(['pos.counter_reports', 'pos']),
-  counterSalesController.salesViewerList,
-);
-posRouter.get(
-  '/sales/viewer/:salesId',
-  requireAnyFeature(['pos.counter_reports', 'pos']),
-  counterSalesController.salesViewerBill,
-);
 posRouter.get(
   '/sales/staff-wise',
   requireAnyFeature(['pos.counter_reports', 'pos']),
@@ -109,8 +98,6 @@ posRouter.get(
 );
 
 // Counter reading — X Report / Z Report, and cash in/out.
-posRouter.get('/counter/summary',            requireFeature('pos.counter_open_close'), counterController.getSummary);
-posRouter.post('/counter/close',             requireFeature('pos.counter_open_close'), counterController.closeCounter);
 posRouter.get('/counter/history',            requireFeature('pos.counter_open_close'), counterController.getHistory);
 posRouter.get('/counter/history/:closeId',   requireFeature('pos.counter_open_close'), counterController.getCloseDetail);
 posRouter.get('/counter/cash-in-out',        requireFeature('pos.cash_in_out'),        counterController.getCashInOutList);

@@ -1473,6 +1473,7 @@ Columns:
   - group_description_arabic TEXT          NULL      Arabic description (was nvarchar)
   - key_code                 NUMERIC(18,0)   NULL      Key code mapping
   - key_shift                NUMERIC(18,0)   NULL      Key shift mapping
+  - sort_order               INTEGER         NOT NULL  POS/counter display order (default 0)
   - upload_status            VARCHAR(50)     NULL      Upload/sync status
   - server_status            VARCHAR(20)     NULL      Server status
   - r_status                 VARCHAR(20)     NULL      Record status

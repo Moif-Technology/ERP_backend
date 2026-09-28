@@ -30,7 +30,7 @@ import * as deviceRepo from '../../counter-pos/repositories/device.repository.js
 import * as posStaffRepo from '../../counter-pos/repositories/staff.repository.js';
 
 const SALON_STATION_TYPE = 'SALON_POS';   // station_type uses UNDERSCORES
-const SALON_ROLE_TYPES = new Set(['SALON-POS', 'ERP', '', null, undefined]); // roles use HYPHENS
+const SALON_ROLE_TYPES = new Set(['SALON-POS', 'COUNTER-POS', 'ERP', '', null, undefined]); // roles use HYPHENS
 
 /** Same cap counter-pos uses: a legacy PIN-only login must not become a bcrypt storm. */
 const LEGACY_PIN_SCAN_CAP = 50;
@@ -47,7 +47,7 @@ function assertSalonPosAllowed(staffRow) {
   if (roleType !== '' && !SALON_ROLE_TYPES.has(roleType)) {
     throw bad(
       `This staff's role is '${roleType}', which is not authorised for Salon POS. ` +
-      `Allowed: SALON-POS or ERP.`,
+      `Allowed: SALON-POS, COUNTER-POS or ERP.`,
       403, 'ROLE_NOT_ALLOWED'
     );
   }

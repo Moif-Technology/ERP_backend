@@ -111,7 +111,7 @@ export async function loginWithCredentials(username, password) {
 const RESTAURANT_POS_ALLOWED_TYPES = new Set(['RESTAURANT-POS', 'ERP', '', null, undefined]);
 const COUNTER_POS_ALLOWED_TYPES    = new Set(['COUNTER-POS',    'ERP', '', null, undefined]);
 const VAN_ALLOWED_TYPES            = new Set(['VAN',            'ERP', '', null, undefined]);
-const SALON_POS_ALLOWED_TYPES      = new Set(['SALON-POS',      'ERP', '', null, undefined]);
+const SALON_POS_ALLOWED_TYPES      = new Set(['SALON-POS', 'COUNTER-POS', 'ERP', '', null, undefined]);
 
 /**
  * posType -> allowed role software types.

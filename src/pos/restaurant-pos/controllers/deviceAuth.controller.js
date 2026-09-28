@@ -49,6 +49,7 @@ function sessionPayload(session, accessToken, refreshToken, extra = {}) {
     staffID:   u.staffId  != null ? String(u.staffId) : '',
     roleId:    u.role     != null ? String(u.role) : '',
     roleName:  u.roleName ?? '',
+    designation: u.designation ?? '',
     companyId: c.companyId != null ? String(c.companyId) : '',
     companyName: c.companyName ?? '',
     accessToken,

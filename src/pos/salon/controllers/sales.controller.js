@@ -12,11 +12,19 @@ function handleError(res, err, fallback) {
       message: err.message,
     });
   }
+  if (err.code === '23505') {
+    console.error('[salon sales]', err);
+    return res.status(409).json({
+      ok: false,
+      code: 'DUPLICATE',
+      message: 'This bill number is already used. Retry settlement.',
+    });
+  }
   console.error('[salon sales]', err);
   return res.status(500).json({
     ok: false,
     code: 'INTERNAL',
-    message: fallback,
+    message: err.message ? `${fallback}: ${err.message}` : fallback,
   });
 }
 
