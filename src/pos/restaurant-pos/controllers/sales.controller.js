@@ -18,6 +18,28 @@ export async function getSaleByBill(req, res) {
   }
 }
 
+export async function deliveryBoyOrders(req, res) {
+  try {
+    const out = await salesService.listDeliveryBoyOrders(pool, req.authStaff, req.query ?? {});
+    return res.json(out);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ ok: false, message: err.message });
+    console.error('[delivery boy orders]', err);
+    return res.status(500).json({ ok: false, message: 'Could not load delivery orders' });
+  }
+}
+
+export async function deliveryNightSettle(req, res) {
+  try {
+    const out = await salesService.settleDeliveryBoyNight(pool, req.authStaff, req.body ?? {});
+    return res.json(out);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ ok: false, message: err.message });
+    console.error('[delivery night settle]', err);
+    return res.status(500).json({ ok: false, message: err.message || 'Could not settle' });
+  }
+}
+
 export async function settle(req, res) {
   const b = req.body ?? {};
   const itemLen = Array.isArray(b.items) ? b.items.length : Array.isArray(b.Items) ? b.Items.length : 0;

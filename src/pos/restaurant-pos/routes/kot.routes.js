@@ -11,6 +11,8 @@ export const kotRouter = Router();
 
 kotRouter.post('/save', requireFeature('pos.kot'), kotController.saveKot);
 kotRouter.get('/list', requireFeature('pos.kot'), kotController.listKots);
+kotRouter.get('/delivery-boys', requireFeature('pos.kot'), kotController.listDeliveryBoys);
+kotRouter.post('/assign-delivery', requireFeature('pos.kot'), kotController.assignDelivery);
 kotRouter.post('/join', requireFeature('pos.kot'), kotController.joinKots);
 kotRouter.post('/split', requireFeature('pos.kot'), kotController.splitKot);
 kotRouter.post(

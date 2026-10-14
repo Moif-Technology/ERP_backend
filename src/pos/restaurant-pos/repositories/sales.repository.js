@@ -207,6 +207,7 @@ export async function insertSalesPaymentSplit(client, row) {
     counterId,
     staffId,
     refNo,
+    tipAmount,
   } = row;
   const counter = counterId != null && Number.isFinite(Number(counterId)) ? Math.trunc(Number(counterId)) : 0;
   await client.query(
@@ -214,7 +215,18 @@ export async function insertSalesPaymentSplit(client, row) {
         company_id, sales_id, payer_no, pay_mode, bill_amount, tip_amount, branch_id,
         counter_id, staff_id, ref_no,
         pay_date, is_cancelled
-      ) VALUES ($1,$2,$3,$4,$5,0,$6,$7,$8,$9, NOW(), false)`,
-    [companyId, salesId, payerNo, payMode, Math.abs(Number(billAmount) || 0), branchId, counter, staffId, refNo]
+      ) VALUES ($1,$2,$3,$4,$5,$10,$6,$7,$8,$9, NOW(), false)`,
+    [
+      companyId,
+      salesId,
+      payerNo,
+      payMode,
+      Math.abs(Number(billAmount) || 0),
+      branchId,
+      counter,
+      staffId,
+      refNo,
+      Math.abs(Number(tipAmount) || 0),
+    ]
   );
 }

@@ -107,6 +107,8 @@ function childFieldsFromItem(it) {
     groupId: parseLong(it.dgvGrpID ?? it.GroupID ?? it.groupID) ?? null,
     modifier: (it.Modifir ?? it.Modifier ?? it.modifier ?? '').toString().slice(0, 200),
     kotDisplayStatus: (it.KOTDisplayStatus ?? it.kotDisplayStatus ?? 'PENDING').toString().slice(0, 50),
+    batchNo: Math.trunc(num(it.BatchNo ?? it.batchNo, 0)),
+    batchPrintStatus: Math.trunc(num(it.BatchPrintStatus ?? it.batchPrintStatus, 0)),
   };
 }
 
@@ -199,6 +201,10 @@ function mapRowToFlutterLine(row) {
     kotDisplayStatus: row.kot_display_status ?? 'PENDING',
     Androidprint: kotPrintStatus(row.android_printed),
     AndroidPrint: kotPrintStatus(row.android_printed),
+    BatchNo: String(row.batch_no ?? 0),
+    batchNo: String(row.batch_no ?? 0),
+    BatchPrintStatus: String(row.batch_print_status ?? 0),
+    batchPrintStatus: String(row.batch_print_status ?? 0),
     UniqueProductID: '0',
     ItemCode: '',
     DescriptionArabic: '',
@@ -903,14 +909,24 @@ export async function changeKotTable(pool, authStaff, kotMasterIdRaw, body = {})
   const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
   const auditBy = parseLong(authStaff.staff_id) ?? parseLong(authStaff.id);
   const kotMasterId = Number(kotMasterIdRaw);
+  // UpdateKotTable parameters: @NewTableId, @NewAreaId, @KotMasterID, @StationID
   const newTableId = Math.trunc(num(body.tableId ?? body.TableId ?? body.newTableId, 0));
   const newAreaId = Math.trunc(num(body.areaId ?? body.AreaID ?? body.newAreaId, 0));
 
+  if (!Number.isFinite(companyId) || companyId < 1) {
+    throw bad('Company is required.', 400, 'NO_COMPANY');
+  }
+  if (!Number.isFinite(stationId) || stationId < 1) {
+    throw bad('Station is required.', 400, 'NO_STATION');
+  }
   if (!Number.isFinite(kotMasterId) || kotMasterId < 1) {
     throw bad('Please Select A KOT.......', 400, 'NO_KOT');
   }
   if (newTableId < 1) throw bad('Select a vacant table.', 400, 'NO_TABLE');
   if (newAreaId < 1) throw bad('Select an area.', 400, 'NO_AREA');
+
+  // btnTableChange_Click: chief cashier / admin, otherwise AdminLoginFrm credentials.
+  await requireChiefCashierOrAdmin(authStaff, body);
 
   return withTransaction(async (client) => {
     const master = await kotRepo.findKotMaster(client, companyId, kotMasterId);
@@ -1177,6 +1193,8 @@ async function splitMoveChildRow(client, {
     groupId: src.group_id,
     modifier: src.modifier ?? '',
     kotDisplayStatus: src.kot_display_status || 'PENDING',
+    batchNo: Math.trunc(num(src.batch_no, 0)),
+    batchPrintStatus: Math.trunc(num(src.batch_print_status, 0)),
     createdBy: auditBy,
     modifiedBy: auditBy,
   });
@@ -1319,4 +1337,87 @@ export async function splitKot(pool, authStaff, body = {}) {
     if (err.status) throw err;
     throw bad(`Split failed: ${err.message}`, 500, 'SPLIT_FAILED');
   }
+}
+
+export async function listDeliveryBoys(pool, authStaff) {
+  const companyId = Number(authStaff.company_id);
+  const rows = await kotRepo.listDeliveryBoys(pool, companyId);
+  return {
+    ok: true,
+    data: rows.map((r) => ({
+      staffId: Number(r.staff_id),
+      staffName: r.staff_name ?? '',
+    })),
+  };
+}
+
+/**
+ * Select a delivery boy, then scan the dummy-bill KOT barcode or type the KOT
+ * number. Assigns ops.kot_master.delivery_boy_id. The order stays open.
+ */
+export async function assignDeliveryBoy(pool, authStaff, body = {}) {
+  const companyId = Number(authStaff.company_id);
+  const stationId = Number(authStaff.station_id ?? authStaff.branch_id);
+  const boyId = parseLong(body.deliveryBoyId ?? body.DeliveryBoyId);
+  const raw = String(body.kotNo ?? body.kotNumber ?? body.KotNumber ?? '').trim();
+  if (!boyId) throw bad('Select a delivery boy');
+  if (!raw) throw bad('Enter KOT number');
+  if (!Number.isFinite(stationId) || stationId < 1) throw bad('Station is not set');
+
+  const boy = await kotRepo.findDeliveryBoy(pool, companyId, boyId);
+  if (!boy) throw bad('Delivery boy not found', 404);
+
+  const scan = raw.toUpperCase().replace(/\s+/g, '');
+  const digits = /^\d+$/.test(scan) ? scan : '';
+  const rows = await kotRepo.findOpenKotsForDeliveryAssign(pool, companyId, stationId, scan, digits);
+  const isDelivery = (r) => normalizeSupplyType(r.supply_type) === 'DELIVERY';
+  const exact = rows.filter((r) => String(r.kot_label ?? '').toUpperCase() === scan);
+  const exactDelivery = exact.filter(isDelivery);
+  const numberDelivery = digits
+    ? rows.filter((r) => isDelivery(r) && String(r.kot_number) === digits)
+    : [];
+
+  let match = null;
+  if (exactDelivery.length === 1) match = exactDelivery[0];
+  else if (exactDelivery.length > 1) throw bad('More than one order. Scan the full KOT from the bill.');
+  else if (exact.length === 1) throw bad('This KOT is not a delivery order');
+  else if (numberDelivery.length === 1) match = numberDelivery[0];
+  else if (numberDelivery.length > 1) throw bad('More than one order. Scan the full KOT from the bill.');
+  else throw bad('KOT not found');
+
+  const prevId = Number(match.delivery_boy_id) || 0;
+  const kotNo = `${match.kot_prefix ?? ''}${match.kot_number}`;
+  const customerName = String(match.customer_name ?? '').trim();
+  if (prevId === boyId) {
+    return {
+      ok: true,
+      already: true,
+      kotNo,
+      kotMasterId: Number(match.kot_master_id),
+      deliveryBoyName: boy.staff_name,
+      customerName,
+      message: `${kotNo} is already with ${boy.staff_name}`,
+    };
+  }
+
+  await kotRepo.assignKotDeliveryBoy(pool, {
+    companyId,
+    kotMasterId: Number(match.kot_master_id),
+    deliveryBoyId: boyId,
+    modifiedBy: parseLong(authStaff.staff_id) ?? parseLong(authStaff.id),
+  });
+
+  const previousName = String(match.delivery_boy_name ?? '').trim();
+  const message = prevId > 0 && previousName
+    ? `${kotNo} moved from ${previousName} to ${boy.staff_name}`
+    : `${kotNo} assigned to ${boy.staff_name}`;
+  return {
+    ok: true,
+    already: false,
+    kotNo,
+    kotMasterId: Number(match.kot_master_id),
+    deliveryBoyName: boy.staff_name,
+    customerName,
+    message,
+  };
 }

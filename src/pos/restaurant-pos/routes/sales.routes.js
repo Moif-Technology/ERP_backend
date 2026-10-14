@@ -10,6 +10,16 @@ salesRouter.get(
   requireAnyFeature(['pos.settlement', 'pos.kot', 'pos']),
   salesController.getSaleByBill,
 );
+salesRouter.get(
+  '/delivery-boy-orders',
+  requireAnyFeature(['pos.settlement', 'pos.kot', 'pos']),
+  salesController.deliveryBoyOrders,
+);
+salesRouter.post(
+  '/delivery-night-settle',
+  requireFeature('pos.settlement'),
+  salesController.deliveryNightSettle,
+);
 salesRouter.post('/settle', requireFeature('pos.settlement'), salesController.settle);
 salesRouter.get(
   '/viewer',

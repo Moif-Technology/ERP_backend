@@ -419,6 +419,8 @@ export async function insertKotChild(client, row) {
     groupId,
     modifier,
     kotDisplayStatus,
+    batchNo,
+    batchPrintStatus,
     createdBy,
     modifiedBy,
   } = row;
@@ -435,9 +437,10 @@ export async function insertKotChild(client, row) {
         tax_1_amount, tax_2_amount, tax_3_amount,
         tax_1_rate, tax_2_rate, tax_3_rate,
         group_id, modifier, kot_display_status,
+        batch_no, batch_print_status,
         created_by, modified_by, station_id
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29
       )`,
     [
       companyId,
@@ -464,6 +467,8 @@ export async function insertKotChild(client, row) {
       groupIdSafe,
       modifier,
       kotDisplayStatus,
+      Math.trunc(Number(batchNo) || 0),
+      Math.trunc(Number(batchPrintStatus) || 0),
       createdBy,
       modifiedBy,
       stationId ?? branchId,
@@ -493,6 +498,8 @@ export async function updateKotChild(client, row) {
     groupId,
     modifier,
     kotDisplayStatus,
+    batchNo,
+    batchPrintStatus,
     modifiedBy,
   } = row;
   const groupIdSafe =
@@ -516,7 +523,9 @@ export async function updateKotChild(client, row) {
         group_id = $17,
         modifier = $18,
         kot_display_status = $19,
-        modified_by = $20,
+        batch_no = $20,
+        batch_print_status = $21,
+        modified_by = $22,
         modified_at = NOW()
      WHERE company_id = $1 AND kot_child_id = $2 AND kot_master_id = $3`,
     [
@@ -539,6 +548,8 @@ export async function updateKotChild(client, row) {
       groupIdSafe,
       modifier,
       kotDisplayStatus,
+      Math.trunc(Number(batchNo) || 0),
+      Math.trunc(Number(batchPrintStatus) || 0),
       modifiedBy,
     ]
   );
@@ -746,7 +757,9 @@ export async function listKotDetailRows(executor, companyId, kotMasterId) {
         kc.group_id,
         kc.modifier,
         kc.kot_display_status,
-        kc.android_printed
+        kc.android_printed,
+        kc.batch_no,
+        kc.batch_print_status
      FROM ops.kot_master km
      LEFT JOIN LATERAL (
         SELECT a.area_name, a.supply_type
@@ -799,7 +812,8 @@ export async function findKotChild(client, companyId, kotMasterId, kotChildId) {
             sub_total, line_total,
             tax_1_amount, tax_2_amount, tax_3_amount,
             tax_1_rate, tax_2_rate, tax_3_rate,
-            group_id, modifier, kot_display_status
+            group_id, modifier, kot_display_status,
+            batch_no, batch_print_status
        FROM ops.kot_child
       WHERE company_id = $1 AND kot_master_id = $2 AND kot_child_id = $3
       LIMIT 1`,
@@ -1161,4 +1175,134 @@ export async function listOrphanKotMasters(client, companyId, stationId) {
     [companyId, stationId],
   );
   return rows;
+}
+
+export async function listDeliveryBoys(executor, companyId) {
+  const { rows } = await executor.query(
+    `SELECT staff_id, staff_name
+       FROM core.staff_master
+      WHERE company_id = $1
+        AND record_status = 'ACTIVE'
+        AND UPPER(TRIM(COALESCE(designation, ''))) = 'DELIVERY BOY'
+      ORDER BY staff_name ASC`,
+    [companyId],
+  );
+  return rows;
+}
+
+export async function findDeliveryBoy(executor, companyId, staffId) {
+  const { rows } = await executor.query(
+    `SELECT staff_id, staff_name
+       FROM core.staff_master
+      WHERE company_id = $1
+        AND staff_id = $2
+        AND record_status = 'ACTIVE'
+        AND UPPER(TRIM(COALESCE(designation, ''))) = 'DELIVERY BOY'
+      LIMIT 1`,
+    [companyId, staffId],
+  );
+  return rows[0] ?? null;
+}
+
+/** Open KOTs whose full number or numeric part matches a scanned dummy-bill barcode. */
+export async function findOpenKotsForDeliveryAssign(executor, companyId, stationId, scan, digits) {
+  const { rows } = await executor.query(
+    `SELECT
+        km.kot_master_id,
+        km.kot_prefix,
+        km.kot_number,
+        UPPER(TRIM(COALESCE(km.kot_prefix, '')) || km.kot_number::text) AS kot_label,
+        km.delivery_boy_id,
+        COALESCE(cu.customer_name, '') AS customer_name,
+        COALESCE(boy.staff_name, '') AS delivery_boy_name,
+        COALESCE(am.supply_type, '') AS supply_type
+     FROM ops.kot_master km
+     LEFT JOIN LATERAL (
+        SELECT a.supply_type
+        FROM core.area_master a
+        WHERE a.company_id = km.company_id
+          AND a.area_id = km.area_id
+          AND a.branch_id IN (km.station_id, km.branch_id)
+        ORDER BY CASE WHEN a.branch_id = km.station_id THEN 0 ELSE 1 END
+        LIMIT 1
+      ) am ON TRUE
+     LEFT JOIN biz.customer_master cu
+       ON cu.company_id = km.company_id
+      AND cu.customer_id = km.customer_id
+     LEFT JOIN core.staff_master boy
+       ON boy.company_id = km.company_id
+      AND boy.staff_id = km.delivery_boy_id
+      AND km.delivery_boy_id > 0
+     WHERE km.company_id = $1
+       AND km.station_id = $2
+       AND km.kot_status NOT IN ('CANCELLED','COMPLETED','SUBMIT','SETTLED')
+       AND (
+         UPPER(TRIM(COALESCE(km.kot_prefix, '')) || km.kot_number::text) = $3
+         OR ($4 <> '' AND km.kot_number::text = $4)
+       )
+     ORDER BY km.kot_master_id DESC
+     LIMIT 20`,
+    [companyId, stationId, scan, digits],
+  );
+  return rows;
+}
+
+/** Open delivery KOTs already assigned to one boy. Used by night settlement. */
+export async function listOpenKotsForDeliveryBoy(executor, companyId, stationId, deliveryBoyId) {
+  const { rows } = await executor.query(
+    `SELECT
+        km.kot_master_id,
+        km.kot_prefix,
+        km.kot_number,
+        km.amount,
+        km.bill_discount,
+        km.sub_total_m,
+        km.tax1_amount_m,
+        km.round_off_adj,
+        km.customer_id,
+        km.waiter_id,
+        km.table_id,
+        km.area_id,
+        km.nof_customer,
+        km.remarks,
+        COALESCE(am.supply_type, 'DELIVERY') AS supply_type,
+        COALESCE(cu.customer_name, '') AS customer_name,
+        COALESCE(cu.customer_code, '') AS customer_code,
+        COALESCE(cu.mobile_no, '') AS mobile_no,
+        COALESCE(cu.telephone, '') AS telephone,
+        COALESCE(cu.address, '') AS address
+     FROM ops.kot_master km
+     LEFT JOIN LATERAL (
+        SELECT a.supply_type
+        FROM core.area_master a
+        WHERE a.company_id = km.company_id
+          AND a.area_id = km.area_id
+          AND a.branch_id IN (km.station_id, km.branch_id)
+        ORDER BY CASE WHEN a.branch_id = km.station_id THEN 0 ELSE 1 END
+        LIMIT 1
+      ) am ON TRUE
+     LEFT JOIN biz.customer_master cu
+       ON cu.company_id = km.company_id
+      AND cu.customer_id = km.customer_id
+     WHERE km.company_id = $1
+       AND km.station_id = $2
+       AND km.delivery_boy_id = $3
+       AND km.kot_status NOT IN ('CANCELLED','COMPLETED','SUBMIT','SETTLED')
+       AND REPLACE(UPPER(COALESCE(am.supply_type, '')), '_', ' ') = 'DELIVERY'
+     ORDER BY km.kot_time ASC NULLS LAST, km.kot_master_id ASC`,
+    [companyId, stationId, deliveryBoyId],
+  );
+  return rows;
+}
+
+export async function assignKotDeliveryBoy(executor, { companyId, kotMasterId, deliveryBoyId, modifiedBy }) {
+  await executor.query(
+    `UPDATE ops.kot_master SET
+        delivery_boy_id = $3,
+        delivery_time = NOW(),
+        modified_by = $4,
+        modified_on = NOW()
+     WHERE company_id = $1 AND kot_master_id = $2`,
+    [companyId, kotMasterId, deliveryBoyId, modifiedBy],
+  );
 }
