@@ -192,6 +192,69 @@ function round2(v) {
   return Math.round(num(v, 0) * 100) / 100;
 }
 
+/** SettlementScreen.vb PaymentMode. CARD is the till name for CREDITCARD. */
+function normalizePayMode(raw) {
+  const m = String(raw || 'CASH').trim().toUpperCase().replace(/[\s_-]+/g, '');
+  if (m === 'CARD' || m === 'CREDITCARD') return 'CREDITCARD';
+  if (m === 'CREDIT') return 'CREDIT';
+  if (m === 'ONLINE') return 'ONLINE';
+  if (m === 'SPLIT' || m === 'SPLITPAY') return 'SPLITPAY';
+  if (m === 'MULTI' || m === 'MULTIPAYMENT' || m === 'MPAY') return 'MULTIPAYMENT';
+  if (m === 'COMPLIMENT' || m === 'COMPLIMENTARY') return 'COMPLIMENT';
+  return 'CASH';
+}
+
+/** Cash() in SettlementScreen.vb — one bucket per mode, or the split rows. */
+function tendersFromBody(body, paymentMode, net, paid) {
+  const raw = body.splits ?? body.Splits;
+  const rows = (Array.isArray(raw) ? raw : [])
+    .map((s) => {
+      const payMode = normalizePayMode(s.payMode ?? s.PayMode ?? s.paymentMode);
+      const amount = round2(num(s.amount ?? s.BillAmount ?? s.billAmount, 0));
+      const ref = str(
+        s.refNo ?? s.RefNo ?? (payMode === 'ONLINE' ? body.paymentRefNo ?? body.onlineSource : null),
+        100,
+      );
+      return { payMode, amount, ref, tip: 0 };
+    })
+    .filter((s) => s.amount > 0.0001);
+
+  const tip = round2(num(body.tipAmount ?? body.TipAmount, 0));
+  if (rows.length) {
+    const tipOn = rows.find((r) => r.payMode === 'CREDITCARD') ?? rows[0];
+    if (tip > 0) tipOn.tip = tip;
+    return rows;
+  }
+
+  const single = paymentMode === 'CASH' ? paid : net;
+  const ref = paymentMode === 'ONLINE'
+    ? str(body.paymentRefNo ?? body.onlineSource, 100)
+    : paymentMode === 'CREDITCARD'
+      ? str(body.creditCardNo, 100)
+      : null;
+  return [{ payMode: paymentMode, amount: round2(single), ref, tip }];
+}
+
+function tenderBuckets(paymentMode, tenders, net, paid) {
+  let cash = 0;
+  let credit = 0;
+  let card = 0;
+  if (paymentMode === 'SPLITPAY' || paymentMode === 'MULTIPAYMENT') {
+    for (const t of tenders) {
+      if (t.payMode === 'CASH') cash += t.amount;
+      else if (t.payMode === 'CREDITCARD') card += t.amount;
+      else if (t.payMode === 'CREDIT') credit += t.amount;
+    }
+  } else if (paymentMode === 'CREDIT') credit = net;
+  else if (paymentMode === 'CREDITCARD') card = paid;
+  else if (paymentMode === 'CASH') cash = paid;
+  return {
+    cashAmount: round2(cash),
+    creditAmount: round2(credit),
+    creditCardAmount: round2(card),
+  };
+}
+
 function absN(v, d = 0) {
   return Math.abs(num(v, d));
 }
@@ -279,6 +342,10 @@ async function persistRestaurantBill(client, ctx) {
     remarks,
     creditCardNo,
     paymentRefNo,
+    tenders,
+    cashAmount,
+    creditAmount,
+    creditCardAmount,
     items,
     header,
     isReturn,
@@ -288,8 +355,14 @@ async function persistRestaurantBill(client, ctx) {
   const billNo = await salesRepo.nextBillNo(client, companyId, stationId);
   const net = absN(header.net);
   const paid = absN(header.paid, net);
-  const cashAmount = paymentMode === 'CASH' ? paid : 0;
-  const creditCardAmount = paymentMode === 'CREDITCARD' ? paid : 0;
+  const payRows = Array.isArray(tenders) && tenders.length
+    ? tenders
+    : [{
+        payMode: paymentMode === 'CREDITCARD' ? 'CREDITCARD' : 'CASH',
+        amount: paid,
+        ref: paymentRefNo,
+        tip: 0,
+      }];
 
   await salesRepo.insertSalesMaster(client, {
     companyId,
@@ -304,8 +377,8 @@ async function persistRestaurantBill(client, ctx) {
     creditCardNo,
     amount: net,
     cashAmount,
-    creditAmount: 0,
-    creditCardAmount,
+    creditAmount: creditAmount ?? 0,
+    creditCardAmount: creditCardAmount ?? 0,
     paidAmount: paid,
     balancePaid: Math.max(0, paid - net),
     discountAmount: absN(header.discountAmount),
@@ -410,17 +483,22 @@ async function persistRestaurantBill(client, ctx) {
     createdBy: auditBy,
   });
 
-  await salesRepo.insertSalesPaymentSplit(client, {
-    companyId,
-    salesId,
-    payerNo: 1,
-    payMode: paymentMode === 'CREDITCARD' ? 'CARD' : 'CASH',
-    billAmount: paid,
-    branchId,
-    counterId: counterNo,
-    staffId: staffPk,
-    refNo: paymentRefNo,
-  });
+  let payerNo = 0;
+  for (const t of payRows) {
+    payerNo += 1;
+    await salesRepo.insertSalesPaymentSplit(client, {
+      companyId,
+      salesId,
+      payerNo,
+      payMode: t.payMode,
+      billAmount: t.amount,
+      tipAmount: t.tip || 0,
+      branchId,
+      counterId: counterNo,
+      staffId: staffPk,
+      refNo: t.ref || null,
+    });
+  }
 
   return { salesId, billNo, lineNo, stockMoved, paid, net };
 }
@@ -488,20 +566,23 @@ export async function settleSale(pool, body, authStaff) {
   const isReturnOnly = detectSalesReturn(body, items) && saleItems.length === 0;
   const rawNet = num(body.netAmount, 0);
   const rawPaid = num(body.paidAmount, 0);
+  const paymentMode = normalizePayMode(str(body.paymentMode ?? body.PaymentMode, 50) || 'CASH');
+  const netAbs = absN(rawNet);
+  const paidAbs = absN(rawPaid, rawNet);
   const tol = 0.02;
   if (rawNet === 0 && !returnItems.length) {
     const err = new Error('netAmount must not be 0');
     err.status = 400;
     throw err;
   }
-  if (rawNet > 0 && rawPaid + tol < rawNet) {
+  // VB: credit and compliment do not require a cash tender. Every other mode must cover the net.
+  if (rawNet > 0 && paymentMode !== 'CREDIT' && paymentMode !== 'COMPLIMENT' && rawPaid + tol < rawNet) {
     const err = new Error('paidAmount must be >= netAmount');
     err.status = 400;
     throw err;
   }
-
-  const paymentModeRaw = str(body.paymentMode, 50) || 'CASH';
-  const paymentMode = paymentModeRaw.toUpperCase().includes('CREDIT') ? 'CREDITCARD' : 'CASH';
+  const tenders = tendersFromBody(body, paymentMode, netAbs, paidAbs);
+  const buckets = tenderBuckets(paymentMode, tenders, netAbs, paidAbs);
 
   const auditBy = auditStaffId(authStaff);
   const staffPk = nullableLong(authStaff.staff_id) ?? nullableLong(authStaff.id);
@@ -561,6 +642,10 @@ export async function settleSale(pool, body, authStaff) {
       remarks,
       creditCardNo,
       paymentRefNo,
+      tenders,
+      cashAmount: buckets.cashAmount,
+      creditAmount: buckets.creditAmount,
+      creditCardAmount: buckets.creditCardAmount,
     };
 
     const bodyHeader = {
@@ -633,6 +718,110 @@ export async function settleSale(pool, body, authStaff) {
       message: 'Settlement saved.',
     };
   });
+}
+
+/** Open delivery KOTs for one boy. Night settle loads this list. */
+export async function listDeliveryBoyOrders(pool, authStaff, query = {}) {
+  const companyId = Number(authStaff.company_id);
+  const deliveryBoyId = num(query.deliveryBoyId ?? query.delivery_boy_id, 0);
+  if (deliveryBoyId < 1) {
+    const err = new Error('Select a delivery boy');
+    err.status = 400;
+    throw err;
+  }
+  let stationId = num(query.stationId ?? authStaff.station_id, 0);
+  if (stationId < 1) {
+    const { rows } = await pool.query(
+      `SELECT station_id
+         FROM ops.kot_master
+        WHERE company_id = $1
+          AND delivery_boy_id = $2
+          AND kot_status NOT IN ('CANCELLED','COMPLETED','SUBMIT','SETTLED')
+        ORDER BY kot_master_id DESC
+        LIMIT 1`,
+      [companyId, deliveryBoyId],
+    );
+    stationId = num(rows[0]?.station_id, 0);
+  }
+  if (stationId < 1) return { ok: true, data: [], total: 0 };
+  const rows = await kotRepo.listOpenKotsForDeliveryBoy(pool, companyId, stationId, deliveryBoyId);
+  const data = rows.map((r) => ({
+    kotMasterId: Number(r.kot_master_id),
+    kotId: Number(r.kot_master_id),
+    kotNo: `${r.kot_prefix ?? ''}${r.kot_number ?? ''}`,
+    customerName: r.customer_name ?? '',
+    amount: round2(num(r.amount, 0)),
+  }));
+  return {
+    ok: true,
+    data,
+    total: round2(data.reduce((n, r) => n + r.amount, 0)),
+  };
+}
+
+/**
+ * Night settle: each assigned delivery KOT becomes its own bill.
+ * Payment mode per order is CASH or CREDITCARD, same as SettlementScreen.Cash().
+ */
+export async function settleDeliveryBoyNight(pool, authStaff, body = {}) {
+  const orders = Array.isArray(body.orders) ? body.orders : [];
+  if (!orders.length) {
+    const err = new Error('No orders to settle');
+    err.status = 400;
+    throw err;
+  }
+  const companyId = Number(authStaff.company_id);
+  const stationId = num(body.stationId ?? authStaff.station_id, 0);
+  const counterNo = num(body.counterNo, 1);
+  const settled = [];
+  const failed = [];
+  let total = 0;
+  for (const order of orders) {
+    const kotId = num(order.kotMasterId ?? order.kotId, 0);
+    const paymentMode = normalizePayMode(order.paymentMode ?? 'CASH');
+    try {
+      if (kotId < 1) throw Object.assign(new Error('KOT not found'), { status: 400 });
+      const lines = await kotRepo.listKotDetailRows(pool, companyId, kotId);
+      if (!lines.length) throw Object.assign(new Error('KOT has no items'), { status: 400 });
+      const head = lines[0];
+      const net = round2(num(head.amount, 0));
+      const out = await settleSale(pool, {
+        kotId,
+        stationId: stationId || num(head.station_id, 0),
+        counterNo,
+        customerId: head.customer_id,
+        waiterId: head.waiter_id,
+        tableId: head.table_id,
+        areaId: head.area_id,
+        noOfCustomer: head.nof_customer,
+        subTotal: num(head.sub_total_m, 0),
+        discountAmount: num(head.bill_discount, 0),
+        tax1Amount: num(head.tax1_amount_m, 0),
+        roundOffAdj: num(head.round_off_adj, 0),
+        netAmount: net,
+        paidAmount: net,
+        paymentMode,
+        remarks: head.remarks,
+        items: lines,
+      }, authStaff);
+      total += net;
+      settled.push({
+        kotMasterId: kotId,
+        kotNo: `${head.kot_prefix ?? ''}${head.kot_number ?? ''}`,
+        billNo: out.billNo,
+        customerName: head.customer_name ?? '',
+        paymentMode,
+        amount: net,
+      });
+    } catch (err) {
+      failed.push({ kotMasterId: kotId, message: err.message || 'Could not settle' });
+    }
+  }
+  const settledTotal = round2(total);
+  const message = failed.length
+    ? `Settled ${settled.length} of ${orders.length}`
+    : `Settled ${settledTotal.toFixed(2)}`;
+  return { ok: failed.length === 0, message, settled, failed, total: settledTotal };
 }
 
 function mapSaleChild(row, i = 0) {

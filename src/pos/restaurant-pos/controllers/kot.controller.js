@@ -40,6 +40,25 @@ export async function listKots(req, res) {
   }
 }
 
+export async function listDeliveryBoys(req, res) {
+  try {
+    const out = await kotService.listDeliveryBoys(pool, req.authStaff);
+    return res.json(out);
+  } catch (err) {
+    return kotActionError(res, err, 'Could not load delivery boys');
+  }
+}
+
+/** Pick a boy, then scan the dummy-bill KOT barcode or type the KOT number. */
+export async function assignDelivery(req, res) {
+  try {
+    const out = await kotService.assignDeliveryBoy(pool, req.authStaff, req.body);
+    return res.json(out);
+  } catch (err) {
+    return kotActionError(res, err, 'Could not assign delivery boy');
+  }
+}
+
 export async function getKot(req, res) {
   try {
     const kotDetails = await kotService.getKot(pool, req.authStaff, req.params.kotMasterId);
