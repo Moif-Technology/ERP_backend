@@ -2,6 +2,7 @@ import { withTransaction } from '../../../config/db.js';
 import * as salesRepo from '../repositories/sales.repository.js';
 import * as kotRepo from '../repositories/kot.repository.js';
 import * as stockRepo from '../../../shared/repositories/stock.repository.js';
+import * as recipeConsumptionRepo from '../repositories/recipeConsumption.repository.js';
 import { auditStaffId } from '../lib/staffAudit.js';
 
 function num(v, d = 0) {
@@ -113,10 +114,183 @@ function isNonInventory(stockType) {
     .toUpperCase() === 'NON INVENTORY';
 }
 
+function roundRecipeQty(n) {
+  return Math.round(Number(n) * 1e6) / 1e6;
+}
+
+/**
+ * Product type and unique id for the settled lines.
+ * VB skips the recipe when UniqueProductID is 0 (an open item).
+ * A catalog product with no unique id stored still breaks down: the product id stands in.
+ */
+async function loadSettledProductKinds(client, companyId, branchId, productIds) {
+  const fullSql = `SELECT m.product_id,
+            UPPER(TRIM(COALESCE(m.product_type, ''))) AS product_type,
+            COALESCE(NULLIF(m.unique_multi_product_id, 0), NULLIF(i.unique_multi_product_id, 0), m.product_id) AS unique_id,
+            COALESCE(m.stock_type, '') AS stock_type
+       FROM core.product_master m
+       LEFT JOIN core.product_inventory i
+         ON i.company_id = m.company_id
+        AND i.branch_id = $2
+        AND i.product_id = m.product_id
+      WHERE m.company_id = $1
+        AND m.product_id = ANY($3::bigint[])`;
+  try {
+    const { rows } = await client.query(fullSql, [companyId, branchId, productIds]);
+    return rows;
+  } catch (err) {
+    if (err.code !== '42703') throw err;
+    const { rows } = await client.query(
+      `SELECT product_id,
+              UPPER(TRIM(COALESCE(product_type, ''))) AS product_type,
+              product_id AS unique_id,
+              COALESCE(stock_type, '') AS stock_type
+         FROM core.product_master
+        WHERE company_id = $1
+          AND product_id = ANY($2::bigint[])`,
+      [companyId, productIds],
+    );
+    return rows;
+  }
+}
+
+/**
+ * One recipe per finished product. The station branch wins.
+ * If that branch has no lines, use the recipe saved on another branch
+ * (VB RecipieDetails is not filtered by station).
+ */
+function recipeLinesByProduct(rows, branchId) {
+  const grouped = new Map();
+  for (const row of rows) {
+    const productId = Number(row.finished_product_id);
+    if (!grouped.has(productId)) grouped.set(productId, []);
+    grouped.get(productId).push(row);
+  }
+  const picked = new Map();
+  for (const [productId, lines] of grouped) {
+    const onBranch = lines.filter((line) => Number(line.branch_id) === branchId);
+    const source = onBranch.length ? onBranch : lines;
+    const sourceBranch = Number(source[0].branch_id);
+    picked.set(
+      productId,
+      source.filter((line) => Number(line.branch_id) === sourceBranch),
+    );
+  }
+  return picked;
+}
+
+function stockShortage(name, productId) {
+  const err = new Error(`Insufficient stock for "${name || productId}"`);
+  err.status = 400;
+  return err;
+}
+
+async function moveSaleStock(client, row) {
+  try {
+    await client.query('SAVEPOINT pos_stock_out');
+    await stockRepo.applyStockMovement(client, row);
+    await client.query('RELEASE SAVEPOINT pos_stock_out');
+    return true;
+  } catch (stockErr) {
+    try {
+      await client.query('ROLLBACK TO SAVEPOINT pos_stock_out');
+    } catch {
+      /* savepoint already gone */
+    }
+    if (stockErr.code === '42P01' || stockErr.code === '42703') {
+      console.warn('[pos settlement] stock log schema mismatch — skipped', row.productId);
+      return false;
+    }
+    if (stockErr.code === '23514') throw stockShortage(row.shortDescription, row.productId);
+    throw stockErr;
+  }
+}
+
+/**
+ * SettlementScreen recipe breakdown, for every RECIPE ITEM on the bill.
+ * Stored recipe qty is already in base units (GM/ML divided by 1000).
+ * Each RecipieDetails row: RecipeQty = stored qty × sale qty, pack qty 1.
+ * A return (negative sale qty) puts that raw quantity back.
+ * Any failure throws, and the settlement transaction rolls the whole bill back.
+ * Nothing is skipped and left for later.
+ */
+async function consumeRecipeMaterials(client, {
+  companyId,
+  branchId,
+  salesId,
+  createdBy,
+  staffId,
+  line,
+  uniqueId,
+  materials,
+}) {
+  if (!line.salesChildId) {
+    const err = new Error(`Recipe consumption for "${line.shortDescription || line.productId}" has no sales line`);
+    err.status = 500;
+    throw err;
+  }
+  let moved = 0;
+  let nextId = await recipeConsumptionRepo.nextRecipeTransactionId(client, companyId);
+  for (const raw of materials) {
+    const storedQty = Number(raw.recipe_qty) || 0;
+    const signedQty = roundRecipeQty(storedQty * line.qty);
+    const recipeQty = Math.abs(signedQty);
+    if (recipeQty === 0) continue;
+    const rawId = Number(raw.raw_material_id);
+    const rawName = raw.raw_name || rawId;
+    if (!rawId) {
+      const err = new Error(`Recipe for "${line.shortDescription || line.productId}" has a line with no raw material`);
+      err.status = 400;
+      throw err;
+    }
+    try {
+      await stockRepo.applyStockMovement(client, {
+        companyId,
+        branchId,
+        productId: rawId,
+        transactionType: 'RECIPE',
+        transactionId: salesId,
+        qty: -signedQty,
+        unitCost: Number(raw.average_cost) || 0,
+        unitPrice: 0,
+        createdBy,
+        requireInventoryRow: true,
+      });
+    } catch (stockErr) {
+      if (stockErr.code === 'NO_INVENTORY_ROW') {
+        const err = new Error(`No stock record for "${rawName}" at this branch`);
+        err.status = 400;
+        throw err;
+      }
+      if (stockErr.code === '23514') throw stockShortage(rawName, rawId);
+      throw stockErr;
+    }
+    const rawUnique = Number(raw.raw_material_unique_id);
+    await recipeConsumptionRepo.insertRecipeTransaction(client, {
+      companyId,
+      recipeTransactionId: nextId,
+      branchId,
+      salesId,
+      salesChildId: line.salesChildId,
+      finishedProductId: line.productId,
+      finishedUniqueId: uniqueId > 0 ? uniqueId : null,
+      recipeProductId: rawId,
+      recipeUniqueId: rawUnique > 0 ? rawUnique : null,
+      recipeQty,
+      staffId,
+    });
+    nextId += 1;
+    moved += 1;
+  }
+  return moved;
+}
+
 /**
  * Deduct on-hand for each settled line (ops.product_log_entry + qty_on_hand).
- * Skips NON INVENTORY. Allows negative on-hand so restaurant menu items
- * that start at 0 still move on sale.
+ * Every RECIPE ITEM that has a recipe consumes those raw materials.
+ * The finished dish is left as it is. A line that is not a recipe item
+ * deducts itself. NON INVENTORY finished items are skipped.
+ * A recipe line that cannot post rolls the whole settlement back.
  */
 async function applyRestaurantSaleStockOut(client, {
   companyId,
@@ -124,65 +298,71 @@ async function applyRestaurantSaleStockOut(client, {
   salesId,
   lines,
   createdBy,
+  staffId,
 }) {
   const productIds = [
     ...new Set(lines.map((L) => L.productId).filter((id) => Number.isFinite(id) && id > 0)),
   ];
   if (!productIds.length || branchId < 1) return 0;
 
-  const skip = new Set();
-  try {
-    const { rows } = await client.query(
-      `SELECT product_id, COALESCE(stock_type, '') AS stock_type
-         FROM core.product_master
-        WHERE company_id = $1
-          AND product_id = ANY($2::bigint[])`,
-      [companyId, productIds],
-    );
-    for (const r of rows) {
-      if (isNonInventory(r.stock_type)) skip.add(Number(r.product_id));
-    }
-  } catch (err) {
-    if (err.code !== '42703') throw err;
-  }
+  const kinds = new Map();
+  const kindRows = await loadSettledProductKinds(client, companyId, branchId, productIds);
+  for (const row of kindRows) kinds.set(Number(row.product_id), row);
+
+  const recipeProductIds = productIds.filter((id) => {
+    const kind = kinds.get(id);
+    return kind
+      && kind.product_type === 'RECIPE ITEM'
+      && Number(kind.unique_id) !== 0;
+  });
+
+  const recipes = recipeProductIds.length
+    ? recipeLinesByProduct(
+      await recipeConsumptionRepo.listRecipeLinesForSale(
+        client,
+        companyId,
+        branchId,
+        recipeProductIds,
+      ),
+      branchId,
+    )
+    : new Map();
 
   let moved = 0;
   for (const L of lines) {
-    if (skip.has(L.productId) || L.qty === 0) continue;
-    try {
-      await client.query('SAVEPOINT pos_stock_out');
-      await stockRepo.applyStockMovement(client, {
+    if (L.qty === 0) continue;
+    const kind = kinds.get(L.productId);
+    const materials = recipes.get(L.productId);
+    if (kind?.product_type === 'RECIPE ITEM' && materials?.length) {
+      const consumed = await consumeRecipeMaterials(client, {
         companyId,
         branchId,
-        productId: L.productId,
-        transactionType: 'SALES',
-        transactionId: salesId,
-        qty: -L.qty,
-        unitCost: L.unitCost,
-        unitPrice: L.unitPrice,
+        salesId,
         createdBy,
+        staffId,
+        line: L,
+        uniqueId: Number(kind.unique_id) || 0,
+        materials,
       });
-      await client.query('RELEASE SAVEPOINT pos_stock_out');
-      moved += 1;
-    } catch (stockErr) {
-      try {
-        await client.query('ROLLBACK TO SAVEPOINT pos_stock_out');
-      } catch {
-        /* savepoint already gone */
-      }
-      if (stockErr.code === '42P01' || stockErr.code === '42703') {
-        console.warn('[pos settlement] stock log schema mismatch — skipped', L.productId);
+      if (consumed > 0) {
+        moved += consumed;
         continue;
       }
-      if (stockErr.code === '23514') {
-        const err = new Error(
-          `Insufficient stock for "${L.shortDescription || L.productId}"`,
-        );
-        err.status = 400;
-        throw err;
-      }
-      throw stockErr;
     }
+    if (kind && isNonInventory(kind.stock_type)) continue;
+    const didMove = await moveSaleStock(client, {
+      companyId,
+      branchId,
+      productId: L.productId,
+      transactionType: 'SALES',
+      transactionId: salesId,
+      qty: -L.qty,
+      unitCost: L.unitCost,
+      unitPrice: L.unitPrice,
+      createdBy,
+      shortDescription: L.shortDescription,
+    });
+    if (didMove) moved += 1;
   }
   return moved;
 }
@@ -461,6 +641,7 @@ async function persistRestaurantBill(client, ctx) {
     });
     stockLines.push({
       productId: Math.trunc(productId),
+      salesChildId,
       qty: signedQty,
       unitCost,
       unitPrice,
@@ -480,6 +661,7 @@ async function persistRestaurantBill(client, ctx) {
     salesId,
     lines: stockLines,
     createdBy: auditBy,
+    staffId: staffPk,
   });
 
   let payerNo = 0;

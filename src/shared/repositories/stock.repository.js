@@ -56,16 +56,24 @@ export async function applyStockMovement(client, {
   transactionType, transactionId,
   qty, // signed: negative = outward (sale), positive = inward (purchase)
   unitCost, unitPrice, createdBy,
+  requireInventoryRow = false,
 }) {
   const currentQty = await getStockQty(client, companyId, branchId, productId);
-  const balanceQty = Math.round((currentQty + qty) * 100) / 100;
+  // 4 decimals matches qty_on_hand / balance_qty. 2 decimals hides a 5 ml
+  // recipe deduction (99.995 rounds back to 100.00).
+  const balanceQty = Math.round((currentQty + qty) * 10000) / 10000;
   const productLogId = await nextProductLogId(client, companyId);
   await insertProductLogEntry(client, {
     companyId, branchId, productLogId, productId,
     transactionType, transactionId,
     qty, balanceQty, unitCost, unitPrice, createdBy,
   });
-  await adjustQtyOnHand(client, companyId, branchId, productId, qty);
+  const inventoryRows = await adjustQtyOnHand(client, companyId, branchId, productId, qty);
+  if (requireInventoryRow && inventoryRows < 1) {
+    const err = new Error('NO_INVENTORY_ROW');
+    err.code = 'NO_INVENTORY_ROW';
+    throw err;
+  }
   return balanceQty;
 }
 

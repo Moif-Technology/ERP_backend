@@ -47,9 +47,10 @@ function isRawMaterial(productType) {
   return String(productType || '').trim().toUpperCase() === 'RAW MATERIAL';
 }
 
-function isNormal(productType) {
-  return String(productType || '').trim().toUpperCase() === 'NORMAL';
+function blockedIngredient(productType) {
+  return !isRawMaterial(productType);
 }
+
 
 export async function searchProducts(pool, authStaff, query) {
   const { companyId, branchId } = scope(authStaff);
@@ -87,18 +88,27 @@ function mapLine(row) {
   const unit = String(row.unit_name || 'PCS').toUpperCase();
   const storedQty = Number(row.recipe_qty) || 0;
   const enteredQty = enteredQtyFromStored(storedQty, unit);
+  // RecipiePopulation: line cost is the raw material's current average cost × stored qty.
+  const averageCost = row.average_cost != null && row.average_cost !== ''
+    ? Number(row.average_cost)
+    : null;
+  const liveCost = averageCost != null && Number.isFinite(averageCost)
+    ? averageCost * storedQty
+    : Number(row.raw_material_cost);
   return {
     rawProductId: Number(row.raw_material_id),
     rawUniqueId: row.raw_material_unique_id != null ? Number(row.raw_material_unique_id) : Number(row.raw_material_id),
     barcode: row.barcode || '',
-    productName: row.short_name || row.product_name || '',
+    productName: row.product_name || row.short_name || '',
+    shortName: row.short_name || '',
     packDescription: row.pack_description || '',
     packQty: row.pack_qty != null ? Number(row.pack_qty) : 1,
+    averageCost: averageCost != null && Number.isFinite(averageCost) ? averageCost : 0,
     unit,
     storedQty,
     enteredQty,
     qtyDisplay: `${formatQty(enteredQty)}(${unit})`,
-    lineCost: roundMoney(row.raw_material_cost),
+    lineCost: roundMoney(liveCost),
   };
 }
 
@@ -109,9 +119,10 @@ export async function getRecipe(pool, authStaff, finishedProductId) {
   const finished = await repo.getProductForRecipe(pool, companyId, branchId, productId);
   if (!finished) fail('Finished product not found', 404);
   if (isRawMaterial(finished.product_type)) fail('Finished product cannot be a raw material');
-  const lines = await repo.listRecipeLines(pool, companyId, branchId, productId);
-  const remarks = lines.length ? (lines[lines.length - 1].remarks || '') : '';
-  const unitCostTotal = roundMoney(lines.reduce((sum, row) => sum + Number(row.raw_material_cost || 0), 0));
+  const rows = await repo.listRecipeLines(pool, companyId, branchId, productId);
+  const lines = rows.map(mapLine);
+  const remarks = rows.length ? (rows[rows.length - 1].remarks || '') : '';
+  const unitCostTotal = roundMoney(lines.reduce((sum, line) => sum + line.lineCost, 0));
   return {
     finishedProductId: productId,
     finishedUniqueId: finished.unique_multi_product_id != null
@@ -123,7 +134,7 @@ export async function getRecipe(pool, authStaff, finishedProductId) {
     productType: finished.product_type || '',
     remarks,
     unitCostTotal,
-    lines: lines.map(mapLine),
+    lines,
   };
 }
 
@@ -154,7 +165,7 @@ export async function saveRecipe(pool, authStaff, finishedProductId, body) {
       if (rawId === productId) fail('Finished product cannot be added as its own raw material');
       const raw = await repo.getProductForRecipe(client, companyId, branchId, rawId);
       if (!raw) fail('Item not found');
-      if (isNormal(raw.product_type)) fail('Normal items cannot be used as recipe raw material');
+      if (blockedIngredient(raw.product_type)) fail('Select a raw material');
       const amounts = recipeLineAmounts(raw.average_cost, line.enteredQty ?? line.qty, line.unit);
       const sentCost = line.lineCost != null && line.lineCost !== '' ? Number(line.lineCost) : null;
       const lineCost = sentCost != null && Number.isFinite(sentCost)

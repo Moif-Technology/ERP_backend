@@ -1,10 +1,19 @@
 const PRODUCT_COLS = `m.product_id, m.product_code, m.barcode, m.product_name, m.short_name,
   m.product_type, m.pack_qty, m.pack_description, m.unit_name`;
 
+/** Contains match: LIKE '%text%' (not a prefix match). */
+function containsPattern(text) {
+  const escaped = String(text).trim().toLowerCase().replace(/[\\%_]/g, (ch) => `\\${ch}`);
+  return `%${escaped}%`;
+}
+
 function roleFilter(role) {
   const type = `UPPER(TRIM(COALESCE(m.product_type, '')))`;
+  // Finished product: VB ProductType <> 'RAW MATERIAL'.
   if (role === 'finished') return `${type} <> 'RAW MATERIAL'`;
-  if (role === 'raw') return `${type} = 'RAW MATERIAL'`;
+  // Ingredients: VB ProductType = 'RAW MATERIAL' only.
+  // A wider list (food, stock, and so on) fills the 200-row cap and hides the raw materials.
+  if (role === 'raw' || role === 'ingredient') return `${type} = 'RAW MATERIAL'`;
   return `${type} <> 'NORMAL'`;
 }
 
@@ -22,13 +31,16 @@ export async function searchProducts(client, { companyId, branchId, role, barcod
       const p = `$${params.length}`;
       extra.push(`(LOWER(COALESCE(m.short_name, '')) = ${p} OR LOWER(COALESCE(m.product_name, '')) = ${p})`);
     } else {
-      params.push(`${text.toLowerCase()}%`);
+      // Finished product search is a contains match (%text%). Raw material stays a prefix match.
+      const pattern = role === 'finished' ? containsPattern(text) : `${text.toLowerCase()}%`;
+      params.push(pattern);
       const p = `$${params.length}`;
+      const escapeSql = role === 'finished' ? ` ESCAPE '\\'` : '';
       extra.push(`(
-        LOWER(COALESCE(m.product_name, '')) LIKE ${p}
-        OR LOWER(COALESCE(m.short_name, '')) LIKE ${p}
-        OR LOWER(COALESCE(m.barcode, '')) LIKE ${p}
-        OR LOWER(COALESCE(m.product_code, '')) LIKE ${p}
+        LOWER(COALESCE(m.product_name, '')) LIKE ${p}${escapeSql}
+        OR LOWER(COALESCE(m.short_name, '')) LIKE ${p}${escapeSql}
+        OR LOWER(COALESCE(m.barcode, '')) LIKE ${p}${escapeSql}
+        OR LOWER(COALESCE(m.product_code, '')) LIKE ${p}${escapeSql}
       )`);
     }
   }
@@ -45,7 +57,7 @@ export async function searchProducts(client, { companyId, branchId, role, barcod
        AND i.record_status = 'ACTIVE'
        AND ${extra.join(' AND ')}
      ORDER BY m.product_name ASC
-     LIMIT 50`,
+     LIMIT 200`,
     params,
   );
   return rows;
@@ -73,13 +85,13 @@ export async function listRecipes(client, companyId, branchId, { search, barcode
   const params = [companyId, branchId];
   const extra = [];
   if (barcode) {
-    params.push(`${String(barcode).trim().toLowerCase()}%`);
-    extra.push(`LOWER(COALESCE(m.barcode, '')) LIKE $${params.length}`);
+    params.push(containsPattern(barcode));
+    extra.push(`LOWER(COALESCE(m.barcode, '')) LIKE $${params.length} ESCAPE '\\'`);
   }
   if (search) {
-    params.push(`${String(search).trim().toLowerCase()}%`);
+    params.push(containsPattern(search));
     const p = `$${params.length}`;
-    extra.push(`(LOWER(COALESCE(m.product_name, '')) LIKE ${p} OR LOWER(COALESCE(m.short_name, '')) LIKE ${p})`);
+    extra.push(`(LOWER(COALESCE(m.product_name, '')) LIKE ${p} ESCAPE '\\' OR LOWER(COALESCE(m.short_name, '')) LIKE ${p} ESCAPE '\\')`);
   }
   const where = extra.length ? `AND ${extra.join(' AND ')}` : '';
   const { rows } = await client.query(
@@ -110,10 +122,16 @@ export async function listRecipeLines(client, companyId, branchId, finishedProdu
             r.raw_material_id, r.raw_material_unique_id, r.recipe_qty, r.unit_name,
             r.remarks, r.raw_material_cost,
             m.barcode, m.product_name, m.short_name, m.pack_qty, m.pack_description,
-            m.product_type
+            m.product_type,
+            i.average_cost
      FROM core.recipe_detail r
      INNER JOIN core.product_master m
        ON m.company_id = r.company_id AND m.product_id = r.raw_material_id
+     LEFT JOIN core.product_inventory i
+       ON i.company_id = r.company_id
+      AND i.branch_id = r.branch_id
+      AND i.product_id = r.raw_material_id
+      AND i.record_status = 'ACTIVE'
      WHERE r.company_id = $1
        AND r.branch_id = $2
        AND r.finished_product_id = $3

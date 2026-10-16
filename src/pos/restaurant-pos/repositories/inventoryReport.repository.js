@@ -140,7 +140,10 @@ function catalogueGroupSql(filters, params, catalogueGroupIds) {
   const extra = [];
   if (Array.isArray(catalogueGroupIds) && catalogueGroupIds.length > 0) {
     params.push(catalogueGroupIds);
-    extra.push(`m.group_id = ANY($${params.length}::bigint[])`);
+    extra.push(`(
+      m.group_id = ANY($${params.length}::bigint[])
+      OR UPPER(TRIM(COALESCE(m.product_type, ''))) = 'RAW MATERIAL'
+    )`);
   }
   const userFilters = filterSql(filters, params);
   if (extra.length) {
@@ -272,7 +275,10 @@ function nameFilterSql(filters, params) {
 function catalogueOnlySql(params, catalogueGroupIds) {
   if (!Array.isArray(catalogueGroupIds) || catalogueGroupIds.length < 1) return '';
   params.push(catalogueGroupIds);
-  return `AND m.group_id = ANY($${params.length}::bigint[])`;
+  return `AND (
+    m.group_id = ANY($${params.length}::bigint[])
+    OR UPPER(TRIM(COALESCE(m.product_type, ''))) = 'RAW MATERIAL'
+  )`;
 }
 
 /**
