@@ -48,7 +48,7 @@ function mergeSettings(definitions, storedJson) {
     if (legacy != null) result.is_table_popup = { value: legacy, value_type: 'number' };
   }
   // Include saved company-detail keys even if definitions were not seeded yet.
-  for (const key of repo.RECEIPT_SETTING_KEYS) {
+  for (const key of [...repo.RECEIPT_SETTING_KEYS, 'vat_enabled']) {
     if (result[key]) continue;
     if (Object.prototype.hasOwnProperty.call(stored, key)) {
       result[key] = { value: stored[key], value_type: 'text' };
@@ -105,6 +105,8 @@ function mapToFlutterPayload(merged) {
     heading6Counter: str('heading6_counter'),
     heading7Counter: str('heading7_counter'),
     taxRegistrationNo: str('tax_registration_no'),
+    // Never saved → fall back to "on if a TRN exists" so old setups keep printing it.
+    vatEnabled: num('vat_enabled') ?? (str('tax_registration_no') ? 1 : 0),
     dummyBillName: str('dummy_bill_name'),
   };
 }
@@ -158,6 +160,13 @@ export async function loadParametersPayload(companyId, branchId = null, stationI
         payload.IsTablePopup = tablePopup;
         payload.is_table_popup = tablePopup;
       }
+    }
+
+    // VAT registration is tenant-wide and owned by core.company_master (backoffice Company Profile).
+    const vat = await repo.getCompanyVat(client, cid);
+    if (vat) {
+      payload.taxRegistrationNo = vat.vat_trn || '';
+      payload.vatEnabled = vat.vat_enabled ? 1 : 0;
     }
 
     return payload;
@@ -257,10 +266,23 @@ export async function updateCompanyDetails(companyId, body, branchId = null, sta
     tax_registration_no: String(body?.taxRegNo ?? ''),
   };
 
+  if (body?.vatEnabled === true && !patch.tax_registration_no.trim()) {
+    const err = new Error('Tax Reg. No is required when VAT is on');
+    err.status = 400;
+    throw err;
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await repo.upsertCompanyPosValues(client, cid, patch);
+    // vat_enabled is company-wide only (not a per-station receipt row).
+    const companyPatch = body?.vatEnabled == null ? patch : { ...patch, vat_enabled: body.vatEnabled ? '1' : '0' };
+    await repo.upsertCompanyPosValues(client, cid, companyPatch);
+    // Write-through so backoffice Company Profile shows the same VAT state.
+    await repo.updateCompanyVat(
+      client, cid, patch.tax_registration_no.trim(),
+      body?.vatEnabled == null ? null : Boolean(Number(body.vatEnabled) || body.vatEnabled === true),
+    );
 
     const bid = Number(branchId);
     const sid = Number(stationId);

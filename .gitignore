@@ -15,4 +15,7 @@ updates/*
 !updates/salon-pos/
 updates/salon-pos/*
 !updates/salon-pos/manifest.json
+!updates/deyno-pro/
+updates/deyno-pro/*
+!updates/deyno-pro/manifest.json
 .gstack/

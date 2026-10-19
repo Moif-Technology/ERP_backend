@@ -16,3 +16,4 @@ test
 *.md
 .zip
 scripts/*.sql
+updates

@@ -205,6 +205,8 @@ function mapRowToFlutterLine(row) {
     batchNo: String(row.batch_no ?? 0),
     BatchPrintStatus: String(row.batch_print_status ?? 0),
     batchPrintStatus: String(row.batch_print_status ?? 0),
+    PrintCount: String(row.print_count ?? 0),
+    printCount: String(row.print_count ?? 0),
     UniqueProductID: '0',
     ItemCode: '',
     DescriptionArabic: '',
@@ -1195,6 +1197,8 @@ async function splitMoveChildRow(client, {
     kotDisplayStatus: src.kot_display_status || 'PENDING',
     batchNo: Math.trunc(num(src.batch_no, 0)),
     batchPrintStatus: Math.trunc(num(src.batch_print_status, 0)),
+    // a split line was already sent to the kitchen with its source — don't reprint it.
+    printCount: Math.trunc(num(src.print_count, 0)),
     createdBy: auditBy,
     modifiedBy: auditBy,
   });

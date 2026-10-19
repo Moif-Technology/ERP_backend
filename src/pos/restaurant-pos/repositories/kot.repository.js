@@ -421,6 +421,7 @@ export async function insertKotChild(client, row) {
     kotDisplayStatus,
     batchNo,
     batchPrintStatus,
+    printCount = 0,
     createdBy,
     modifiedBy,
   } = row;
@@ -438,9 +439,9 @@ export async function insertKotChild(client, row) {
         tax_1_rate, tax_2_rate, tax_3_rate,
         group_id, modifier, kot_display_status,
         batch_no, batch_print_status,
-        created_by, modified_by, station_id
+        created_by, modified_by, station_id, print_count
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30
       )`,
     [
       companyId,
@@ -472,6 +473,7 @@ export async function insertKotChild(client, row) {
       createdBy,
       modifiedBy,
       stationId ?? branchId,
+      Math.trunc(Number(printCount) || 0),
     ]
   );
 }
@@ -759,7 +761,8 @@ export async function listKotDetailRows(executor, companyId, kotMasterId) {
         kc.kot_display_status,
         kc.android_printed,
         kc.batch_no,
-        kc.batch_print_status
+        kc.batch_print_status,
+        kc.print_count
      FROM ops.kot_master km
      LEFT JOIN LATERAL (
         SELECT a.area_name, a.supply_type
@@ -813,7 +816,7 @@ export async function findKotChild(client, companyId, kotMasterId, kotChildId) {
             tax_1_amount, tax_2_amount, tax_3_amount,
             tax_1_rate, tax_2_rate, tax_3_rate,
             group_id, modifier, kot_display_status,
-            batch_no, batch_print_status
+            batch_no, batch_print_status, print_count
        FROM ops.kot_child
       WHERE company_id = $1 AND kot_master_id = $2 AND kot_child_id = $3
       LIMIT 1`,

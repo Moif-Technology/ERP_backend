@@ -20,6 +20,7 @@ import { Router } from 'express';
 import * as posController from './controllers/pos.controller.js';
 import * as deviceAuthController from './controllers/deviceAuth.controller.js';
 import { kotRouter } from './routes/kot.routes.js';
+import { printerRouter } from './routes/printer.routes.js';
 import { salesRouter } from './routes/sales.routes.js';
 import { counterRouter } from './routes/counter.routes.js';
 import { inventoryRouter } from './routes/inventory.routes.js';
@@ -65,6 +66,7 @@ posRouter.use(requireFeature('pos'));
 
 // KOT (kitchen order tickets) and settle — the core order lifecycle.
 posRouter.use('/kot', kotRouter);
+posRouter.use('/printers', printerRouter);
 posRouter.use('/sales', salesRouter);
 posRouter.use('/counter', counterRouter);
 posRouter.use('/inventory', inventoryRouter);
