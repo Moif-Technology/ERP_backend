@@ -45,3 +45,15 @@ export async function createGrn(req, res) {
     return res.status(500).json({ message: 'Could not save GRN' });
   }
 }
+
+
+export async function cancelGrn(req, res) {
+  try {
+    const result = await grnService.cancelGrn(pool, req.authStaff, req.params.grnId, req.body);
+    return res.json(result);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    console.error(err);
+    return res.status(500).json({ message: 'Could not cancel GRN' });
+  }
+}

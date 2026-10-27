@@ -75,3 +75,23 @@ export async function getCloseDetail(req, res) {
     return handleError(res, err, 'Failed to get counter close detail');
   }
 }
+
+/** GET /api/counter-closes — ERP admin list */
+export async function listCounterClosesAdmin(req, res) {
+  try {
+    const closes = await counterService.listCounterClosesAdmin(req.authStaff, req.query);
+    return res.json({ closes });
+  } catch (err) {
+    return handleError(res, err, 'Failed to list counter closes');
+  }
+}
+
+/** GET /api/counter-closes/:closeId — ERP admin detail */
+export async function getCounterCloseAdmin(req, res) {
+  try {
+    const close = await counterService.getCounterCloseAdmin(req.authStaff, req.params.closeId);
+    return res.json({ close });
+  } catch (err) {
+    return handleError(res, err, 'Failed to get counter close');
+  }
+}

@@ -8,15 +8,16 @@ function parseBoolFlag(v) {
 }
 
 function parseContext(authStaff, query = {}) {
-  // Salon settle writes sales_master.staff_id = staff PK (authStaff.id / JWT sub).
-  // Prefer PK so non-admin close matches pending bills; fall back to business staff_id.
+  // Counter-POS sales write sales_master.staff_id = business staff_id.
+  // Salon settle writes staff PK (authStaff.id) — salon routes set counterStaffKey='pk'.
   const staffPk = Number(authStaff.id ?? authStaff.staff_pk ?? authStaff.staffPk);
   const staffBiz = Number(authStaff.staff_id);
+  const usePk = authStaff.counterStaffKey === 'pk' && Number.isFinite(staffPk) && staffPk > 0;
   return {
     companyId: Number(authStaff.company_id),
     branchId:  Number(authStaff.branch_id),
     stationId: Number(authStaff.station_id ?? authStaff.branch_id),
-    staffId:   Number.isFinite(staffPk) && staffPk > 0 ? staffPk : staffBiz,
+    staffId:   usePk || !(staffBiz > 0) ? staffPk : staffBiz,
     counterNo: Number(query.counterNo ?? 1),
     // Admin counter close: all cashiers' pending on this counter
     allStaff:  parseBoolFlag(query.allStaff ?? query.admin),
@@ -28,11 +29,12 @@ function parseContext(authStaff, query = {}) {
  * Used by both X Report (read-only) and Z Report (before closing).
  */
 async function buildSummary(ctx) {
-  const [sales, cashFlow, receipts, staffRows] = await Promise.all([
+  const [sales, cashFlow, receipts, staffRows, voids] = await Promise.all([
     repo.getPendingSummary(pool, ctx),
     repo.getCashInOutTotals(pool, ctx),
     repo.getCreditReceiptTotals(pool, ctx),
     repo.getPendingStaffBreakdown(pool, ctx),
+    repo.getPendingVoidTotals(pool, ctx),
   ]);
 
   const totalCash    = Number(sales.total_cash);
@@ -49,18 +51,36 @@ async function buildSummary(ctx) {
   const totalTip     = Number(sales.total_tip ?? 0);
   const totalCashTip = Number(sales.total_cash_tip ?? 0);
   const totalCardTip = Number(sales.total_card_tip ?? 0);
+  const cashSales    = Number(sales.cash_sales ?? 0);
+  const cashRefund   = Number(sales.cash_refund ?? 0);
   const cashIn       = Number(cashFlow.cash_in);
   const cashOut      = Number(cashFlow.cash_out);
+  const openingFloat = Number(cashFlow.opening_float ?? 0);
+  const pettyCashIn  = Number(cashFlow.petty_cash_in ?? 0);
+  const pettyCashOut = Number(cashFlow.petty_cash_out ?? 0);
   const creditReceiptCash = Number(receipts.receipt_cash);
   const creditReceiptCard = Number(receipts.receipt_card);
 
-  // Physical cash in drawer = sales cash + cash tips + credit receipts (cash)
-  // + cash in - cash out - refunds. Card tips do not enter the cash drawer.
+  // Physical cash in drawer = opening float + cash sales - cash refunds + cash tips
+  // + credit receipts (cash) + cash in - cash out (petty cash included in in/out).
+  // totalCash is already net of cash refunds (RETURN bills are subtracted in SQL),
+  // so totalRefund (all refund modes) must NOT be subtracted again here.
+  // Card tips do not enter the cash drawer.
   const cashToBeCollected =
-    totalCash + totalCashTip + creditReceiptCash + cashIn - cashOut - totalRefund;
+    openingFloat + totalCash + totalCashTip + creditReceiptCash
+    + cashIn + pettyCashIn - cashOut - pettyCashOut;
 
   return {
     totalCash,
+    cashSales,
+    cashRefund,
+    openingFloat,
+    pettyCashIn,
+    pettyCashOut,
+    billCancelledCount:  Number(voids.bill_cancelled_count ?? 0),
+    billCancelledAmount: Number(voids.bill_cancelled_amount ?? 0),
+    itemCancelledCount:  Number(voids.item_cancelled_count ?? 0),
+    itemCancelledAmount: Number(voids.item_cancelled_amount ?? 0),
     totalCredit,
     totalCard,
     totalOnline,
@@ -111,6 +131,7 @@ function mapCashInOutRow(r) {
   return {
     id:              Number(r.id),
     transactionType: r.transaction_type,
+    category:        r.category ?? 'GENERAL',
     amount:          Number(r.amount),
     remarks:         r.remarks ?? null,
     createdAt:       r.created_at,
@@ -167,6 +188,7 @@ export async function closeCounter(authStaff, body) {
     const billsClosed = await repo.markSalesAsClosed(client, { ...ctx, closeId: id });
     await repo.markCashInOutAsClosed(client, { ...ctx, closeId: id });
     await repo.markCreditReceiptsAsClosed(client, { ...ctx, closeId: id });
+    await repo.markVoidLogAsClosed(client, { ...ctx, closeId: id });
     return { closeId: id, closeNo, billsClosed };
   });
 
@@ -180,19 +202,34 @@ export async function closeCounter(authStaff, body) {
  * POST /counter/cash-in-out  { counterNo, transactionType, amount, remarks }
  * Add a cash in or cash out entry for the current session.
  */
+const CASH_CATEGORIES = new Set(['GENERAL', 'OPENING_FLOAT', 'PETTY_CASH', 'EXPENSE']);
+
 export async function addCashInOut(authStaff, body) {
   const ctx = parseContext(authStaff, body);
   const { transactionType, amount, remarks } = body;
+  const category = String(body.category ?? 'GENERAL').trim().toUpperCase() || 'GENERAL';
 
   if (!['CASH_IN', 'CASH_OUT'].includes(transactionType)) {
     const e = new Error('transactionType must be CASH_IN or CASH_OUT'); e.status = 400; throw e;
+  }
+  if (!CASH_CATEGORIES.has(category)) {
+    const e = new Error(`category must be one of ${[...CASH_CATEGORIES].join(', ')}`); e.status = 400; throw e;
+  }
+  if (category === 'OPENING_FLOAT') {
+    if (transactionType !== 'CASH_IN') {
+      const e = new Error('Opening float must be a CASH_IN'); e.status = 400; throw e;
+    }
+    if (await repo.hasPendingOpeningFloat(pool, ctx)) {
+      const e = new Error('Opening float already entered for this shift'); e.status = 409; throw e;
+    }
   }
   const amt = Number(amount);
   if (!amt || amt <= 0) {
     const e = new Error('amount must be a positive number'); e.status = 400; throw e;
   }
 
-  return repo.insertCashInOut(pool, { ...ctx, transactionType, amount: amt, remarks });
+  const row = await repo.insertCashInOut(pool, { ...ctx, transactionType, amount: amt, remarks, category });
+  return mapCashInOutRow(row);
 }
 
 /**
@@ -233,6 +270,7 @@ export async function getCashInOutReport(authStaff, query) {
     transactions: rows.map(r => ({
       id:              Number(r.id),
       transactionType: r.transaction_type,
+      category:        r.category ?? 'GENERAL',
       amount:          Number(r.amount),
       remarks:         r.remarks ?? null,
       createdAt:       r.created_at,
@@ -291,6 +329,13 @@ function mapCloseRow(r) {
     billCount:         Number(r.bill_count),
     startBillNo:       r.start_bill_no != null ? Number(r.start_bill_no) : null,
     endBillNo:         r.end_bill_no != null ? Number(r.end_bill_no) : null,
+    openingFloat:      Number(r.opening_float ?? 0),
+    pettyCashIn:       Number(r.petty_cash_in ?? 0),
+    pettyCashOut:      Number(r.petty_cash_out ?? 0),
+    billCancelledCount:  Number(r.bill_cancelled_count ?? 0),
+    billCancelledAmount: Number(r.bill_cancelled_amount ?? 0),
+    itemCancelledCount:  Number(r.item_cancelled_count ?? 0),
+    itemCancelledAmount: Number(r.item_cancelled_amount ?? 0),
     ...receipts,
   };
 }
@@ -338,5 +383,82 @@ export async function getCloseDetail(authStaff, closeId) {
     }),
     staffSales: mapStaffSalesRows(staffRows),
     cashInOutList: cashInOutRows.map(mapCashInOutRow),
+  };
+}
+
+function optNum(v) {
+  if (v == null || String(v).trim() === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * ERP admin — GET /api/counter-closes?dateFrom&dateTo&stationId&counterNo&staffId&billNo&limit
+ * billNo ("B-123" or "123") finds the close containing that bill; date filters are ignored then.
+ */
+export async function listCounterClosesAdmin(authStaff, query = {}) {
+  const companyId = Number(authStaff.company_id);
+  const today = new Date().toISOString().slice(0, 10);
+  const billRaw = String(query.billNo ?? '').replace(/^[A-Za-z]+-?/, '').trim();
+  const billNo = billRaw ? optNum(billRaw) : null;
+  if (billRaw && !(billNo > 0)) {
+    const e = new Error('Invalid bill number'); e.status = 400; throw e;
+  }
+  const rows = await repo.listClosesAdmin(pool, {
+    companyId,
+    stationId: optNum(query.stationId ?? query.branchId),
+    counterNo: optNum(query.counterNo),
+    staffId:   optNum(query.staffId),
+    dateFrom:  query.dateFrom || today,
+    dateTo:    query.dateTo   || today,
+    billNo,
+    reportType: query.reportType ? String(query.reportType).toUpperCase().slice(0, 1) : null,
+    limit: query.limit,
+  });
+  return rows.map(mapAdminCloseRow);
+}
+
+/** ERP admin — GET /api/counter-closes/:closeId */
+export async function getCounterCloseAdmin(authStaff, closeId) {
+  const companyId = Number(authStaff.company_id);
+  const cid = Number(closeId);
+  if (!Number.isInteger(cid) || cid < 1) {
+    const e = new Error('Invalid counter close id'); e.status = 400; throw e;
+  }
+  const record = await repo.getCloseByIdWithStaff(pool, { companyId, closeId: cid });
+  if (!record) {
+    const e = new Error('Counter close record not found'); e.status = 404; throw e;
+  }
+  const [receipts, cashInOutRows, staffRows] = await Promise.all([
+    repo.getCreditReceiptTotalsForClose(pool, companyId, cid),
+    repo.getCashInOutByCloseId(pool, { companyId, closeId: cid }),
+    repo.getStaffBreakdownForClose(pool, { companyId, closeId: cid }),
+  ]);
+  return {
+    ...mapAdminCloseRow({
+      ...record,
+      linked_receipt_cash:  receipts.receipt_cash,
+      linked_receipt_card:  receipts.receipt_card,
+      linked_receipt_count: receipts.receipt_count,
+    }),
+    staffSales: mapStaffSalesRows(staffRows),
+    cashInOutList: cashInOutRows.map(mapCashInOutRow),
+  };
+}
+
+/** Close row in the shape the ERP Counter Close List / Edit pages read. */
+function mapAdminCloseRow(r) {
+  const base = mapCloseRow(r);
+  return {
+    ...base,
+    stationId:     r.station_id != null ? Number(r.station_id) : null,
+    branchId:      r.branch_id != null ? Number(r.branch_id) : null,
+    receiptAmount: base.creditReceiptCash + base.creditReceiptCard,
+    remarks:       r.remarks ?? null,
+    postStatus:    r.post_status ?? 'NOT POSTED',
+    // Edit / post / unpost to accounts are not implemented server-side yet.
+    canSave: false,
+    canPost: false,
+    canUnpost: false,
   };
 }

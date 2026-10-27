@@ -75,7 +75,7 @@ async function openSession(res, { staffPk, companyId, sessionType, clientIp }) {
   if (!companyId || staffPk == null) return null;
 
   const limits  = await getSessionLimits(pool, companyId);
-  const current = await countActiveSessions(pool, companyId, sessionType);
+  const current = await countActiveSessions(pool, companyId, sessionType, staffPk);
   const max     = Number(limits?.max_pos_sessions ?? 1);
 
   if (current >= max) {

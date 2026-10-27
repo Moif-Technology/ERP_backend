@@ -4,6 +4,7 @@ import * as kotRepo from '../repositories/kot.repository.js';
 import * as stockRepo from '../../../shared/repositories/stock.repository.js';
 import * as recipeConsumptionRepo from '../repositories/recipeConsumption.repository.js';
 import { auditStaffId } from '../lib/staffAudit.js';
+import * as counterSalesService from '../../counter-pos/services/sales.service.js';
 
 function num(v, d = 0) {
   if (v == null || v === '') return d;
@@ -1007,6 +1008,7 @@ export async function settleDeliveryBoyNight(pool, authStaff, body = {}) {
 
 function mapSaleChild(row, i = 0) {
   return {
+    salesChildId: Number(row.sales_child_id),
     slNo: i + 1,
     productId: Number(row.product_id ?? 0),
     ProductID: Number(row.product_id ?? 0),
@@ -1061,7 +1063,7 @@ export async function getSaleByBillNo(pool, billNoRaw, query, authStaff) {
   if (!Number.isFinite(billNo) || billNo < 1) {
     return { ok: true, items: [] };
   }
-  const stationId = num(query.stationId ?? authStaff.station_id, 0);
+  const stationId = num(authStaff.station_id ?? authStaff.branch_id ?? query.stationId, 0);
   const params = [companyId, billNo];
   let stationSql = '';
   if (stationId > 0) {
@@ -1127,9 +1129,9 @@ export async function listSalesViewer(pool, query, authStaff) {
   const today = new Date().toISOString().slice(0, 10);
   const dateFrom = isoDate(query.dateFrom ?? query.fromDate, today);
   const dateTo = isoDate(query.dateTo ?? query.toDate, today);
-  const stationId = num(query.stationId ?? authStaff.station_id, 0);
+  const stationId = num(authStaff.station_id ?? authStaff.branch_id ?? query.stationId, 0);
   const billNo = num(query.billNo, 0);
-  const counterNo = num(query.counterNo, 0);
+  const counterNo = num(query.counterNo, 1);
   const customerId = num(query.customerId, 0);
   const areaId = num(query.areaId, 0);
   const paymentMode = str(query.paymentMode, 50);
@@ -1160,16 +1162,24 @@ export async function listSalesViewer(pool, query, authStaff) {
     params.push(paymentMode);
     extra.push(`UPPER(COALESCE(sm.payment_mode, '')) = UPPER($${params.length})`);
   }
+  const limit = Math.trunc(Math.min(Math.max(num(query.limit, 500), 1), 500));
+  params.push(limit);
   const extraSql = extra.length ? ` AND ${extra.join(' AND ')}` : '';
   const { rows } = await pool.query(
     `SELECT sm.sales_id, sm.bill_no, sm.counter_no, sm.bill_date, sm.bill_time,
             sm.payment_mode, sm.amount, sm.discount_amount, sm.taxable_amount,
+            sm.customer_id, cu.customer_code, sm.prefix, sm.remarks, sm.post_status,
+            sm.counter_close_status, cc.close_no AS counter_close_no,
             sm.tax_1_amount, sm.subtotal_amount, sm.created_by, sm.area_id,
             COALESCE(cu.customer_name, 'Walk-in') AS customer_name,
             COALESCE(wt.staff_name, '') AS waiter_name
        FROM ops.sales_master sm
        LEFT JOIN biz.customer_master cu
          ON cu.company_id = sm.company_id AND cu.customer_id = sm.customer_id
+       LEFT JOIN ops.counter_close cc
+         ON cc.company_id = sm.company_id
+        AND cc.id = CASE WHEN sm.counter_close_status ~ '^[0-9]+$'
+                         THEN sm.counter_close_status::bigint ELSE NULL END
        LEFT JOIN LATERAL (
          SELECT s.staff_name
            FROM core.staff_master s
@@ -1182,7 +1192,7 @@ export async function listSalesViewer(pool, query, authStaff) {
         AND sm.bill_date::date BETWEEN $2::date AND $3::date
         ${extraSql}
       ORDER BY sm.bill_date DESC, sm.sales_id DESC
-      LIMIT 500`,
+      LIMIT $${params.length}`,
     params,
   );
   return {
@@ -1202,7 +1212,12 @@ export async function listSalesViewer(pool, query, authStaff) {
       paymentMode: r.payment_mode ?? 'CASH',
       PaymentMode: r.payment_mode ?? 'CASH',
       deliveryBoy: r.waiter_name ?? '',
-      amount: Number(r.subtotal_amount ?? r.amount ?? 0),
+      amount: Number(r.amount ?? 0),
+      billNoDisplay: String(r.bill_no ?? ''),
+      customerId: r.customer_id != null ? Number(r.customer_id) : null,
+      customerCode: r.customer_code ?? null,
+      remarks: r.remarks?.trim() || null,
+      counterCloseNo: r.counter_close_no ?? r.counter_close_status ?? 'PENDING',
       Amount: Number(r.subtotal_amount ?? r.amount ?? 0),
       discount: Number(r.discount_amount ?? 0),
       Discount: Number(r.discount_amount ?? 0),
@@ -1214,8 +1229,8 @@ export async function listSalesViewer(pool, query, authStaff) {
       Total: Number(r.amount ?? 0),
       cashierName: r.created_by ?? '',
       CashierName: r.created_by ?? '',
-      postStatus: '',
-      counterCloseStatus: '',
+      postStatus: r.post_status ?? '',
+      counterCloseStatus: r.counter_close_status ?? '',
     })),
   };
 }
@@ -1229,6 +1244,7 @@ export async function getSalesViewerBill(pool, salesIdRaw, query, authStaff) {
     err.status = 400;
     throw err;
   }
+  const receipt = await counterSalesService.getSalesViewerBill(authStaff, salesId);
   const { rows } = await pool.query(
     `SELECT sm.sales_id, sm.bill_no, sm.bill_date, sm.bill_time, sm.payment_mode,
             sm.counter_no, sm.credit_card_no, sm.amount, sm.paid_amount, sm.balance_paid,
@@ -1257,7 +1273,9 @@ export async function getSalesViewerBill(pool, salesIdRaw, query, authStaff) {
   }
   const m = rows[0];
   const items = await loadSaleChildren(pool, companyId, m.sales_id);
+  const receiptItems = new Map(receipt.items.map((item) => [Number(item.salesChildId), item]));
   return {
+    ...receipt,
     salesId: String(m.sales_id),
     billNo: String(m.bill_no ?? ''),
     billDate: m.bill_date,
@@ -1275,6 +1293,90 @@ export async function getSalesViewerBill(pool, salesIdRaw, query, authStaff) {
     amount: Number(m.amount ?? 0),
     paidAmount: Number(m.paid_amount ?? 0),
     balancePaid: Number(m.balance_paid ?? 0),
-    items,
+    items: items.map((item) => {
+      const receiptItem = receiptItems.get(item.salesChildId);
+      return {
+        ...item, ...receiptItem,
+        BarCode: item.BarCode || receiptItem?.productCode || '',
+        barcode: item.barcode || receiptItem?.productCode || '',
+      };
+    }),
+  };
+}
+
+/**
+ * GET /api/pos/sales/reports/area-wise — RptAreaWise. One row per dining area
+ * for this station's restaurant bills, by date range or one counter close no.
+ * Returns are excluded, same as the sales viewer.
+ */
+export async function areaWiseReport(pool, query, authStaff) {
+  const companyId = Number(authStaff.company_id);
+  if (!Number.isFinite(companyId) || companyId < 1) {
+    const err = new Error('company_id required');
+    err.status = 400;
+    throw err;
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const stationId = num(authStaff.station_id ?? authStaff.branch_id ?? query.stationId, 0);
+  // Close no is stored as "S<station>-<n>"; the till types just <n>.
+  const rawClose = str(query.closeNo, 30);
+  const closeNo = /^\d+$/.test(rawClose) && stationId > 0 ? `S${stationId}-${Number(rawClose)}` : rawClose;
+  const areaId = num(query.areaId, 0);
+
+  const params = [companyId];
+  const extra = [];
+  if (closeNo) {
+    params.push(closeNo);
+    extra.push(`sm.counter_close_status = $${params.length}`);
+  } else {
+    params.push(isoDate(query.dateFrom, today), isoDate(query.dateTo, today));
+    extra.push(`sm.bill_date::date BETWEEN $${params.length - 1}::date AND $${params.length}::date`);
+  }
+  if (stationId > 0) {
+    params.push(stationId);
+    extra.push(`sm.station_id = $${params.length}`);
+  }
+  if (areaId > 0) {
+    params.push(areaId);
+    extra.push(`sm.area_id = $${params.length}`);
+  }
+
+  const { rows } = await pool.query(
+    `SELECT sm.area_id,
+            COALESCE(NULLIF(TRIM(am.area_name), ''), 'NO AREA') AS area_name,
+            COUNT(*)::int AS bill_count,
+            COALESCE(SUM(sm.no_of_customers), 0)::int AS covers,
+            COALESCE(SUM(sm.subtotal_amount), 0)::float8 AS subtotal,
+            COALESCE(SUM(sm.discount_amount), 0)::float8 AS discount,
+            COALESCE(SUM(COALESCE(sm.tax_1_amount, 0) + COALESCE(sm.tax_2_amount, 0) + COALESCE(sm.tax_3_amount, 0)), 0)::float8 AS tax,
+            COALESCE(SUM(sm.amount), 0)::float8 AS net
+       FROM ops.sales_master sm
+       LEFT JOIN LATERAL (
+         SELECT a.area_name FROM core.area_master a
+          WHERE a.company_id = sm.company_id AND a.area_id = sm.area_id
+          ORDER BY (a.branch_id = sm.station_id) DESC
+          LIMIT 1
+       ) am ON TRUE
+      WHERE sm.company_id = $1
+        AND sm.entry_source = 'RESTAURANT-POS'
+        AND COALESCE(UPPER(TRIM(sm.transaction_type)), '') NOT IN ('RETURN', 'R', 'SALES RETURN')
+        AND ${extra.join(' AND ')}
+      GROUP BY sm.area_id, am.area_name
+      ORDER BY net DESC, area_name`,
+    params,
+  );
+  const r3 = (n) => Math.round(Number(n || 0) * 1000) / 1000;
+  return {
+    ok: true,
+    rows: rows.map((r) => ({
+      areaId: r.area_id != null ? Number(r.area_id) : null,
+      areaName: r.area_name,
+      billCount: r.bill_count,
+      covers: r.covers,
+      subtotal: r3(r.subtotal),
+      discount: r3(r.discount),
+      tax: r3(r.tax),
+      net: r3(r.net),
+    })),
   };
 }

@@ -238,7 +238,7 @@ function mapMasterRow(row) {
     companyId: Number(row.company_id),
     productCode: row.product_code,
     barcode: emptyToNull(row.barcode),
-    ownRefNo: row.own_ref_no != null ? Number(row.own_ref_no) : null,
+    ownRefNo: row.own_ref_no ?? null,
     productName: row.product_name,
     shortName: emptyToNull(row.short_name),
     specification: emptyToNull(row.specification),
@@ -413,6 +413,39 @@ export async function findMasterByCompanyAndProductCode(client, companyId, produ
        AND record_status = 'ACTIVE'
      LIMIT 1`,
     [companyId, productCode]
+  );
+  return rows[0] ?? null;
+}
+
+/** First barcode (master or pack line) already used by another active product of the company. */
+export async function findBarcodeConflict(client, companyId, barcodes, excludeProductId = null) {
+  const { rows } = await client.query(
+    `SELECT b.barcode, m.product_code
+     FROM (
+       SELECT barcode, product_id FROM core.product_master
+       WHERE company_id = $1 AND record_status = 'ACTIVE'
+       UNION ALL
+       SELECT barcode, product_id FROM core.product_pack_line
+       WHERE company_id = $1 AND record_status = 'ACTIVE'
+     ) b
+     JOIN core.product_master m
+       ON m.company_id = $1 AND m.product_id = b.product_id AND m.record_status = 'ACTIVE'
+     WHERE LOWER(b.barcode) = ANY($2::text[])
+       AND ($3::bigint IS NULL OR b.product_id <> $3)
+     LIMIT 1`,
+    [companyId, barcodes.map((b) => b.toLowerCase()), excludeProductId]
+  );
+  return rows[0] ?? null;
+}
+
+/** Set barcode on an existing master (used when a code shared across branches had none). */
+export async function setMasterBarcode(client, companyId, productId, barcode, modifiedBy) {
+  const { rows } = await client.query(
+    `UPDATE core.product_master
+        SET barcode = $3, modified_by = $4, modified_at = NOW()
+      WHERE company_id = $1 AND product_id = $2
+      RETURNING *`,
+    [companyId, productId, emptyToNull(barcode), modifiedBy]
   );
   return rows[0] ?? null;
 }

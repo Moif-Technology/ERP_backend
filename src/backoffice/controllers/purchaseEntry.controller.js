@@ -145,3 +145,26 @@ export async function unpostPurchase(req, res) {
     return res.status(500).json({ message: err.message || 'Could not unpost purchase' });
   }
 }
+
+export async function cancelPurchase(req, res) {
+  try {
+    const result = await purchaseEntryService.cancelPurchase(
+      pool,
+      req.authStaff,
+      req.params.purchaseId,
+      req.body,
+      req.query,
+    );
+    return res.json(result);
+  } catch (err) {
+    if (err.status) {
+      return res.status(err.status).json({
+        message: err.message,
+        ...(err.code ? { code: err.code } : {}),
+        ...(err.shortages ? { shortages: err.shortages } : {}),
+      });
+    }
+    console.error(err);
+    return res.status(500).json({ message: err.message || 'Could not cancel purchase' });
+  }
+}

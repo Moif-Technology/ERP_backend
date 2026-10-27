@@ -14,7 +14,9 @@ function num(v, d = 0) {
 }
 
 function wantsAllStaff(src) {
-  const v = src.allStaff ?? src.AllStaff;
+  const v = src.allStaff ?? src.AllStaff ?? src.admin;
+  // Preserve Quick's cashier-only default; station-wide readings opt in.
+  if (v == null) return false;
   if (v === false || v === 0 || v === '0' || v === 'false') return false;
   return true;
 }
@@ -66,13 +68,14 @@ function mapWaiters(rows) {
 }
 
 async function buildSummary(pool, ctx) {
-  const [sales, cashFlow, receipts, staffRows, pendingKots, waiterRows] = await Promise.all([
+  const [sales, cashFlow, receipts, staffRows, pendingKots, waiterRows, cashEntries] = await Promise.all([
     repo.getPendingSummary(pool, ctx),
     repo.getCashInOutTotals(pool, ctx),
     repo.getCreditReceiptTotals(pool, ctx),
     repo.getPendingStaffBreakdown(pool, ctx),
     repo.listPendingKots(pool, ctx),
     repo.getPendingWaiterBreakdown(pool, ctx),
+    sharedRepo.getCashInOutList(pool, ctx),
   ]);
   const pendingKotCount = Array.isArray(pendingKots) ? pendingKots.length : 0;
 
@@ -95,13 +98,17 @@ async function buildSummary(pool, ctx) {
 
   // VB: cash + credits received + advance - refund + cash in - cash out
   const cashToBeCollected =
-    totalCash + creditReceiptCash + advanceReceived - totalRefund + cashIn - cashOut;
+    totalCash + num(sales.total_cash_tip) + creditReceiptCash + advanceReceived - totalRefund + cashIn - cashOut;
 
   // VB lblTotalAmount: cash + credit + card + voucher + online + other - refund
   const totalSales =
     totalCash + totalCredit + totalCard + totalVoucher + totalOnline + totalCompliment - totalRefund;
 
   return {
+    cashInOutList: cashEntries.map((r) => ({
+      id: Number(r.id), transactionType: r.transaction_type,
+      amount: num(r.amount), remarks: r.remarks ?? null, createdAt: r.created_at,
+    })),
     totalCash,
     totalCredit,
     totalCard,

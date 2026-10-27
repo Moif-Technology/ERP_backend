@@ -155,9 +155,12 @@ function loadCatalogue() {
     const unit = (cols[9] || 'NOS').trim() || 'NOS';
     const subGroupId = Number(cols[10]) || 0;
     const id = Number(sqlId);
+    // Legacy MoifCore ref goes to Own Ref No.; product code = the menu's own barcode when it has one.
+    const ownRef = `${CODE_PREFIX}${String(id).slice(-5)}`;
     products.push({
       id,
-      code: `${CODE_PREFIX}${String(id).slice(-5)}`,
+      ownRef,
+      code: barcode || ownRef,
       name,
       shortName,
       barcode,
@@ -244,7 +247,7 @@ async function main() {
               modified_by = 'mohabath_seed',
               modified_at = NOW()
         WHERE company_id = $1
-          AND product_code LIKE $2
+          AND (own_ref_no LIKE $2 OR product_code LIKE $2)
           AND COALESCE(is_deleted, FALSE) = FALSE`,
       [COMPANY_ID, `${CODE_PREFIX}%`],
     );
@@ -300,18 +303,19 @@ async function main() {
     for (const p of products) {
       await client.query(
         `INSERT INTO core.product_master (
-           company_id, product_id, product_code, barcode, product_name, short_name,
+           company_id, product_id, product_code, own_ref_no, barcode, product_name, short_name,
            description_arabic, product_type, unit_name, pack_qty, group_id, subgroup_id,
            product_status, record_status, is_deleted,
            created_by, modified_by
          ) VALUES (
-           $1, $2, $3, $4, $5, $6,
+           $1, $2, $3, $12, $4, $5, $6,
            $7, $8, $9, 1, $10, $11,
            'ACTIVE', 'ACTIVE', FALSE,
            'mohabath_seed', 'mohabath_seed'
          )
          ON CONFLICT (company_id, product_id) DO UPDATE
            SET product_code = EXCLUDED.product_code,
+               own_ref_no = EXCLUDED.own_ref_no,
                barcode = EXCLUDED.barcode,
                product_name = EXCLUDED.product_name,
                short_name = EXCLUDED.short_name,
@@ -325,7 +329,7 @@ async function main() {
                is_deleted = FALSE,
                modified_by = 'mohabath_seed',
                modified_at = NOW()`,
-        [COMPANY_ID, p.id, p.code, p.barcode, p.name, p.shortName, p.arabic, p.productType, p.unit, p.g, p.sg],
+        [COMPANY_ID, p.id, p.code, p.barcode, p.name, p.shortName, p.arabic, p.productType, p.unit, p.g, p.sg, p.ownRef],
       );
 
       await client.query(
@@ -360,7 +364,7 @@ async function main() {
          JOIN biz.group_master g
            ON g.company_id = m.company_id AND g.branch_id = $2 AND g.group_id = m.group_id
         WHERE m.company_id = $1
-          AND m.product_code LIKE $3
+          AND m.own_ref_no LIKE $3
           AND m.record_status = 'ACTIVE'
         GROUP BY g.sort_order, g.group_description
         ORDER BY g.sort_order`,

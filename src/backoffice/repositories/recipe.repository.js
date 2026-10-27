@@ -23,13 +23,13 @@ export async function searchProducts(client, { companyId, branchId, role, barcod
 
   if (barcode) {
     params.push(String(barcode).trim());
-    extra.push(`m.barcode = $${params.length}`);
+    extra.push(`(m.barcode = $${params.length} OR LOWER(m.product_code) = LOWER($${params.length}))`);
   } else if (search) {
     const text = String(search).trim();
     if (exact) {
       params.push(text.toLowerCase());
       const p = `$${params.length}`;
-      extra.push(`(LOWER(COALESCE(m.short_name, '')) = ${p} OR LOWER(COALESCE(m.product_name, '')) = ${p})`);
+      extra.push(`(LOWER(COALESCE(m.short_name, '')) = ${p} OR LOWER(COALESCE(m.product_name, '')) = ${p} OR LOWER(COALESCE(m.product_code, '')) = ${p})`);
     } else {
       // Finished product search is a contains match (%text%). Raw material stays a prefix match.
       const pattern = role === 'finished' ? containsPattern(text) : `${text.toLowerCase()}%`;
@@ -86,16 +86,16 @@ export async function listRecipes(client, companyId, branchId, { search, barcode
   const extra = [];
   if (barcode) {
     params.push(containsPattern(barcode));
-    extra.push(`LOWER(COALESCE(m.barcode, '')) LIKE $${params.length} ESCAPE '\\'`);
+    extra.push(`(LOWER(COALESCE(m.barcode, '')) LIKE $${params.length} ESCAPE '\\' OR LOWER(COALESCE(m.product_code, '')) LIKE $${params.length} ESCAPE '\\')`);
   }
   if (search) {
     params.push(containsPattern(search));
     const p = `$${params.length}`;
-    extra.push(`(LOWER(COALESCE(m.product_name, '')) LIKE ${p} ESCAPE '\\' OR LOWER(COALESCE(m.short_name, '')) LIKE ${p} ESCAPE '\\')`);
+    extra.push(`(LOWER(COALESCE(m.product_name, '')) LIKE ${p} ESCAPE '\\' OR LOWER(COALESCE(m.short_name, '')) LIKE ${p} ESCAPE '\\' OR LOWER(COALESCE(m.product_code, '')) LIKE ${p} ESCAPE '\\')`);
   }
   const where = extra.length ? `AND ${extra.join(' AND ')}` : '';
   const { rows } = await client.query(
-    `SELECT m.product_id, m.barcode, m.product_name, m.short_name, m.product_type,
+    `SELECT m.product_id, m.barcode, m.product_code, m.product_name, m.short_name, m.product_type,
             COUNT(*)::int AS line_count,
             COALESCE(SUM(r.raw_material_cost), 0) AS unit_cost_total,
             MAX(r.remarks) AS remarks,
@@ -109,7 +109,7 @@ export async function listRecipes(client, companyId, branchId, { search, barcode
        AND COALESCE(r.is_deleted, FALSE) = FALSE
        AND UPPER(TRIM(COALESCE(m.product_type, ''))) <> 'RAW MATERIAL'
        ${where}
-     GROUP BY m.product_id, m.barcode, m.product_name, m.short_name, m.product_type
+     GROUP BY m.product_id, m.barcode, m.product_code, m.product_name, m.short_name, m.product_type
      ORDER BY m.product_name ASC`,
     params,
   );

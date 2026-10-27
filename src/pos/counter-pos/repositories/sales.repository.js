@@ -52,9 +52,11 @@ export async function insertSalesMaster(client, m) {
   const txType = m.transactionType ?? 'SALE';
   const paid = Number(m.paidAmount ?? 0);
   const net = Number(m.netAmount ?? 0);
-  const cashAmt   = m.cashAmount   != null ? Number(m.cashAmount)   : (m.paymentMode === 'CASH'   ? paid : 0);
-  const creditAmt = m.creditAmount != null ? Number(m.creditAmount) : (m.paymentMode === 'CREDIT' ? paid : 0);
-  const cardAmt   = m.cardAmount   != null ? Number(m.cardAmount)   : (isCreditCardBillMode(m.paymentMode) ? paid : 0);
+  // Tendered cash above the bill is change handed back, not takings: record the bill amount.
+  const settled = Math.min(paid, net);
+  const cashAmt   = m.cashAmount   != null ? Number(m.cashAmount)   : (m.paymentMode === 'CASH'   ? settled : 0);
+  const creditAmt = m.creditAmount != null ? Number(m.creditAmount) : (m.paymentMode === 'CREDIT' ? net : 0);
+  const cardAmt   = m.cardAmount   != null ? Number(m.cardAmount)   : (isCreditCardBillMode(m.paymentMode) ? settled : 0);
   const osBal = resolveSalesOutstandingBalance(m);
   const stationId = m.stationId ?? m.branchId;
   try {
@@ -513,23 +515,41 @@ export async function getStaffWiseSales(pool, { companyId, stationId, counterNo,
     `SELECT
        sm.staff_id,
        s.staff_name,
-       COUNT(*)  FILTER (WHERE sm.amount > 0)::INT                                       AS bill_count,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN sm.amount              ELSE 0 END), 0)  AS gross_amount,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN sm.discount_amount     ELSE 0 END), 0)  AS total_discount,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN sm.round_off_adjustment ELSE 0 END), 0) AS total_round_off,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN sm.amount - sm.discount_amount + sm.round_off_adjustment ELSE 0 END), 0) AS net_amount,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 AND sm.payment_mode = 'CASH'   THEN sm.amount ELSE 0 END), 0) AS total_cash,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 AND UPPER(COALESCE(sm.payment_mode, '')) IN ('CARD', 'CREDITCARD', 'CREDIT CARD') THEN sm.amount ELSE 0 END), 0) AS total_card,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 AND sm.payment_mode = 'CREDIT' THEN sm.amount ELSE 0 END), 0) AS total_credit
-     FROM ops.sales_master sm
+       COUNT(*)  FILTER (WHERE sm.amount > 0 AND NOT sm.is_return)::INT                  AS bill_count,
+       COUNT(*)  FILTER (WHERE sm.amount > 0 AND sm.is_return)::INT                      AS return_count,
+       -- gross = before bill discount / round off; amount is the net bill total
+       COALESCE(SUM(CASE WHEN sm.amount > 0 AND NOT sm.is_return THEN sm.amount + sm.discount_amount - sm.round_off_adjustment ELSE 0 END), 0) AS gross_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 AND NOT sm.is_return THEN sm.discount_amount     ELSE 0 END), 0)  AS total_discount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 AND NOT sm.is_return THEN sm.round_off_adjustment ELSE 0 END), 0) AS total_round_off,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 AND NOT sm.is_return THEN sm.amount ELSE 0 END), 0) AS sales_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 AND sm.is_return THEN sm.amount ELSE 0 END), 0)     AS return_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN sm.sign * sm.amount ELSE 0 END), 0)             AS net_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN sm.sign * sm.cash_amt   ELSE 0 END), 0) AS total_cash,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN sm.sign * sm.card_amt   ELSE 0 END), 0) AS total_card,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN sm.sign * sm.credit_amt ELSE 0 END), 0) AS total_credit
+     FROM (
+       SELECT x.*,
+              (COALESCE(x.transaction_type, '') = 'RETURN') AS is_return,
+              CASE WHEN COALESCE(x.transaction_type, '') = 'RETURN' THEN -1 ELSE 1 END AS sign,
+              CASE WHEN UPPER(COALESCE(x.payment_mode, '')) = 'CASH' THEN x.amount
+                   WHEN UPPER(COALESCE(x.payment_mode, '')) IN ('MULTIPAYMENT', 'MULTI') THEN COALESCE(x.cash_amount, 0)
+                   ELSE 0 END AS cash_amt,
+              CASE WHEN UPPER(COALESCE(x.payment_mode, '')) IN ('CARD', 'CREDITCARD', 'CREDIT CARD') THEN x.amount
+                   WHEN UPPER(COALESCE(x.payment_mode, '')) IN ('MULTIPAYMENT', 'MULTI') THEN COALESCE(x.credit_card_amount, 0)
+                   ELSE 0 END AS card_amt,
+              CASE WHEN UPPER(COALESCE(x.payment_mode, '')) = 'CREDIT' THEN x.amount
+                   WHEN UPPER(COALESCE(x.payment_mode, '')) IN ('MULTIPAYMENT', 'MULTI') THEN COALESCE(x.credit_amount, 0)
+                   ELSE 0 END AS credit_amt
+         FROM ops.sales_master x
+     ) sm
      LEFT JOIN core.staff_master s ON s.staff_id = sm.staff_id AND s.company_id = sm.company_id
      WHERE sm.company_id  = $1
        AND sm.station_id  = $2
        AND sm.counter_no  = $3
        AND sm.post_status = 'POSTED'
        AND COALESCE(sm.hold_status, '') NOT IN ('HOLD', 'DELIVERY', 'CANCELLED')
-       AND sm.bill_date >= $4::date
-       AND sm.bill_date <= $5::date
+       AND sm.bill_date::date >= $4::date
+       AND sm.bill_date::date <= $5::date
      GROUP BY sm.staff_id, s.staff_name
      ORDER BY net_amount DESC`,
     [companyId, stationId, counterNo, dateFrom, dateTo],
@@ -624,6 +644,11 @@ export async function listPostedSales(pool, {
        sm.prefix,
        sm.remarks,
        sm.counter_close_status,
+       sm.transaction_type,
+       sm.post_status,
+       sm.cash_amount,
+       sm.credit_card_amount,
+       sm.credit_amount,
        cm.customer_id,
        cm.customer_code,
        cm.customer_name,
@@ -640,7 +665,7 @@ export async function listPostedSales(pool, {
      WHERE sm.company_id = $1
        AND sm.station_id = $2
        AND sm.counter_no = $3
-       AND sm.post_status = 'POSTED'
+       AND sm.post_status IN ('POSTED', 'CANCELLED')
        AND COALESCE(sm.hold_status, '') NOT IN ('HOLD', 'DELIVERY', 'CANCELLED')
        AND sm.bill_date::date >= $4::date
        AND sm.bill_date::date <= $5::date
@@ -679,6 +704,10 @@ export async function getPostedBillDetail(pool, companyId, stationId, salesId) {
        sm.remarks,
        sm.transaction_type,
        sm.counter_close_status,
+       sm.post_status,
+       sm.staff_id AS bill_staff_id,
+       sm.station_id,
+       sm.branch_id,
        cm.customer_id,
        cm.customer_code,
        cm.customer_name,
@@ -710,14 +739,25 @@ export async function getPostedBillDetail(pool, companyId, stationId, salesId) {
      WHERE sm.company_id = $1
        AND sm.station_id = $2
        AND sm.sales_id   = $3
-       AND sm.post_status = 'POSTED'
+       AND sm.post_status IN ('POSTED', 'CANCELLED')
        AND COALESCE(sm.hold_status, '') NOT IN ('HOLD', 'DELIVERY', 'CANCELLED')`,
     [companyId, stationId, salesId],
   );
   if (!masters[0]) return null;
 
+  // Void audit (migration 136) — optional so older databases still load bills.
+  try {
+    const { rows: v } = await pool.query(
+      `SELECT void_by, void_at, void_reason FROM ops.sales_master WHERE company_id = $1 AND sales_id = $2`,
+      [companyId, salesId],
+    );
+    Object.assign(masters[0], v[0] ?? {});
+  } catch (e) {
+    if (e.code !== '42703') throw e;
+  }
+
   const { rows: items } = await pool.query(
-    `SELECT sc.sales_child_id, sc.product_id, sc.product_code,
+    `SELECT sc.sales_child_id, sc.product_id, sc.product_code, sc.group_id,
             sc.short_description, sc.qty, sc.unit_price, sc.discount_amount,
             sc.subtotal_amount, sc.tax_1_amount, sc.tax_1_rate, sc.line_total,
             COALESCE(pm.description_arabic, gm.group_description_arabic) AS description_arabic
@@ -731,13 +771,139 @@ export async function getPostedBillDetail(pool, companyId, stationId, salesId) {
     [companyId, salesId],
   );
 
-  const { rows: splits } = await pool.query(
-    `SELECT payer_no, pay_mode, bill_amount, tip_amount, ref_no
+  const splitSql = `SELECT payer_no, pay_mode, bill_amount, tip_amount, ref_no
      FROM ops.sales_payment_split
      WHERE company_id = $1 AND sales_id = $2
-     ORDER BY payer_no`,
-    [companyId, salesId],
-  );
+       AND COALESCE(is_cancelled, false) = false
+     ORDER BY payer_no`;
+  let splits;
+  try {
+    ({ rows: splits } = await pool.query(splitSql, [companyId, salesId]));
+  } catch (e) {
+    if (e.code !== '42703') throw e;
+    ({ rows: splits } = await pool.query(
+      splitSql.replace('AND COALESCE(is_cancelled, false) = false', ''),
+      [companyId, salesId],
+    ));
+  }
 
   return { master: masters[0], items, splits };
+}
+
+/* ── Bill / item cancellation (void) ─────────────────────────────────── */
+
+/** Lock a posted counter bill for void. Returns the header row or null. */
+export async function lockPostedBillForVoid(client, companyId, stationId, salesId) {
+  const { rows } = await client.query(
+    `SELECT sales_id, branch_id, station_id, counter_no, staff_id, payment_mode, transaction_type,
+            amount, subtotal_amount, discount_amount, taxable_amount, tax_1_amount,
+            round_off_adjustment, paid_amount, balance_paid,
+            cash_amount, credit_card_amount, credit_amount, outstanding_balance,
+            customer_id, post_status, hold_status, counter_close_status
+       FROM ops.sales_master
+      WHERE company_id = $1 AND station_id = $2 AND sales_id = $3
+      FOR UPDATE`,
+    [companyId, stationId, salesId],
+  );
+  return rows[0] ?? null;
+}
+
+export async function getBillLinesForVoid(client, companyId, salesId) {
+  const { rows } = await client.query(
+    `SELECT sales_child_id, product_id, product_code, short_description, group_id,
+            qty, unit_price, subtotal_amount, tax_1_amount, discount_amount, line_total
+       FROM ops.sales_child
+      WHERE company_id = $1 AND sales_id = $2
+      ORDER BY sales_child_id`,
+    [companyId, salesId],
+  );
+  return rows;
+}
+
+/** Full void: keep the row for audit, drop it from every POSTED-only total. */
+export async function markBillVoided(client, { companyId, salesId, voidBy, reason }) {
+  await client.query(
+    `UPDATE ops.sales_master
+        SET post_status = 'CANCELLED', record_status = 'CANCELLED',
+            outstanding_balance = 0,
+            void_by = $3, void_at = NOW(), void_reason = $4,
+            modified_at = NOW(), modified_by = $3
+      WHERE company_id = $1 AND sales_id = $2`,
+    [companyId, salesId, voidBy, reason],
+  );
+  await client.query(
+    `UPDATE ops.sales_child SET post_status = 'CANCELLED'
+      WHERE company_id = $1 AND sales_id = $2`,
+    [companyId, salesId],
+  );
+}
+
+/** Remove one line from a posted bill and write the reduced header totals. */
+export async function applyItemVoid(client, { companyId, salesId, salesChildId, header, voidBy, reason }) {
+  await client.query(
+    `DELETE FROM ops.sales_child WHERE company_id = $1 AND sales_id = $2 AND sales_child_id = $3`,
+    [companyId, salesId, salesChildId],
+  );
+  await client.query(
+    `UPDATE ops.sales_master
+        SET amount = $3, subtotal_amount = $4, discount_amount = $5, taxable_amount = $6,
+            tax_1_amount = $7, round_off_adjustment = $8, paid_amount = $9,
+            cash_amount = $10, credit_card_amount = $11,
+            void_by = $12, void_at = NOW(), void_reason = $13,
+            modified_at = NOW(), modified_by = $12
+      WHERE company_id = $1 AND sales_id = $2`,
+    [
+      companyId, salesId,
+      header.amount, header.subtotal, header.discount, header.taxable,
+      header.tax, header.roundOff, header.paid,
+      header.cash, header.card,
+      voidBy, reason,
+    ],
+  );
+}
+
+/** Card split row follows the reduced bill amount after an item void. */
+export async function reduceCardSplit(client, { companyId, salesId, newAmount }) {
+  await client.query(
+    `UPDATE ops.sales_payment_split SET bill_amount = $3
+      WHERE company_id = $1 AND sales_id = $2`,
+    [companyId, salesId, newAmount],
+  );
+}
+
+/** Cancel split rows of a voided bill (is_cancelled may predate this DB → delete instead). */
+export async function cancelPaymentSplits(client, companyId, salesId) {
+  try {
+    await client.query('SAVEPOINT void_splits');
+    await client.query(
+      `UPDATE ops.sales_payment_split SET is_cancelled = true WHERE company_id = $1 AND sales_id = $2`,
+      [companyId, salesId],
+    );
+    await client.query('RELEASE SAVEPOINT void_splits');
+  } catch (e) {
+    await client.query('ROLLBACK TO SAVEPOINT void_splits').catch(() => {});
+    if (e.code !== '42703') throw e;
+    await client.query(
+      `DELETE FROM ops.sales_payment_split WHERE company_id = $1 AND sales_id = $2`,
+      [companyId, salesId],
+    );
+  }
+}
+
+export async function insertVoidLog(client, v) {
+  await client.query(
+    `INSERT INTO ops.sales_void_log (
+       company_id, branch_id, station_id, counter_no, sales_id, bill_staff_id,
+       void_type, sales_child_id, product_id, product_code, description,
+       qty, unit_price, line_total, amount, payment_mode,
+       void_reason, void_by, void_by_staff_id
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+    [
+      v.companyId, v.branchId, v.stationId, v.counterNo, v.salesId, v.billStaffId,
+      v.voidType, v.salesChildId ?? null, v.productId ?? null, v.productCode ?? null,
+      v.description != null ? String(v.description).slice(0, 100) : null,
+      v.qty ?? null, v.unitPrice ?? null, v.lineTotal ?? null, v.amount, v.paymentMode ?? null,
+      v.reason, v.voidBy, v.voidByStaffId ?? null,
+    ],
+  );
 }

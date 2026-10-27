@@ -210,7 +210,7 @@ export async function listPurchaseLines(pool, companyId, purchaseId) {
             pc.qty, pc.foc_qty, pc.unit_cost, pc.unit_name,
             pc.discount_percentage, pc.discount_amount, pc.line_amount,
             pc.subtotal_amount, pc.input_tax_1_amount, pc.input_tax_1_rate,
-            pm.product_code, pm.short_name, pm.product_name
+            pm.product_code, pm.barcode, pm.short_name, pm.product_name
      FROM ops.purchase_child pc
      LEFT JOIN core.product_master pm
        ON pm.company_id = pc.company_id AND pm.product_id = pc.product_id

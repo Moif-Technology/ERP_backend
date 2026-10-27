@@ -47,7 +47,9 @@ export async function getSummary(pool, { companyId, branchId, dateFrom, dateTo }
     one(pool, `
       SELECT
         COUNT(*)::int AS total_devices,
-        COUNT(*) FILTER (WHERE record_status = 'ACTIVE')::int AS active_devices
+        COUNT(*) FILTER (WHERE record_status = 'ACTIVE')::int AS active_devices,
+        (SELECT COUNT(*)::int FROM core.station_master
+          WHERE company_id = $1 AND station_type = 'COUNTER_POS' AND is_deleted = FALSE) AS counter_stations
       FROM core.pos_device_enrollment
       WHERE company_id = $1
     `, [companyId]),
@@ -250,4 +252,68 @@ export async function getTopProducts(pool, { companyId, branchId, dateFrom, date
     LIMIT ${limitParam}
   `, params);
   return rows;
+}
+
+/**
+ * Live inventory status across stores: per-branch stock value / qty / low & zero
+ * stock counts, plus today's sales per branch × station (net of returns).
+ * `day` is the caller's local calendar date (YYYY-MM-DD).
+ */
+export async function getLiveStoreStatus(pool, { companyId, day }) {
+  const [stockRes, salesRes] = await Promise.all([
+    pool.query(`
+      SELECT
+        i.branch_id,
+        COALESCE(bm.branch_name, 'Branch ' || i.branch_id::text) AS branch_name,
+        COUNT(*)::int AS products,
+        COALESCE(SUM(i.qty_on_hand), 0)::numeric AS stock_qty,
+        COALESCE(SUM(i.qty_on_hand * COALESCE(NULLIF(i.average_cost, 0), i.last_purchase_cost, 0)), 0)::numeric AS stock_value,
+        COUNT(*) FILTER (WHERE COALESCE(i.qty_on_hand, 0) <= 0)::int AS zero_stock,
+        COUNT(*) FILTER (
+          WHERE COALESCE(i.reorder_level, 0) > 0
+            AND COALESCE(i.qty_on_hand, 0) > 0
+            AND i.qty_on_hand <= i.reorder_level
+        )::int AS low_stock
+      FROM core.product_inventory i
+      JOIN core.product_master pm
+        ON pm.company_id = i.company_id AND pm.product_id = i.product_id
+      LEFT JOIN core.branch_master bm
+        ON bm.company_id = i.company_id AND bm.branch_id = i.branch_id
+      WHERE i.company_id = $1
+        AND COALESCE(i.record_status, 'ACTIVE') = 'ACTIVE'
+        AND COALESCE(pm.record_status, 'ACTIVE') = 'ACTIVE'
+        AND UPPER(REPLACE(TRIM(COALESCE(pm.stock_type, '')), '-', ' ')) <> 'NON INVENTORY'
+      GROUP BY i.branch_id, bm.branch_name
+      ORDER BY i.branch_id
+    `, [companyId]),
+    pool.query(`
+      SELECT
+        sm.branch_id,
+        sm.station_id,
+        COALESCE(bm.branch_name, 'Branch ' || sm.branch_id::text) AS branch_name,
+        COALESCE(stn.station_name, CASE WHEN sm.station_id IS NULL THEN 'Back Office' ELSE 'Station ' || sm.station_id::text END) AS station_name,
+        COUNT(*) FILTER (WHERE UPPER(TRIM(COALESCE(sm.transaction_type, ''))) NOT IN ('RETURN', 'SALES RETURN', 'SALES_RETURN'))::int AS bills,
+        COALESCE(SUM(CASE
+          WHEN UPPER(TRIM(COALESCE(sm.transaction_type, ''))) IN ('RETURN', 'SALES RETURN', 'SALES_RETURN') THEN -ABS(sm.amount)
+          ELSE ABS(sm.amount) END), 0)::numeric AS net_sales,
+        MAX(sm.bill_date) AS last_bill_at
+      FROM ops.sales_master sm
+      LEFT JOIN core.branch_master bm
+        ON bm.company_id = sm.company_id AND bm.branch_id = sm.branch_id
+      LEFT JOIN LATERAL (
+        SELECT st.station_name FROM core.station_master st
+         WHERE st.company_id = sm.company_id AND st.station_id = sm.station_id
+         LIMIT 1
+      ) stn ON TRUE
+      WHERE sm.company_id = $1
+        AND sm.bill_date >= $2::date
+        AND sm.bill_date < ($2::date + interval '1 day')
+        AND UPPER(COALESCE(sm.record_status, 'ACTIVE')) <> 'CANCELLED'
+        AND UPPER(COALESCE(sm.hold_status, '')) NOT IN ('HOLD', 'DELIVERY', 'CANCELLED')
+        AND UPPER(COALESCE(sm.post_status, '')) <> 'CANCELLED'
+      GROUP BY sm.branch_id, sm.station_id, bm.branch_name, stn.station_name
+      ORDER BY sm.branch_id, sm.station_id NULLS FIRST
+    `, [companyId, day]),
+  ]);
+  return { stock: stockRes.rows, sales: salesRes.rows };
 }

@@ -52,6 +52,25 @@ export async function getCompanyPosValues(client, companyId) {
   return rows[0]?.settings ?? {};
 }
 
+/** Tenant VAT registration — source of truth shared with backoffice Company Profile. */
+export async function getCompanyVat(client, companyId) {
+  const { rows } = await client.query(
+    `SELECT vat_trn, vat_enabled FROM core.company_master WHERE company_id = $1`,
+    [companyId]
+  );
+  return rows[0] || null;
+}
+
+/** vatEnabled null = leave as is. */
+export async function updateCompanyVat(client, companyId, vatTrn, vatEnabled) {
+  await client.query(
+    `UPDATE core.company_master
+        SET vat_trn = $2, vat_enabled = COALESCE($3, vat_enabled), updated_at = NOW()
+      WHERE company_id = $1`,
+    [companyId, vatTrn || null, vatEnabled]
+  );
+}
+
 /**
  * Merge patch into the company's pos settings (INSERT on first write, UPDATE on repeat).
  * Uses JSONB || operator so only supplied keys are changed.
@@ -209,6 +228,9 @@ export async function upsertCounterReceiptSettings(
   updatedBy = 'pos_api',
 ) {
   if (!companyId || !branchId || !stationId || !patch || typeof patch !== 'object') return;
+  // created_by / modified_by are bigint staff ids — a label like 'pos_api' throws 22P02.
+  const byId = Number(updatedBy);
+  const by = Number.isFinite(byId) && byId > 0 ? byId : null;
 
   for (const key of RECEIPT_SETTING_KEYS) {
     if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
@@ -228,7 +250,7 @@ export async function upsertCounterReceiptSettings(
                station_id   = EXCLUDED.station_id,
                modified_at  = NOW(),
                modified_by  = EXCLUDED.modified_by`,
-        [parameterId, companyId, branchId, stationId, key, label, val, updatedBy],
+        [parameterId, companyId, branchId, stationId, key, label, val, by],
       );
     } catch (err) {
       if (isMissingTableError(err)) return;

@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import { posRouter } from '../src/pos/restaurant-pos/pos.routes.js';
 import { kotRouter } from '../src/pos/restaurant-pos/routes/kot.routes.js';
 import { salesRouter } from '../src/pos/restaurant-pos/routes/sales.routes.js';
+import { counterRouter } from '../src/pos/restaurant-pos/routes/counter.routes.js';
 
 /** Every `router.METHOD(path)` declared directly on posRouter, as "GET /path". */
 function declaredRoutes(router) {
@@ -35,6 +36,12 @@ function mountedPrefixes(router) {
 }
 
 const routes = declaredRoutes(posRouter);
+for (const [prefix, router] of [['/sales', salesRouter], ['/counter', counterRouter]]) {
+  for (const route of declaredRoutes(router)) {
+    const [method, path] = route.split(' ');
+    routes.add(`${method} ${prefix}${path}`);
+  }
+}
 const kotRoutes = declaredRoutes(kotRouter);
 const salesRoutes = declaredRoutes(salesRouter);
 
@@ -145,18 +152,21 @@ test('kot and sales sub-routers are still mounted', () => {
   assert.match(prefixes, /sales/, '/sales sub-router missing');
 });
 
-test('/sales sub-router is declared before the /sales/* viewer routes', () => {
-  // salesRouter only handles POST /settle. A GET /sales/viewer enters it, finds
-  // no match and falls through to the routes below. That fall-through only
-  // works while the sub-router comes first; flipping the order would shadow
-  // nothing today but would silently break if salesRouter ever adds a
-  // catch-all. Pin the order so the assumption is explicit.
-  const subIdx = posRouter.stack.findIndex(
-    (l) => !l.route && l.name === 'router' && /sales/.test(l.regexp.source),
-  );
-  const viewerIdx = posRouter.stack.findIndex(
-    (l) => l.route?.path === '/sales/viewer',
-  );
-  assert.ok(subIdx >= 0 && viewerIdx >= 0);
-  assert.ok(subIdx < viewerIdx, '/sales sub-router must precede /sales/viewer');
+test('overlapping sales and counter URLs each have one handler chain', () => {
+  const direct = declaredRoutes(posRouter);
+  for (const [prefix, router] of [['/sales', salesRouter], ['/counter', counterRouter]]) {
+    for (const route of declaredRoutes(router)) {
+      const [method, path] = route.split(' ');
+      assert.ok(!direct.has(`${method} ${prefix}${path}`), `shadowed ${prefix}${path}`);
+    }
+  }
+});
+
+test('restaurant additions and Quick bill numbering are available together', () => {
+  assert.ok(salesRoutes.has('GET /by-bill/:billNo'));
+  assert.ok(salesRoutes.has('GET /next-bill-no'));
+  const prefixes = mountedPrefixes(posRouter).join(' ');
+  for (const name of ['inventory', 'stock-entry', 'recipes', 'counter']) {
+    assert.ok(prefixes.includes(name), `missing ${name}`);
+  }
 });

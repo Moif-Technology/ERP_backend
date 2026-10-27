@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS core.uq_core_product_master_company_barcode_ci;

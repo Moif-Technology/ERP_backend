@@ -46,6 +46,8 @@ function mapPosProduct(p, fallbackBarcode = '') {
     unitPrice:   inv.unitPrice,
     vatPer:      inv.outputTax1Rate,
     qtyOnHand:   inv.qtyOnHand,
+    // NON INVENTORY items never move stock — the till skips the low-stock warning for them.
+    trackStock:  String(p.stockType ?? '').trim().toUpperCase().replace(/-/g, ' ') !== 'NON INVENTORY',
     minPrice:    inv.minimumRetailPrice,
     maxPrice:    inv.maximumRetailPrice,
   };
@@ -58,3 +60,11 @@ export async function lookupProducts(authStaff, { q, maxPrice, groupId }) {
   return products.map(p => mapPosProduct(p));
 }
 
+
+/** Full product list for the terminal's offline cache (same shape as search/lookup). */
+export async function productSnapshot(authStaff) {
+  const companyId = Number(authStaff.company_id);
+  const branchId  = Number(authStaff.branch_id);
+  const products  = await productRepo.listAllProducts(pool, companyId, branchId);
+  return products.map(p => mapPosProduct(p));
+}

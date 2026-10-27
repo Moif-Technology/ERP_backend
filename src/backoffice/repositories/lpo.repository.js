@@ -46,9 +46,15 @@ export async function getLpoWithLines(conn, companyId, lpoMasterId) {
   );
   if (!masters.length) return null;
   const { rows: children } = await conn.query(
-    `SELECT * FROM ops.lpo_child
-     WHERE company_id = $1 AND lpo_master_id = $2
-     ORDER BY id ASC`,
+    // Live product barcode/code (last same-named column wins in pg rows) instead of the line snapshot.
+    `SELECT c.*,
+            COALESCE(NULLIF(pm.barcode, ''), c.barcode) AS barcode,
+            pm.product_code
+     FROM ops.lpo_child c
+     LEFT JOIN core.product_master pm
+       ON pm.company_id = c.company_id AND pm.product_id = c.product_id
+     WHERE c.company_id = $1 AND c.lpo_master_id = $2
+     ORDER BY c.id ASC`,
     [companyId, lpoMasterId],
   );
   return { master: masters[0], children };

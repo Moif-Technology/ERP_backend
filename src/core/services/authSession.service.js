@@ -37,16 +37,22 @@ export async function getSessionLimits(db, companyId) {
   return rows[0];
 }
 
-export async function countActiveSessions(db, companyId, sessionType) {
+// excludeStaffPk: the staff logging in. Their own row is upserted by
+// registerSession, so it must not count against the cap — otherwise a staff
+// whose client never called logout is locked out until expires_at.
+export async function countActiveSessions(db, companyId, sessionType, excludeStaffPk = null) {
   const { rows } = await db.query(
     `SELECT COUNT(*) AS cnt FROM core.active_session
-     WHERE company_id = $1 AND session_type = $2 AND expires_at > NOW()`,
-    [companyId, sessionType]
+     WHERE company_id = $1 AND session_type = $2 AND expires_at > NOW()
+       AND ($3::bigint IS NULL OR staff_pk <> $3::bigint)`,
+    [companyId, sessionType, excludeStaffPk]
   );
   return Number(rows[0]?.cnt ?? 0);
 }
 
-export async function hasActiveSession(db, staffPk, sessionType) {
+// sessionId: the token's `jti`. When both the token and the row carry one they
+// must match — a mismatch means another terminal took this session over.
+export async function hasActiveSession(db, staffPk, sessionType, sessionId = null) {
   if (staffPk == null) return false;
   const { rows } = await db.query(
     `SELECT 1
@@ -54,20 +60,39 @@ export async function hasActiveSession(db, staffPk, sessionType) {
      WHERE staff_pk = $1
        AND session_type = $2
        AND expires_at > NOW()
+       AND ($3::text IS NULL OR session_id IS NULL OR session_id = $3::text)
      LIMIT 1`,
-    [staffPk, sessionType]
+    [staffPk, sessionType, sessionId]
   );
   return rows.length > 0;
 }
 
-export async function registerSession(db, staffPk, companyId, sessionType, expiresAt) {
+/** Live session row for a staff (with the counter it's on), or null. */
+export async function getActiveSession(db, staffPk, sessionType) {
+  const { rows } = await db.query(
+    `SELECT s.session_id, s.device_token, s.station_id, s.created_at,
+            sm.station_name, sm.counter_no
+     FROM core.active_session s
+     LEFT JOIN core.station_master sm
+       ON sm.company_id = s.company_id AND sm.station_id = s.station_id
+     WHERE s.staff_pk = $1 AND s.session_type = $2 AND s.expires_at > NOW()
+     LIMIT 1`,
+    [staffPk, sessionType]
+  );
+  return rows[0] ?? null;
+}
+
+export async function registerSession(db, staffPk, companyId, sessionType, expiresAt, { sessionId = null, deviceToken = null, stationId = null } = {}) {
   await db.query(
-    `INSERT INTO core.active_session (staff_pk, company_id, session_type, expires_at)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO core.active_session (staff_pk, company_id, session_type, expires_at, session_id, device_token, station_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (staff_pk, session_type) DO UPDATE SET
-       expires_at = EXCLUDED.expires_at,
-       created_at = NOW()`,
-    [staffPk, companyId, sessionType, expiresAt]
+       expires_at   = EXCLUDED.expires_at,
+       session_id   = EXCLUDED.session_id,
+       device_token = EXCLUDED.device_token,
+       station_id   = EXCLUDED.station_id,
+       created_at   = NOW()`,
+    [staffPk, companyId, sessionType, expiresAt, sessionId, deviceToken, stationId]
   );
 }
 

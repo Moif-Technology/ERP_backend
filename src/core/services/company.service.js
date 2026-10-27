@@ -17,6 +17,11 @@ export async function updateCompanyProfile(pool, authStaff, body) {
     err.status = 403;
     throw err;
   }
+  if (body?.vatEnabled === true && !String(body?.vatTrn ?? '').trim()) {
+    const err = new Error('VAT TRN is required when VAT registered is on');
+    err.status = 400;
+    throw err;
+  }
   const updated = await companyRepo.updateCompanyProfile(pool, authStaff.company_id, body);
   if (!updated) {
     const err = new Error('Company not found');

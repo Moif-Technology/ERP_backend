@@ -24,6 +24,28 @@ function parsePackLines(raw) {
   }));
 }
 
+/** 409 if a barcode repeats within the request or belongs to another active product. */
+export async function assertBarcodesUnique(client, companyId, barcodes, excludeProductId) {
+  const list = barcodes.filter(Boolean);
+  const seen = new Set();
+  for (const b of list) {
+    const k = b.toLowerCase();
+    if (seen.has(k)) {
+      const err = new Error(`Barcode ${b} is entered more than once`);
+      err.status = 409;
+      throw err;
+    }
+    seen.add(k);
+  }
+  if (!list.length) return;
+  const hit = await productRepo.findBarcodeConflict(client, companyId, list, excludeProductId);
+  if (hit) {
+    const err = new Error(`Barcode ${hit.barcode} already exists for product ${hit.product_code}`);
+    err.status = 409;
+    throw err;
+  }
+}
+
 function trimOrEmpty(v) {
   if (v == null) return '';
   return String(v).trim();
@@ -55,6 +77,12 @@ function parseMoney4(v, fallback = 1) {
   return Math.round(n * 10000) / 10000;
 }
 
+// Stock can go negative (POS sells below zero) — keep the sign, unlike parseMoney4.
+function parseQty4(v) {
+  const n = Number(v);
+  return v == null || v === '' || !Number.isFinite(n) ? 0 : Math.round(n * 10000) / 10000;
+}
+
 function parseOptionalLong(v) {
   if (v == null || v === '') return null;
   const n = Number(v);
@@ -69,12 +97,9 @@ function parseSubSubGroupId(v) {
   return Math.floor(n);
 }
 
-/** INDEXES: own_ref_no NUMERIC(18,0) */
+/** own_ref_no VARCHAR(50) since migration 132 (was NUMERIC, dropped codes like MOH-06146). */
 function parseOwnRefNo(v) {
-  if (v == null || v === '') return null;
-  const n = Number(String(v).trim());
-  if (!Number.isFinite(n)) return null;
-  return Math.round(n);
+  return sliceOrNull(v, 50);
 }
 
 function parseNumericIdFromTextOrField(textField, explicitId) {
@@ -140,11 +165,29 @@ export async function listProducts(pool, authStaff, query) {
 }
 
 /**
+ * Next PRODUCT sequence number that no product already uses as its code (a hand-typed code
+ * can sit ahead of the sequence). Caller holds the company product_master lock.
+ */
+async function nextFreeProductCode(db, companyId, branchId) {
+  for (let i = 0; i < 100; i += 1) {
+    const code = await nextDocNo(db, { companyId, branchId, sequenceCode: 'PRODUCT' });
+    // Any status: uq_product_master_company_product_code covers inactive/deleted rows too.
+    const { rowCount } = await db.query(
+      'SELECT 1 FROM core.product_master WHERE company_id = $1 AND LOWER(product_code) = LOWER($2) LIMIT 1',
+      [companyId, code]
+    );
+    if (!rowCount) return code;
+  }
+  const err = new Error('Could not find a free product code in the PRODUCT sequence');
+  err.status = 409;
+  throw err;
+}
+
+/**
  * Creates product_master + one product_inventory row for the branch (pricing / stock defaults).
  */
 export async function createProduct(pool, body, authStaff) {
   let productCode = trimOrEmpty(body.productCode) || null;
-  const wantsAutoProductCode = Boolean(body.autoCode);
   if (productCode && productCode.length > 50) {
     const err = new Error('productCode must be at most 50 characters');
     err.status = 400;
@@ -244,7 +287,7 @@ export async function createProduct(pool, body, authStaff) {
   const priceLevel4 = parseMoney(body.priceLevel4);
   const priceLevel5 = parseMoney(body.priceLevel5);
 
-  const qtyOnHand = parseMoney4(body.qtyOnHand, 0);
+  const qtyOnHand = parseQty4(body.qtyOnHand);
   const reorderLevel = parseMoney4(body.reorderLevel, 0);
   const reorderQty = parseMoney4(body.reorderQty, 0);
 
@@ -253,11 +296,12 @@ export async function createProduct(pool, body, authStaff) {
       `core.product_master:${companyId}`,
     ]);
 
-    if (!productCode && wantsAutoProductCode) {
-      productCode = await nextDocNo(client, { companyId, branchId, sequenceCode: 'PRODUCT' });
+    // ERP product entry sends autoCode when the code is left blank; other clients must send a code.
+    if (!productCode && body.autoCode) {
+      productCode = await nextFreeProductCode(client, companyId, branchId);
     }
     if (!productCode) {
-      const err = new Error('productCode is required');
+      const err = new Error('Product code is required');
       err.status = 400;
       throw err;
     }
@@ -286,6 +330,19 @@ export async function createProduct(pool, body, authStaff) {
         throw err;
       }
       masterRow = existingMaster;
+      // Code already exists in another branch: a supplied barcode must not be silently dropped.
+      const existingBarcode = trimOrEmpty(existingMaster.barcode);
+      if (barcode && existingBarcode && existingBarcode.toLowerCase() !== barcode.toLowerCase()) {
+        const err = new Error(
+          `Product code ${existingMaster.product_code} already exists with barcode ${existingBarcode}. Edit the product to change its barcode.`
+        );
+        err.status = 409;
+        throw err;
+      }
+      if (barcode && !existingBarcode) {
+        await assertBarcodesUnique(client, companyId, [barcode], productId);
+        masterRow = (await productRepo.setMasterBarcode(client, companyId, productId, barcode, userLabel)) || existingMaster;
+      }
     } else {
       await assertLimitAvailable({
         companyId,
@@ -342,6 +399,14 @@ export async function createProduct(pool, body, authStaff) {
       });
     }
 
+    const packLines = parsePackLines(body.packLines);
+    await assertBarcodesUnique(
+      client,
+      companyId,
+      [existingMaster ? null : barcode, ...packLines.map((l) => l.barcode)],
+      productId
+    );
+
     const invRow = await productRepo.insertProductInventory(client, {
       companyId,
       branchId,
@@ -357,7 +422,7 @@ export async function createProduct(pool, body, authStaff) {
       unitPrice,
       minimumRetailPrice: minUnitPrice,
       maximumRetailPrice: unitPrice,
-      priceLevel1: priceLevel1 || unitPrice,
+      priceLevel1: priceLevel1 || 0,
       priceLevel2: priceLevel2 || 0,
       priceLevel3: priceLevel3 || 0,
       priceLevel4: priceLevel4 || 0,
@@ -374,7 +439,6 @@ export async function createProduct(pool, body, authStaff) {
       modifiedBy: userLabel,
     });
 
-    const packLines = parsePackLines(body.packLines);
     if (packLines.length > 0) {
       await productRepo.savePackLines(client, companyId, productId, branchId, packLines);
     }
@@ -397,7 +461,7 @@ function formatCreatedProduct(masterRow, invRow, branchId) {
     companyId: Number(m.company_id),
     productCode: m.product_code,
     barcode: m.barcode,
-    ownRefNo: m.own_ref_no != null ? Number(m.own_ref_no) : null,
+    ownRefNo: m.own_ref_no ?? null,
     productName: m.product_name,
     shortName: m.short_name,
     specification: m.specification,
@@ -610,7 +674,7 @@ export async function updateProduct(pool, productId, body, authStaff) {
   const priceLevel3    = parseMoney(body.priceLevel3);
   const priceLevel4    = parseMoney(body.priceLevel4);
   const priceLevel5    = parseMoney(body.priceLevel5);
-  const qtyOnHand      = parseMoney4(body.qtyOnHand, 0);
+  const qtyOnHand      = parseQty4(body.qtyOnHand);
   const reorderLevel   = parseMoney4(body.reorderLevel, 0);
   const reorderQty     = parseMoney4(body.reorderQty, 0);
   const wantsAutoBarcode = Boolean(body.newBarcode);
@@ -621,6 +685,16 @@ export async function updateProduct(pool, productId, body, authStaff) {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
       `core.product_master:${companyId}:${pid}`,
     ]);
+    // ponytail: company-wide lock so concurrent create/update can't both claim one barcode
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [
+      `core.product_master:${companyId}`,
+    ]);
+    const codeOwner = await productRepo.findMasterByCompanyAndProductCode(client, companyId, productCode);
+    if (codeOwner && Number(codeOwner.product_id) !== pid) {
+      const err = new Error(`Product code ${productCode} already exists`);
+      err.status = 409;
+      throw err;
+    }
     if (wantsAutoBarcode && !barcode) {
       barcode = await generateScopedAutoCode(client, {
         tableName: 'core.product_master',
@@ -631,6 +705,9 @@ export async function updateProduct(pool, productId, body, authStaff) {
         maxLength: 50,
       });
     }
+
+    const packLines = parsePackLines(body.packLines);
+    await assertBarcodesUnique(client, companyId, [barcode, ...packLines.map((l) => l.barcode)], pid);
 
     const masterRow = await productRepo.updateProductMaster(client, companyId, pid, {
       productCode,
@@ -676,7 +753,7 @@ export async function updateProduct(pool, productId, body, authStaff) {
       unitPrice,
       minimumRetailPrice:       minUnitPrice,
       maximumRetailPrice:       unitPrice,
-      priceLevel1:              priceLevel1 || unitPrice,
+      priceLevel1:              priceLevel1 || 0,
       priceLevel2:              priceLevel2 || 0,
       priceLevel3:              priceLevel3 || 0,
       priceLevel4:              priceLevel4 || 0,
@@ -697,7 +774,6 @@ export async function updateProduct(pool, productId, body, authStaff) {
       throw err;
     }
 
-    const packLines = parsePackLines(body.packLines);
     await productRepo.savePackLines(client, companyId, pid, branchId, packLines);
 
     const substituteIds = Array.isArray(body.substituteProductIds)

@@ -63,7 +63,7 @@ export async function getCompanyProfile(pool, companyId) {
     `SELECT
        company_id, company_code, company_name, company_address,
        contact_person, phone, email, website,
-       vat_trn, trade_license, po_box, city, country,
+       vat_trn, vat_enabled, trade_license, po_box, city, country,
        logo_data, currency, fiscal_year_start, decimal_places,
        status, created_at, updated_at
      FROM core.company_master
@@ -76,7 +76,7 @@ export async function getCompanyProfile(pool, companyId) {
 export async function updateCompanyProfile(pool, companyId, fields) {
   const {
     companyName, companyAddress, contactPerson, phone, email, website,
-    vatTrn, tradeLicense, poBox, city, country,
+    vatTrn, vatEnabled, tradeLicense, poBox, city, country,
     logoData, currency, fiscalYearStart, decimalPlaces,
   } = fields;
   const { rows } = await pool.query(
@@ -96,12 +96,13 @@ export async function updateCompanyProfile(pool, companyId, fields) {
        currency            = $13,
        fiscal_year_start   = $14,
        decimal_places      = $15,
+       vat_enabled         = COALESCE($17, vat_enabled),
        updated_at          = NOW()
      WHERE company_id = $16
      RETURNING
        company_id, company_code, company_name, company_address,
        contact_person, phone, email, website,
-       vat_trn, trade_license, po_box, city, country,
+       vat_trn, vat_enabled, trade_license, po_box, city, country,
        logo_data, currency, fiscal_year_start, decimal_places,
        status, updated_at`,
     [
@@ -113,6 +114,7 @@ export async function updateCompanyProfile(pool, companyId, fields) {
       currency || 'AED', fiscalYearStart || '01-01',
       decimalPlaces != null ? Number(decimalPlaces) : 2,
       companyId,
+      vatEnabled == null ? null : Boolean(vatEnabled),
     ]
   );
   return rows[0] || null;

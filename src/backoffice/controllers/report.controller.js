@@ -21,6 +21,33 @@ function handler(serviceFn, label) {
   };
 }
 
+// Same as handler() but the service result object is the response body
+// (multi-section reports: reconciliations, lookups, dashboard panel).
+function objectHandler(serviceFn, label) {
+  return async (req, res) => {
+    try {
+      const result = await serviceFn(pool, req.authStaff, req.query);
+      return res.json(result);
+    } catch (err) {
+      if (err.status) {
+        return res.status(err.status).json({ message: err.message });
+      }
+      if (err.code === '42P01') {
+        return res.status(503).json({ message: `${label} tables not installed.` });
+      }
+      console.error(`[report:${label}]`, err);
+      return res.status(500).json({ message: `Could not load ${label}` });
+    }
+  };
+}
+
+export const lookups = objectHandler(reportService.lookups, 'Report Lookups');
+export const salesSummary = handler(reportService.salesSummary, 'Sales Summary');
+export const salesByPos = handler(reportService.salesByPos, 'Sales By POS');
+export const salesAnalysis = handler(reportService.salesAnalysis, 'Sales Analysis');
+export const inventoryReconciliation = objectHandler(reportService.inventoryReconciliation, 'Inventory Reconciliation');
+export const accountsReconciliation = objectHandler(reportService.accountsReconciliation, 'Accounts Reconciliation');
+export const liveStoreStatus = objectHandler(reportService.liveStoreStatus, 'Live Store Status');
 export const dailySales = handler(reportService.dailySales, 'Daily Sales');
 export const customerWiseSales = handler(reportService.customerWiseSales, 'Customer-Wise Sales');
 export const productWiseSales = handler(reportService.productWiseSales, 'Product-Wise Sales');

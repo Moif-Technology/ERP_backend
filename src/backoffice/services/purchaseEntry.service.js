@@ -15,6 +15,7 @@ import * as lpoRepo from '../repositories/lpo.repository.js';
 import * as grnRepo from '../repositories/grn.repository.js';
 import * as supplierRepo from '../repositories/supplier.repository.js';
 import * as purchaseEntryRepo from '../repositories/purchaseEntry.repository.js';
+import * as purchaseReversalRepo from '../repositories/purchaseReversal.repository.js';
 import { nextDocNo } from '../../shared/services/docSequence.service.js';
 import * as partyLedgerService from './partyLedger.service.js';
 import { computePurchaseAmounts, resolveHeaderDiscountFromBody } from '../lib/purchaseAmounts.js';
@@ -60,6 +61,18 @@ function parseBranchId(raw) {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1) return null;
   return n;
+}
+
+function isPurchaseCancelled(row) {
+  return String(row?.post_status || '').toUpperCase() === 'CANCELLED'
+    || String(row?.record_status || '').toUpperCase() === 'CANCELLED';
+}
+
+function assertPurchaseNotCancelled(row) {
+  if (!isPurchaseCancelled(row)) return;
+  const err = new Error('Purchase is cancelled');
+  err.status = 409;
+  throw err;
 }
 
 async function resolvePaymentLedger(client, companyId, branchId, paymentMode, explicitAccountId) {
@@ -199,6 +212,7 @@ function mapPurchaseLineToApi(row) {
     ownRefNo: row.own_ref_no ?? null,
     supplierRefNo: row.supplier_ref_no ?? null,
     productCode: row.product_code ?? null,
+    barcode: row.barcode ?? null,
     shortDescription: row.short_name ?? row.product_name ?? null,
     qty: row.qty != null ? String(row.qty) : '0',
     focQty: row.foc_qty != null ? String(row.foc_qty) : '0',
@@ -316,6 +330,11 @@ export async function createPurchase(pool, body, authStaff) {
     }
     if (Number(grnFull.master.branch_id) !== branchId) {
       const err = new Error('GRN belongs to a different branch');
+      err.status = 400;
+      throw err;
+    }
+    if (String(grnFull.master.post_status || '').toUpperCase() === 'CANCELLED') {
+      const err = new Error('GRN is cancelled');
       err.status = 400;
       throw err;
     }
@@ -1214,6 +1233,7 @@ export async function updatePurchase(pool, body, authStaff, purchaseIdParam) {
     err.status = 404;
     throw err;
   }
+  assertPurchaseNotCancelled(existing);
 
   let branchId = parseBranchId(body.branchId);
   if (branchId == null) branchId = Number(existing.branch_id);
@@ -1405,6 +1425,7 @@ export async function postPurchase(pool, authStaff, purchaseIdParam, query, body
     err.status = 404;
     throw err;
   }
+  assertPurchaseNotCancelled(existing);
 
   let branchId = parseBranchId(query?.branchId);
   if (branchId == null) branchId = Number(existing.branch_id);
@@ -1583,6 +1604,7 @@ export async function unpostPurchase(pool, authStaff, purchaseIdParam, query) {
     err.status = 404;
     throw err;
   }
+  assertPurchaseNotCancelled(existing);
 
   let branchId = parseBranchId(query?.branchId);
   if (branchId == null) branchId = Number(existing.branch_id);
@@ -1652,6 +1674,134 @@ export async function unpostPurchase(pool, authStaff, purchaseIdParam, query) {
       outstandingBalance: (restoredOs > 0 ? restoredOs : outstandingBalance).toFixed(2),
       voucherMasterId,
       unposted: true,
+    };
+  });
+}
+
+/**
+ * POST /api/purchases/:purchaseId/cancel — reverse a purchase completely:
+ * stock-in reversed (reversePurchaseStockIn, PURCHASE log rows with -qty),
+ * purchase accounts voucher soft-deleted, purchase marked CANCELLED.
+ * Blocked while a supplier payment or an active purchase return exists.
+ * If reversing would take on-hand below zero it returns 409 NEGATIVE_STOCK
+ * unless body.force === true (then it proceeds and returns a warning).
+ * Average cost is not rolled back (same as the edit-reversal path).
+ */
+export async function cancelPurchase(pool, authStaff, purchaseIdParam, body = {}, query = {}) {
+  const companyId = Number(authStaff.company_id);
+  const purchaseId = Math.trunc(num(purchaseIdParam, 0));
+  if (purchaseId < 1) {
+    const err = new Error('Invalid purchaseId');
+    err.status = 400;
+    throw err;
+  }
+
+  const existing = await purchaseEntryRepo.getPurchaseMaster(pool, companyId, purchaseId);
+  if (!existing) {
+    const err = new Error('Purchase not found');
+    err.status = 404;
+    throw err;
+  }
+  if (isPurchaseCancelled(existing)) {
+    const err = new Error('Purchase is already cancelled');
+    err.status = 409;
+    throw err;
+  }
+  if (existing.source_purchase_id != null
+    || ['RETURN', 'PURCHASE RETURN'].includes(String(existing.transaction_type || '').trim().toUpperCase())) {
+    const err = new Error('This is a purchase return — cancel it from the purchase return screen');
+    err.status = 400;
+    throw err;
+  }
+
+  const branchId = Number(existing.branch_id);
+  const requestedBranch = parseBranchId(body?.branchId ?? query?.branchId);
+  if (requestedBranch != null && requestedBranch !== branchId) {
+    const err = new Error('Purchase belongs to a different branch');
+    err.status = 400;
+    throw err;
+  }
+
+  const reason = str(body?.reason, 150);
+  if (!reason) {
+    const err = new Error('A reason is required to cancel a purchase');
+    err.status = 400;
+    throw err;
+  }
+  const force = body?.force === true;
+
+  const returns = await purchaseReversalRepo.countActivePurchaseReturns(pool, companyId, purchaseId);
+  if (returns > 0) {
+    const err = new Error('Cannot cancel — purchase returns exist against this purchase. Cancel those first.');
+    err.status = 409;
+    throw err;
+  }
+
+  const { purchaseVoucher, paymentVoucher } = await findPurchaseVouchers(pool, companyId, branchId, purchaseId);
+  const payments = await findPurchasePaymentVouchers(pool, companyId, branchId, purchaseId);
+  const activePayments = payments.filter(({ voucher, payment }) =>
+    String(voucher?.master?.record_status || 'ACTIVE').toUpperCase() === 'ACTIVE'
+    && !['CANCELLED', 'DELETED'].includes(String(payment?.status || '').toUpperCase()));
+  if (paymentVoucher || activePayments.length) {
+    const err = new Error('Cannot cancel — a supplier payment exists for this purchase. Delete the payment first.');
+    err.status = 409;
+    throw err;
+  }
+
+  const userLabel = auditUserName(authStaff);
+
+  return withTransaction(async (client) => {
+    const oldChildren = await purchaseEntryRepo.getPurchaseChildren(client, companyId, purchaseId);
+
+    // Negative-stock guard: compare on-hand with the qty that will come out.
+    const outByProduct = new Map();
+    for (const row of oldChildren) {
+      const inQty = num(row.qty, 0) + num(row.foc_qty, 0);
+      if (inQty <= 0) continue;
+      const pid = Number(row.product_id);
+      outByProduct.set(pid, (outByProduct.get(pid) || 0) + inQty);
+    }
+    const shortages = [];
+    for (const [productId, qty] of outByProduct) {
+      const onHand = await stockRepo.getStockQty(client, companyId, branchId, productId);
+      if (onHand < qty) shortages.push({ productId, available: onHand, required: qty });
+    }
+    const warnings = [];
+    if (shortages.length) {
+      const list = shortages.map((s) => `product ${s.productId} (on hand ${s.available}, reverse ${s.required})`).join('; ');
+      if (!force) {
+        const err = new Error(`Reversing this purchase would make stock negative: ${list}`);
+        err.status = 409;
+        err.code = 'NEGATIVE_STOCK';
+        err.shortages = shortages;
+        throw err;
+      }
+      warnings.push(`Stock went negative: ${list}`);
+    }
+
+    warnings.push(...await reversePurchaseStockIn(client, authStaff, companyId, branchId, purchaseId, oldChildren));
+
+    const voucherMasterId = purchaseVoucher?.master?.voucher_master_id
+      ? Number(purchaseVoucher.master.voucher_master_id)
+      : null;
+    if (voucherMasterId) {
+      await voucherRepo.updateVoucherPostStatus(client, companyId, branchId, voucherMasterId, 'PENDING');
+      await voucherRepo.softDeleteVoucher(client, companyId, branchId, voucherMasterId);
+    }
+
+    await purchaseReversalRepo.markPurchaseCancelled(client, companyId, purchaseId, branchId, {
+      reason,
+      actor: userLabel,
+    });
+
+    return {
+      purchaseId,
+      branchId,
+      purchaseNo: String(existing.purchase_no),
+      cancelled: true,
+      postStatus: 'CANCELLED',
+      voucherMasterId,
+      warnings: warnings.length ? warnings : undefined,
     };
   });
 }

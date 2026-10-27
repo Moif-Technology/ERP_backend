@@ -103,7 +103,7 @@ export async function login(req, res) {
     // Enforce concurrent ERP session limit defined by plan.
     if (companyId) {
       const limits  = await getSessionLimits(pool, companyId);
-      const current = await countActiveSessions(pool, companyId, 'erp');
+      const current = await countActiveSessions(pool, companyId, 'erp', staffPk);
       if (current >= Number(limits?.max_erp_sessions ?? 3)) {
         await logAuthEvent(pool, {
           companyId,
@@ -157,7 +157,8 @@ export async function logout(req, res) {
   const clientIp  = req.ip ?? req.socket?.remoteAddress;
 
   await invalidateStaffSession(staffPk);
-  await unregisterSession(pool, staffPk, 'erp');
+  const sessionType = req.authSessionType ?? 'erp';
+  await unregisterSession(pool, staffPk, sessionType);
   res.clearCookie(REFRESH_COOKIE, { ...REFRESH_COOKIE_OPTS, maxAge: undefined });
 
   logAuthEvent(pool, {
@@ -165,7 +166,7 @@ export async function logout(req, res) {
     staffPk:   staffPk   ?? null,
     eventType: 'logout',
     ipAddress: clientIp,
-    metadata:  { session_type: 'erp' },
+    metadata:  { session_type: sessionType },
   });
 
   res.json({ ok: true });

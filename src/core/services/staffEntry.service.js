@@ -31,7 +31,6 @@ function validateCreateBody(body) {
   ).trim();
 
   if (!staffName) errors.push('staffName is required');
-  if (!designation) errors.push('designation is required');
   if (!email) errors.push('email is required');
   else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.push('email is invalid');
   if (!password || String(password).length < 8) errors.push('password must be at least 8 characters');

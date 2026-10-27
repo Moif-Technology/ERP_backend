@@ -65,6 +65,7 @@ export async function getBackofficeDashboard(pool, authStaff, query = {}) {
       staffWithPin: num(summary.staff.staff_with_pin),
       devices: num(summary.devices.total_devices),
       activeDevices: num(summary.devices.active_devices),
+      counterStations: num(summary.devices.counter_stations),
       lowStockItems: num(summary.lowStock.low_stock_items),
     },
     counter: {
