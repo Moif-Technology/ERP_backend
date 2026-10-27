@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { withTransaction } from '../../config/db.js';
 import * as branchRepo from '../../shared/repositories/branch.repository.js';
 import * as bioRepo from '../repositories/biometric.repository.js';
+import { validAttendanceDate, validAttendanceTime } from './attendanceTime.js';
 
 // Business logic for the biometric attendance bridge.
 //
@@ -17,7 +18,6 @@ const MAX_ROWS_PER_SYNC = 5000;
 const STALE_JOB_MINUTES = 15;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const TIME_RE = /^\d{2}:\d{2}(:\d{2})?$/;
 
 function badRequest(message) {
   const err = new Error(message);
@@ -39,16 +39,16 @@ function requirePositiveInt(v, fieldName) {
 }
 
 function parseDate(v, fieldName) {
-  const s = optionalText(v, 10);
+  const s = v == null ? '' : String(v).trim();
   if (!s || !DATE_RE.test(s)) throw badRequest(`${fieldName} must be YYYY-MM-DD`);
-  if (Number.isNaN(Date.parse(`${s}T00:00:00Z`))) throw badRequest(`${fieldName} is not a real date`);
+  if (!validAttendanceDate(s)) throw badRequest(`${fieldName} is not a real date`);
   return s;
 }
 
 function parseTime(v) {
-  const s = optionalText(v, 8);
+  const s = v == null ? '' : String(v).trim();
   if (!s) return null;
-  if (!TIME_RE.test(s)) return null; // a malformed time is dropped, not fatal
+  if (!validAttendanceTime(s)) throw badRequest('Punch time must be a valid HH:MM:SS time');
   return s.length === 5 ? `${s}:00` : s;
 }
 
@@ -121,9 +121,14 @@ function normaliseRows(rawRows) {
   for (const r of rawRows) {
     const devicePin = optionalText(r?.pin ?? r?.devicePin, 64);
     if (!devicePin) continue; // a row with no PIN identifies nobody
-    const workDate = optionalText(r?.date ?? r?.workDate, 10);
-    if (!workDate || !DATE_RE.test(workDate)) continue;
-    const hoursNum = Number(r?.hours);
+    const workDate = String(r?.date ?? r?.workDate ?? '').trim();
+    if (!validAttendanceDate(workDate)) throw badRequest('Punch date must be a real YYYY-MM-DD date');
+    const hoursNum = r?.hours == null || r.hours === '' ? null : Number(r.hours);
+    if (hoursNum !== null && (!Number.isFinite(hoursNum) || hoursNum < 0 || hoursNum > 24)) {
+      throw badRequest('Daily hours must be between 0 and 24, or null');
+    }
+    const punches = r?.punches == null ? 0 : Number(r.punches);
+    if (!Number.isSafeInteger(punches) || punches < 0) throw badRequest('Punch count must be a non-negative integer');
     out.push({
       devicePin,
       deviceName: optionalText(r?.name ?? r?.deviceName, 120),
@@ -131,7 +136,7 @@ function normaliseRows(rawRows) {
       firstIn: parseTime(r?.firstIn ?? r?.first_in),
       lastOut: parseTime(r?.lastOut ?? r?.last_out),
       hours: Number.isFinite(hoursNum) ? hoursNum : null,
-      punches: Number.isFinite(Number(r?.punches)) ? Number(r.punches) : 0,
+      punches,
     });
   }
   return out;

@@ -4,6 +4,7 @@
  */
 import * as reportRepo from '../repositories/report.repository.js';
 import * as voucherRepo from '../../accounts/repositories/voucher.repository.js';
+import { formatAttendanceTime } from '../../hr/services/attendanceTime.js';
 
 function num(v, d = 0) {
   const n = Number(v);
@@ -331,8 +332,10 @@ export async function attendanceReport(pool, authStaff, query) {
     empCode: r.employee_code || '',
     employee: r.employee_name || '',
     department: r.department || '',
-    firstIn: r.first_in ? String(r.first_in).slice(0, 5) : '',
-    lastOut: r.last_out ? String(r.last_out).slice(0, 5) : '',
+    firstIn: formatAttendanceTime(r.first_in),
+    lastOut: formatAttendanceTime(r.last_out),
+    hours: r.hours == null ? null : num(r.hours),
+    absence: r.status === 'Absent' ? 'Yes' : ['Missing', 'No Record', ''].includes(r.status || '') ? 'Unconfirmed' : 'No',
     otHours: num(r.ot_hours),
     status: r.status || '',
   }));

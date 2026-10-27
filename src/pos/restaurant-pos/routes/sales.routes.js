@@ -20,6 +20,7 @@ salesRouter.post(
   requireFeature('pos.settlement'),
   salesController.deliveryNightSettle,
 );
+salesRouter.get('/next-bill-no', requireFeature('pos.billing'), salesController.nextBillNo);
 salesRouter.post('/settle', requireFeature('pos.settlement'), salesController.settle);
 salesRouter.get(
   '/viewer',

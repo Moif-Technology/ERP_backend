@@ -507,8 +507,8 @@ export async function settleDeliveryMaster(client, m) {
   }
 }
 
-/** Staff-wise sales totals for a pending counter session */
-export async function getStaffWiseSales(pool, { companyId, stationId, counterNo }) {
+/** Staff-wise sales totals for a counter with optional date range */
+export async function getStaffWiseSales(pool, { companyId, stationId, counterNo, dateFrom, dateTo }) {
   const { rows } = await pool.query(
     `SELECT
        sm.staff_id,
@@ -528,9 +528,11 @@ export async function getStaffWiseSales(pool, { companyId, stationId, counterNo 
        AND sm.counter_no  = $3
        AND sm.post_status = 'POSTED'
        AND COALESCE(sm.hold_status, '') NOT IN ('HOLD', 'DELIVERY', 'CANCELLED')
+       AND sm.bill_date >= $4::date
+       AND sm.bill_date <= $5::date
      GROUP BY sm.staff_id, s.staff_name
      ORDER BY net_amount DESC`,
-    [companyId, stationId, counterNo],
+    [companyId, stationId, counterNo, dateFrom, dateTo],
   );
   return rows;
 }

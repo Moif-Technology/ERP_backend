@@ -11,4 +11,8 @@ graphify-out/
 
 updates/*
 !updates/README.md
+# Binaries stay out of git; the release manifest is config and stays in.
+!updates/salon-pos/
+updates/salon-pos/*
+!updates/salon-pos/manifest.json
 .gstack/

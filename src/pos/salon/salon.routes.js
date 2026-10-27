@@ -57,6 +57,9 @@ salonPosRouter.post('/pin-login',       authController.pinLogin);
 // Username + password (admin convenience; ERP-scoped token).
 salonPosRouter.post('/login',           authController.login);
 
+// App version check (public, no auth required).
+salonPosRouter.get('/app/version',      authController.checkAppVersion);
+
 // ── Everything below requires a valid POS token. ───────────────────────────
 salonPosRouter.use(authMiddleware);
 salonPosRouter.use(requireFeature('pos'));
