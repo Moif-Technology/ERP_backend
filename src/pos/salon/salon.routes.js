@@ -112,6 +112,8 @@ salonPosRouter.get('/settlement/history', settlementController.listHistory);
 salonPosRouter.get('/settlement/receipts/:transactionId', settlementController.getReceipt);
 
 // Counter reading — X Report / Z Report (reuse counter-pos).
+// Salon sales store staff PK in sales_master.staff_id; tell the shared service.
+salonPosRouter.use('/counter', (req, _res, next) => { req.authStaff.counterStaffKey = 'pk'; next(); });
 salonPosRouter.get('/counter/summary', requireFeature('pos.counter_open_close'), counterController.getSummary);
 salonPosRouter.post('/counter/close', requireFeature('pos.counter_open_close'), counterController.closeCounter);
 salonPosRouter.get('/counter/cash-in-out', requireFeature('pos.cash_in_out'), counterController.getCashInOutList);

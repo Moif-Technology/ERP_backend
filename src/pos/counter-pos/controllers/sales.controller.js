@@ -140,6 +140,16 @@ export async function salesViewerList(req, res) {
   }
 }
 
+/** GET /api/counter-pos/sales/by-bill/:billNo — Return keypad LoadSalesData */
+export async function billForReturn(req, res) {
+  try {
+    const data = await salesService.getBillForReturn(req.authStaff, req.params.billNo);
+    return res.json(data);
+  } catch (err) {
+    return handleError(res, err, 'Failed to load bill for return');
+  }
+}
+
 /** GET /api/counter-pos/sales/viewer/:salesId */
 export async function salesViewerBill(req, res) {
   try {
@@ -157,5 +167,25 @@ export async function saveBill(req, res) {
     return res.status(201).json(result);
   } catch (err) {
     return handleError(res, err, 'Failed to save bill');
+  }
+}
+
+/** POST /api/counter-pos/sales/:salesId/void */
+export async function voidBill(req, res) {
+  try {
+    const result = await salesService.voidBill(req.authStaff, req.params.salesId, req.body);
+    return res.json(result);
+  } catch (err) {
+    return handleError(res, err, 'Failed to cancel bill');
+  }
+}
+
+/** POST /api/counter-pos/sales/:salesId/items/:salesChildId/void */
+export async function voidBillItem(req, res) {
+  try {
+    const result = await salesService.voidBillItem(req.authStaff, req.params.salesId, req.params.salesChildId, req.body);
+    return res.json(result);
+  } catch (err) {
+    return handleError(res, err, 'Failed to cancel item');
   }
 }

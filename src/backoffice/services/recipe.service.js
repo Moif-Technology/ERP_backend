@@ -74,6 +74,7 @@ export async function listRecipes(pool, authStaff, query) {
   return rows.map((row) => ({
     finishedProductId: Number(row.product_id),
     barcode: row.barcode || '',
+    productCode: row.product_code || '',
     productName: row.product_name || '',
     shortName: row.short_name || '',
     productType: row.product_type || '',

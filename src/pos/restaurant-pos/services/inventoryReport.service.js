@@ -67,6 +67,7 @@ function splitPackQty(rawRows, costType, supplierWise) {
       productId: num(r.product_id, 0),
       uniqueProductId: uid,
       barcode: String(r.barcode ?? ''),
+      productCode: String(r.product_code ?? ''),
       description: String(r.product_name ?? ''),
       shortDescription: String(r.short_name ?? ''),
       brand: String(r.brand_name ?? ''),
@@ -280,6 +281,7 @@ export async function buildMovementReport(pool, query, authStaff) {
     return {
       productId: num(r.product_id, 0),
       barcode: String(r.barcode ?? ''),
+      productCode: String(r.product_code ?? ''),
       description: String(r.product_name ?? ''),
       groupName: String(r.group_name ?? ''),
       opening,
@@ -297,6 +299,7 @@ export async function buildMovementReport(pool, query, authStaff) {
       logId: num(r.product_log_id, 0),
       productId: num(r.product_id, 0),
       barcode: String(r.barcode ?? ''),
+      productCode: String(r.product_code ?? ''),
       description: String(r.product_name ?? ''),
       groupName: String(r.group_name ?? ''),
       date: r.transaction_date,

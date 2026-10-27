@@ -131,6 +131,7 @@ export async function getReorderList(client, companyId, branchId) {
     `SELECT
        pm.product_id,
        pm.barcode,
+       pm.product_code,
        pm.product_name AS short_description,
        COALESCE(pi.qty_on_hand, 0)          AS qty_on_hand,
        COALESCE(pi.reorder_level, 0)        AS reorder_level,
@@ -175,7 +176,8 @@ export async function getProductMovement(client, companyId, branchId, params) {
 
   if (params.productId) { conds.push(`pl.product_id = $${i++}`); vals.push(params.productId); }
   if (params.barcode) {
-    conds.push(`pm.barcode ILIKE $${i++}`);
+    conds.push(`(pm.barcode ILIKE $${i} OR pm.product_code ILIKE $${i})`);
+    i++;
     vals.push(`%${params.barcode}%`);
   }
   if (params.fromDate) { conds.push(`pl.transaction_date >= $${i++}`); vals.push(params.fromDate); }

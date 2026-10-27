@@ -108,12 +108,29 @@ export async function exportRows(db, companyId, branchId, entityType) {
   const queries = {
     products: {
       sql: `SELECT m.product_id, m.product_code, m.barcode, m.product_name, m.short_name, m.brand_name,
-                   m.unit_name, m.product_type, m.stock_type, i.qty_on_hand, i.unit_price,
+                   m.unit_name, m.product_type, m.stock_type,
+                   g.group_description AS group_name, sg.sub_group_description AS sub_group_name,
+                   i.qty_on_hand, i.unit_price,
                    i.average_cost, i.reorder_level, i.reorder_qty, i.location_code
               FROM core.product_master m
               LEFT JOIN core.product_inventory i ON i.company_id=m.company_id
                AND i.product_id=m.product_id AND i.branch_id=$2
+              LEFT JOIN biz.group_master g ON g.company_id=m.company_id
+               AND g.group_id=m.group_id AND g.branch_id=$2
+              LEFT JOIN biz.sub_group_master sg ON sg.company_id=m.company_id
+               AND sg.sub_group_id=m.subgroup_id
              WHERE m.company_id=$1 AND ${ACTIVE.replaceAll('record_status', 'm.record_status')}
+             ORDER BY m.product_name`,
+    },
+    // Bulk price/barcode update template: current branch values, re-importable as 'products-update'.
+    'products-update': {
+      sql: `SELECT m.product_code, m.barcode, m.product_name,
+                   i.average_cost, i.last_purchase_cost AS purchase_cost,
+                   i.unit_price AS price_excl_vat, COALESCE(i.output_tax_1_rate, 0) AS vat_percent,
+                   ROUND(COALESCE(i.unit_price, 0) * (1 + COALESCE(i.output_tax_1_rate, 0) / 100), 2) AS price_incl_vat
+              FROM core.product_inventory i
+              JOIN core.product_master m ON m.company_id=i.company_id AND m.product_id=i.product_id
+             WHERE i.company_id=$1 AND i.branch_id=$2 AND m.record_status='ACTIVE'
              ORDER BY m.product_name`,
     },
     customers: {
@@ -173,15 +190,101 @@ export async function findProduct(db, companyId, productCode, barcode) {
   return rows[0] || null;
 }
 
+/** Active product by code or (case-insensitive) master barcode, with its inventory row in the branch. */
+export async function findProductForUpdate(db, companyId, branchId, { productCode = '', barcode = '' }) {
+  const { rows } = await db.query(
+    `SELECT m.product_id, m.product_code, m.barcode,
+            i.product_inventory_id, i.unit_price, i.output_tax_1_rate
+       FROM core.product_master m
+       LEFT JOIN core.product_inventory i
+         ON i.company_id=m.company_id AND i.product_id=m.product_id AND i.branch_id=$2
+      WHERE m.company_id=$1 AND m.record_status='ACTIVE'
+        AND (($3 <> '' AND LOWER(m.product_code)=LOWER($3))
+          OR ($3 = '' AND $4 <> '' AND LOWER(m.barcode)=LOWER($4)))
+      LIMIT 2`,
+    [companyId, branchId, productCode, barcode],
+  );
+  if (!rows.length) return null;
+  return rows.length > 1 ? { ...rows[0], ambiguous: true } : rows[0];
+}
+
+/** Null params keep the current value. */
+export async function updateInventoryPricing(db, p) {
+  await db.query(
+    `UPDATE core.product_inventory SET
+            average_cost        = COALESCE($4::numeric, average_cost),
+            last_purchase_cost  = COALESCE($5::numeric, last_purchase_cost),
+            unit_price          = COALESCE($6::numeric, unit_price),
+            output_tax_1_rate   = COALESCE($7::numeric, output_tax_1_rate),
+            output_tax_1_amount = COALESCE($8::numeric, output_tax_1_amount),
+            modified_by=$9, modified_at=NOW()
+      WHERE company_id=$1 AND branch_id=$2 AND product_id=$3`,
+    [p.companyId, p.branchId, p.productId, p.averageCost, p.purchaseCost, p.unitPrice,
+      p.vatPct, p.vatAmount, p.actor.slice(0, 50)],
+  );
+}
+
+/** Products for label printing / bulk selection, optionally filtered by group / sub-group. */
+export async function labelProducts(db, companyId, branchId, { search = '', groupId = null, subGroupId = null } = {}) {
+  const { rows } = await db.query(
+    `SELECT m.product_id, m.product_code, m.barcode, m.product_name, m.short_name, m.unit_name,
+            m.group_id, m.subgroup_id,
+            g.group_description AS group_name, sg.sub_group_description AS sub_group_name,
+            i.qty_on_hand, i.unit_price, i.output_tax_1_rate, i.average_cost,
+            i.reorder_level, i.reorder_qty, i.location_code
+       FROM core.product_master m
+       LEFT JOIN core.product_inventory i ON i.company_id=m.company_id
+        AND i.product_id=m.product_id AND i.branch_id=$2
+       LEFT JOIN biz.group_master g ON g.company_id=m.company_id
+        AND g.group_id=m.group_id AND g.branch_id=$2
+       LEFT JOIN biz.sub_group_master sg ON sg.company_id=m.company_id
+        AND sg.sub_group_id=m.subgroup_id
+      WHERE m.company_id=$1 AND ${ACTIVE.replaceAll('record_status', 'm.record_status')}
+        AND ($3::bigint IS NULL OR m.group_id=$3)
+        AND ($4::bigint IS NULL OR m.subgroup_id=$4)
+        AND ($5 = '' OR LOWER(m.product_name) LIKE '%' || LOWER($5) || '%'
+             OR LOWER(m.product_code) LIKE '%' || LOWER($5) || '%'
+             OR LOWER(COALESCE(m.barcode, '')) LIKE '%' || LOWER($5) || '%')
+      ORDER BY m.product_name
+      LIMIT 5000`,
+    [companyId, branchId, groupId, subGroupId, search],
+  );
+  return rows;
+}
+
+export async function findGroupByName(db, companyId, branchId, name) {
+  const { rows } = await db.query(
+    `SELECT group_id FROM biz.group_master
+      WHERE company_id=$1 AND branch_id=$2 AND LOWER(TRIM(group_description))=LOWER($3)
+        AND (r_status IS NULL OR r_status='ACTIVE') AND COALESCE(is_deleted, FALSE)=FALSE
+      ORDER BY group_id LIMIT 1`,
+    [companyId, branchId, name],
+  );
+  return rows[0] ? Number(rows[0].group_id) : null;
+}
+
+export async function findSubGroupByName(db, companyId, branchId, groupId, name) {
+  const { rows } = await db.query(
+    `SELECT sub_group_id FROM biz.sub_group_master
+      WHERE company_id=$1 AND branch_id=$2 AND group_id=$3
+        AND LOWER(TRIM(sub_group_description))=LOWER($4)
+        AND (r_status IS NULL OR r_status='ACTIVE')
+      ORDER BY sub_group_id LIMIT 1`,
+    [companyId, branchId, groupId, name],
+  );
+  return rows[0] ? Number(rows[0].sub_group_id) : null;
+}
+
 export async function insertProduct(db, p) {
   await db.query(
     `INSERT INTO core.product_master
        (company_id, product_id, product_code, barcode, product_name, short_name,
-        brand_name, unit_name, product_type, stock_type, pack_qty, product_status,
+        brand_name, unit_name, product_type, stock_type, group_id, subgroup_id, pack_qty, product_status,
         record_status, created_by, modified_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,1,'ACTIVE','ACTIVE',$11,$11)`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$12,$13,1,'ACTIVE','ACTIVE',$11,$11)`,
     [p.companyId,p.productId,p.productCode,p.barcode||null,p.productName,p.shortName||null,
-      p.brandName||null,p.unitName||null,p.productType||null,p.stockType||null,p.actor],
+      p.brandName||null,p.unitName||null,p.productType||null,p.stockType||null,p.actor,
+      p.groupId ?? null,p.subGroupId ?? null],
   );
   await db.query(
     `INSERT INTO core.product_inventory
@@ -246,6 +349,26 @@ export async function duplicateGroups(db, companyId, entityType) {
                   FROM biz.supplier_master WHERE company_id=$1 AND record_status='ACTIVE'
                  GROUP BY LOWER(TRIM(supplier_name)) HAVING COUNT(*) > 1 ORDER BY count DESC`,
   };
+  // Barcodes shared by more than one active product (master + pack lines, case-insensitive).
+  queries.barcodes = `SELECT LOWER(TRIM(b.barcode)) duplicate_key, COUNT(DISTINCT b.product_id)::int count,
+                             JSON_AGG(DISTINCT JSONB_BUILD_OBJECT(
+                               'id', m.product_id, 'code', m.product_code, 'name', m.product_name,
+                               'contact', b.source || ' barcode ' || TRIM(b.barcode),
+                               'branchId', ib.branch_id)) records
+                        FROM (
+                          SELECT product_id, barcode, 'Master' source FROM core.product_master
+                           WHERE company_id=$1 AND record_status='ACTIVE' AND TRIM(COALESCE(barcode, '')) <> ''
+                          UNION ALL
+                          SELECT product_id, barcode, 'Pack line' source FROM core.product_pack_line
+                           WHERE company_id=$1 AND record_status='ACTIVE' AND TRIM(COALESCE(barcode, '')) <> ''
+                        ) b
+                        JOIN core.product_master m
+                          ON m.company_id=$1 AND m.product_id=b.product_id AND m.record_status='ACTIVE'
+                        LEFT JOIN (SELECT product_id, MIN(branch_id) branch_id FROM core.product_inventory
+                                    WHERE company_id=$1 GROUP BY product_id) ib ON ib.product_id=m.product_id
+                       GROUP BY LOWER(TRIM(b.barcode))
+                      HAVING COUNT(DISTINCT b.product_id) > 1
+                       ORDER BY count DESC, duplicate_key`;
   if (!queries[entityType]) throw Object.assign(new Error('Unsupported duplicate entity'), { status: 400 });
   const { rows } = await db.query(queries[entityType], [companyId]);
   return rows;

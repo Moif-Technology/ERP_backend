@@ -32,3 +32,8 @@ salesRouter.get(
   requireAnyFeature(['pos.counter_reports', 'pos.settlement', 'pos']),
   salesController.salesViewerBill,
 );
+salesRouter.get(
+  '/reports/area-wise',
+  requireAnyFeature(['pos.counter_reports', 'pos']),
+  salesController.areaWiseReport,
+);

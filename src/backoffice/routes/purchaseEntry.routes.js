@@ -14,5 +14,6 @@ purchaseEntryRouter.get('/:purchaseId', purchaseEntryController.getPurchase);
 purchaseEntryRouter.put('/:purchaseId', purchaseEntryController.updatePurchase);
 purchaseEntryRouter.post('/:purchaseId/post', purchaseEntryController.postPurchase);
 purchaseEntryRouter.post('/:purchaseId/unpost', purchaseEntryController.unpostPurchase);
+purchaseEntryRouter.post('/:purchaseId/cancel', purchaseEntryController.cancelPurchase);
 purchaseEntryRouter.get('/:purchaseId/accounts', purchaseEntryController.getPurchaseAccounts);
 purchaseEntryRouter.post('/:purchaseId/accounts/preview', purchaseEntryController.previewPurchaseAccounts);

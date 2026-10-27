@@ -3,12 +3,13 @@ import { pool } from '../../../config/db.js';
 import {
   getSessionLimits,
   countActiveSessions,
+  getActiveSession,
   registerSession,
   logAuthEvent,
 } from '../../../core/services/authSession.service.js';
 
 function handleError(res, err, fallback) {
-  if (err.status) return res.status(err.status).json({ message: err.message });
+  if (err.status) return res.status(err.status).json({ message: err.message, code: err.code });
   console.error(err);
   return res.status(500).json({ message: fallback });
 }
@@ -62,14 +63,30 @@ export async function listStaff(req, res) {
 export async function pinLogin(req, res) {
   const clientIp = req.ip ?? req.socket?.remoteAddress;
   try {
-    const { accessToken, refreshToken, session } = await authService.loginWithPin(req.body);
+    const { accessToken, refreshToken, session, sessionId, deviceToken, stationId } =
+      await authService.loginWithPin(req.body);
     const companyId = session.company?.companyId;
     const staffPk   = session.user?.staffPk;
+
+    // One Counter-POS terminal per staff. Same terminal may log in again (reload,
+    // missed logout); another terminal needs an explicit takeOver from the cashier.
+    if (staffPk) {
+      const live = await getActiveSession(pool, staffPk, 'pos');
+      if (live?.device_token && live.device_token !== deviceToken && !req.body?.takeOver) {
+        const where = live.station_name
+          ? `${live.station_name}${live.counter_no != null ? ` (Counter ${live.counter_no})` : ''}`
+          : 'another terminal';
+        return res.status(409).json({
+          code: 'STAFF_ALREADY_LOGGED_IN',
+          message: `${session.user?.staffName ?? 'This staff'} is already logged in on ${where}.`,
+        });
+      }
+    }
 
     // Enforce concurrent POS session limit defined by plan.
     if (companyId) {
       const limits  = await getSessionLimits(pool, companyId);
-      const current = await countActiveSessions(pool, companyId, 'pos');
+      const current = await countActiveSessions(pool, companyId, 'pos', staffPk);
       if (current >= Number(limits?.max_pos_sessions ?? 1)) {
         await logAuthEvent(pool, {
           companyId,
@@ -91,7 +108,8 @@ export async function pinLogin(req, res) {
 
     if (companyId && staffPk) {
       const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000); // matches JWT_POS_ACCESS_EXPIRES=8h
-      await registerSession(pool, staffPk, companyId, 'pos', expiresAt);
+      // Overwrites any previous row → the old terminal's jti stops matching (401).
+      await registerSession(pool, staffPk, companyId, 'pos', expiresAt, { sessionId, deviceToken, stationId });
       await logAuthEvent(pool, {
         companyId,
         staffPk,

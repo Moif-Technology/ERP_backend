@@ -99,6 +99,12 @@ export async function getPendingSummary(pool, { companyId, stationId, counterNo,
          FROM bill_pay
        ), 0) AS total_cash,
        COALESCE((
+         SELECT SUM(cash_amt) FROM bill_pay WHERE COALESCE(transaction_type, '') <> 'RETURN'
+       ), 0) AS cash_sales,
+       COALESCE((
+         SELECT SUM(cash_amt) FROM bill_pay WHERE transaction_type = 'RETURN'
+       ), 0) AS cash_refund,
+       COALESCE((
          SELECT SUM(CASE WHEN transaction_type = 'RETURN' THEN -credit_amt ELSE credit_amt END)
          FROM bill_pay
        ), 0) AS total_credit,
@@ -118,12 +124,12 @@ export async function getPendingSummary(pool, { companyId, stationId, counterNo,
          SELECT SUM(sc.discount_amount)
          FROM ops.sales_child sc
          INNER JOIN sm ON sm.sales_id = sc.sales_id AND sm.company_id = sc.company_id
-         WHERE sm.amount > 0
+         WHERE sm.amount > 0 AND COALESCE(sm.transaction_type, '') <> 'RETURN'
        ), 0) AS item_discount_total,
-       COALESCE(SUM(CASE WHEN amount > 0 THEN discount_amount     ELSE 0 END), 0)  AS total_discount,
-       COALESCE(SUM(CASE WHEN amount > 0 THEN round_off_adjustment ELSE 0 END), 0) AS total_round_off,
-       COALESCE(SUM(CASE WHEN amount > 0 THEN tax_1_amount        ELSE 0 END), 0)  AS total_tax,
-       COALESCE(SUM(CASE WHEN amount > 0 THEN amount              ELSE 0 END), 0)  AS gross_amount,
+       COALESCE(SUM(CASE WHEN amount > 0 AND COALESCE(transaction_type, '') <> 'RETURN' THEN discount_amount     ELSE 0 END), 0)  AS total_discount,
+       COALESCE(SUM(CASE WHEN amount > 0 AND COALESCE(transaction_type, '') <> 'RETURN' THEN round_off_adjustment ELSE 0 END), 0) AS total_round_off,
+       COALESCE(SUM(CASE WHEN amount > 0 AND COALESCE(transaction_type, '') <> 'RETURN' THEN tax_1_amount        ELSE 0 END), 0)  AS total_tax,
+       COALESCE(SUM(CASE WHEN amount > 0 AND COALESCE(transaction_type, '') <> 'RETURN' THEN amount              ELSE 0 END), 0)  AS gross_amount,
        COALESCE((
          SELECT SUM(CASE WHEN transaction_type = 'RETURN' THEN 0 ELSE tip_amt END)
          FROM bill_pay
@@ -141,19 +147,19 @@ export async function getPendingSummary(pool, { companyId, stationId, counterNo,
          WHEN amount < 0 THEN ABS(amount)
          ELSE 0
        END), 0) AS total_refund,
-       COUNT(CASE WHEN amount > 0 THEN 1 END)::INT                                          AS bill_count,
-       COUNT(CASE WHEN amount > 0 AND payment_mode = 'CASH'   THEN 1 END)::INT              AS cash_bill_count,
-       COUNT(CASE WHEN amount > 0 AND payment_mode = 'CREDIT' THEN 1 END)::INT              AS credit_bill_count,
-       COUNT(CASE WHEN amount > 0 AND UPPER(COALESCE(payment_mode, '')) IN ('CARD', 'CREDITCARD', 'CREDIT CARD') THEN 1 END)::INT              AS card_bill_count,
-       COUNT(CASE WHEN amount > 0 AND UPPER(COALESCE(payment_mode, '')) IN ('MULTI', 'MULTIPAYMENT') THEN 1 END)::INT              AS multi_bill_count,
-       COUNT(CASE WHEN amount > 0 AND UPPER(COALESCE(payment_mode, '')) IN ('COMPLIMENT', 'COMPLIMENTARY') THEN 1 END)::INT     AS compliment_bill_count,
-       MIN(CASE WHEN amount > 0 THEN bill_no END)                                           AS start_bill_no,
-       MAX(CASE WHEN amount > 0 THEN bill_no END)                                           AS end_bill_no
+       COUNT(CASE WHEN amount > 0 AND COALESCE(transaction_type, '') <> 'RETURN' THEN 1 END)::INT                                          AS bill_count,
+       COUNT(CASE WHEN amount > 0 AND COALESCE(transaction_type, '') <> 'RETURN' AND payment_mode = 'CASH'   THEN 1 END)::INT              AS cash_bill_count,
+       COUNT(CASE WHEN amount > 0 AND COALESCE(transaction_type, '') <> 'RETURN' AND payment_mode = 'CREDIT' THEN 1 END)::INT              AS credit_bill_count,
+       COUNT(CASE WHEN amount > 0 AND COALESCE(transaction_type, '') <> 'RETURN' AND UPPER(COALESCE(payment_mode, '')) IN ('CARD', 'CREDITCARD', 'CREDIT CARD') THEN 1 END)::INT              AS card_bill_count,
+       COUNT(CASE WHEN amount > 0 AND COALESCE(transaction_type, '') <> 'RETURN' AND UPPER(COALESCE(payment_mode, '')) IN ('MULTI', 'MULTIPAYMENT') THEN 1 END)::INT              AS multi_bill_count,
+       COUNT(CASE WHEN amount > 0 AND COALESCE(transaction_type, '') <> 'RETURN' AND UPPER(COALESCE(payment_mode, '')) IN ('COMPLIMENT', 'COMPLIMENTARY') THEN 1 END)::INT     AS compliment_bill_count,
+       MIN(CASE WHEN amount > 0 AND COALESCE(transaction_type, '') <> 'RETURN' THEN bill_no END)                                           AS start_bill_no,
+       MAX(CASE WHEN amount > 0 AND COALESCE(transaction_type, '') <> 'RETURN' THEN bill_no END)                                           AS end_bill_no
      FROM sm`,
     params,
   );
   return rows[0] ?? {
-    total_cash: 0, total_credit: 0, total_card: 0, total_online: 0, total_voucher: 0,
+    total_cash: 0, cash_sales: 0, cash_refund: 0, total_credit: 0, total_card: 0, total_online: 0, total_voucher: 0,
     total_discount: 0, item_discount_total: 0, total_round_off: 0, total_tax: 0, gross_amount: 0,
     total_tip: 0, total_cash_tip: 0, total_card_tip: 0,
     total_refund: 0, bill_count: 0, cash_bill_count: 0, credit_bill_count: 0,
@@ -179,17 +185,17 @@ export async function getPendingStaffBreakdown(pool, {
     `SELECT
        sm.staff_id,
        COALESCE(NULLIF(TRIM(st.staff_name), ''), 'Staff #' || sm.staff_id::text) AS staff_name,
-       COUNT(*) FILTER (WHERE sm.amount > 0)::INT AS bill_count,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN sm.amount ELSE 0 END), 0) AS sale_amount,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN COALESCE(tip.tip_amt, 0) ELSE 0 END), 0) AS tip_amount,
+       COUNT(*) FILTER (WHERE sm.amount > 0 AND COALESCE(sm.transaction_type, '') <> 'RETURN')::INT AS bill_count,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 AND COALESCE(sm.transaction_type, '') <> 'RETURN' THEN sm.amount ELSE 0 END), 0) AS sale_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 AND COALESCE(sm.transaction_type, '') <> 'RETURN' THEN COALESCE(tip.tip_amt, 0) ELSE 0 END), 0) AS tip_amount,
        COALESCE(SUM(CASE
          WHEN sm.transaction_type = 'RETURN' AND sm.amount > 0 THEN sm.amount
          WHEN sm.amount < 0 THEN ABS(sm.amount)
          ELSE 0
        END), 0) AS refund_amount,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN COALESCE(sm.cash_amount, 0) ELSE 0 END), 0) AS cash_amount,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN COALESCE(sm.credit_card_amount, 0) ELSE 0 END), 0) AS card_amount,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN COALESCE(sm.credit_amount, 0) ELSE 0 END), 0) AS credit_amount
+       COALESCE(SUM(CASE WHEN sm.amount > 0 AND COALESCE(sm.transaction_type, '') <> 'RETURN' THEN COALESCE(sm.cash_amount, 0) ELSE 0 END), 0) AS cash_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 AND COALESCE(sm.transaction_type, '') <> 'RETURN' THEN COALESCE(sm.credit_card_amount, 0) ELSE 0 END), 0) AS card_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 AND COALESCE(sm.transaction_type, '') <> 'RETURN' THEN COALESCE(sm.credit_amount, 0) ELSE 0 END), 0) AS credit_amount
      FROM ops.sales_master sm
      LEFT JOIN LATERAL (
        SELECT s.staff_name
@@ -229,17 +235,17 @@ export async function getStaffBreakdownForClose(pool, { companyId, closeId }) {
     `SELECT
        sm.staff_id,
        COALESCE(NULLIF(TRIM(st.staff_name), ''), 'Staff #' || sm.staff_id::text) AS staff_name,
-       COUNT(*) FILTER (WHERE sm.amount > 0)::INT AS bill_count,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN sm.amount ELSE 0 END), 0) AS sale_amount,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN COALESCE(tip.tip_amt, 0) ELSE 0 END), 0) AS tip_amount,
+       COUNT(*) FILTER (WHERE sm.amount > 0 AND COALESCE(sm.transaction_type, '') <> 'RETURN')::INT AS bill_count,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 AND COALESCE(sm.transaction_type, '') <> 'RETURN' THEN sm.amount ELSE 0 END), 0) AS sale_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 AND COALESCE(sm.transaction_type, '') <> 'RETURN' THEN COALESCE(tip.tip_amt, 0) ELSE 0 END), 0) AS tip_amount,
        COALESCE(SUM(CASE
          WHEN sm.transaction_type = 'RETURN' AND sm.amount > 0 THEN sm.amount
          WHEN sm.amount < 0 THEN ABS(sm.amount)
          ELSE 0
        END), 0) AS refund_amount,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN COALESCE(sm.cash_amount, 0) ELSE 0 END), 0) AS cash_amount,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN COALESCE(sm.credit_card_amount, 0) ELSE 0 END), 0) AS card_amount,
-       COALESCE(SUM(CASE WHEN sm.amount > 0 THEN COALESCE(sm.credit_amount, 0) ELSE 0 END), 0) AS credit_amount
+       COALESCE(SUM(CASE WHEN sm.amount > 0 AND COALESCE(sm.transaction_type, '') <> 'RETURN' THEN COALESCE(sm.cash_amount, 0) ELSE 0 END), 0) AS cash_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 AND COALESCE(sm.transaction_type, '') <> 'RETURN' THEN COALESCE(sm.credit_card_amount, 0) ELSE 0 END), 0) AS card_amount,
+       COALESCE(SUM(CASE WHEN sm.amount > 0 AND COALESCE(sm.transaction_type, '') <> 'RETURN' THEN COALESCE(sm.credit_amount, 0) ELSE 0 END), 0) AS credit_amount
      FROM ops.sales_master sm
      LEFT JOIN LATERAL (
        SELECT s.staff_name
@@ -372,19 +378,139 @@ export async function getCashInOutTotals(pool, { companyId, stationId, counterNo
     params.push(staffId);
     staffClause = `AND staff_id = $${params.length}`;
   }
-  const { rows } = await pool.query(
-    `SELECT
-       COALESCE(SUM(CASE WHEN transaction_type = 'CASH_IN'  THEN amount ELSE 0 END), 0) AS cash_in,
-       COALESCE(SUM(CASE WHEN transaction_type = 'CASH_OUT' THEN amount ELSE 0 END), 0) AS cash_out
+  const where = `
      FROM ops.cash_in_out
      WHERE company_id  = $1
        AND station_id  = $2
        AND counter_no  = $3
        ${staffClause}
-       AND close_status = 'PENDING'`,
-    params,
-  );
-  return rows[0];
+       AND close_status = 'PENDING'`;
+  // cash_in / cash_out exclude the opening float and petty cash (reported on their own lines).
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+         COALESCE(SUM(amount) FILTER (WHERE transaction_type = 'CASH_IN'
+           AND COALESCE(category, 'GENERAL') NOT IN ('OPENING_FLOAT', 'PETTY_CASH')), 0) AS cash_in,
+         COALESCE(SUM(amount) FILTER (WHERE transaction_type = 'CASH_OUT'
+           AND COALESCE(category, 'GENERAL') <> 'PETTY_CASH'), 0) AS cash_out,
+         COALESCE(SUM(amount) FILTER (WHERE transaction_type = 'CASH_IN'
+           AND category = 'OPENING_FLOAT'), 0) AS opening_float,
+         COALESCE(SUM(amount) FILTER (WHERE transaction_type = 'CASH_IN'
+           AND category = 'PETTY_CASH'), 0) AS petty_cash_in,
+         COALESCE(SUM(amount) FILTER (WHERE transaction_type = 'CASH_OUT'
+           AND category = 'PETTY_CASH'), 0) AS petty_cash_out
+       ${where}`,
+      params,
+    );
+    return rows[0];
+  } catch (e) {
+    if (e.code !== '42703') throw e;
+    // Migration 137 not applied: no category column — everything is general cash in/out.
+    const { rows } = await pool.query(
+      `SELECT
+         COALESCE(SUM(CASE WHEN transaction_type = 'CASH_IN'  THEN amount ELSE 0 END), 0) AS cash_in,
+         COALESCE(SUM(CASE WHEN transaction_type = 'CASH_OUT' THEN amount ELSE 0 END), 0) AS cash_out,
+         0 AS opening_float, 0 AS petty_cash_in, 0 AS petty_cash_out
+       ${where}`,
+      params,
+    );
+    return rows[0];
+  }
+}
+
+/** True when this session already has a pending opening float entry. */
+export async function hasPendingOpeningFloat(pool, { companyId, stationId, counterNo, staffId, allStaff = false }) {
+  const params = [companyId, stationId, counterNo];
+  let staffClause = '';
+  if (!allStaff) {
+    params.push(staffId);
+    staffClause = `AND staff_id = $${params.length}`;
+  }
+  try {
+    const { rowCount } = await pool.query(
+      `SELECT 1 FROM ops.cash_in_out
+        WHERE company_id = $1 AND station_id = $2 AND counter_no = $3
+          ${staffClause}
+          AND close_status = 'PENDING' AND category = 'OPENING_FLOAT'
+        LIMIT 1`,
+      params,
+    );
+    return rowCount > 0;
+  } catch (e) {
+    if (e.code === '42703') return false;
+    throw e;
+  }
+}
+
+/** Run a cash_in_out SELECT with the category column; retry without it before migration 137. */
+async function queryCashInOut(pool, sqlWithCategory, params) {
+  try {
+    const { rows } = await pool.query(sqlWithCategory, params);
+    return rows;
+  } catch (e) {
+    if (e.code !== '42703') throw e;
+    const { rows } = await pool.query(
+      sqlWithCategory.replace(/,\s*(cio\.)?category/g, ''),
+      params,
+    );
+    return rows;
+  }
+}
+
+/**
+ * Bill / item cancellations (ops.sales_void_log) still pending counter close.
+ * Staff scope follows the bill's cashier, same as the sales totals.
+ */
+export async function getPendingVoidTotals(pool, { companyId, stationId, counterNo, staffId, allStaff = false }) {
+  const params = [companyId, stationId, counterNo];
+  let staffClause = '';
+  if (!allStaff) {
+    params.push(staffId);
+    staffClause = `AND bill_staff_id = $${params.length}`;
+  }
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE void_type = 'BILL')::INT AS bill_cancelled_count,
+         COALESCE(SUM(amount) FILTER (WHERE void_type = 'BILL'), 0) AS bill_cancelled_amount,
+         COUNT(*) FILTER (WHERE void_type = 'ITEM')::INT AS item_cancelled_count,
+         COALESCE(SUM(amount) FILTER (WHERE void_type = 'ITEM'), 0) AS item_cancelled_amount
+       FROM ops.sales_void_log
+       WHERE company_id = $1 AND station_id = $2 AND counter_no = $3
+         ${staffClause}
+         AND counter_close_status = 'PENDING'`,
+      params,
+    );
+    return rows[0];
+  } catch (e) {
+    if (e.code !== '42P01' && e.code !== '42703') throw e;
+    return { bill_cancelled_count: 0, bill_cancelled_amount: 0, item_cancelled_count: 0, item_cancelled_amount: 0 };
+  }
+}
+
+/** Link pending void log rows to a Z close. */
+export async function markVoidLogAsClosed(client, { companyId, stationId, counterNo, staffId, closeId, allStaff = false }) {
+  const params = [String(closeId), companyId, stationId, counterNo];
+  let staffClause = '';
+  if (!allStaff) {
+    params.push(staffId);
+    staffClause = `AND bill_staff_id = $${params.length}`;
+  }
+  try {
+    await client.query('SAVEPOINT void_log_close');
+    await client.query(
+      `UPDATE ops.sales_void_log
+          SET counter_close_status = $1
+        WHERE company_id = $2 AND station_id = $3 AND counter_no = $4
+          ${staffClause}
+          AND counter_close_status = 'PENDING'`,
+      params,
+    );
+    await client.query('RELEASE SAVEPOINT void_log_close');
+  } catch (e) {
+    await client.query('ROLLBACK TO SAVEPOINT void_log_close').catch(() => {});
+    if (e.code !== '42P01' && e.code !== '42703') throw e;
+  }
 }
 
 /**
@@ -432,6 +558,44 @@ export async function insertCounterClose(client, data) {
     data.creditReceiptCard ?? 0,
     data.creditReceiptCount ?? 0,
   ];
+  const extraParams = [
+    data.openingFloat ?? 0, data.pettyCashIn ?? 0, data.pettyCashOut ?? 0,
+    data.billCancelledCount ?? 0, data.billCancelledAmount ?? 0,
+    data.itemCancelledCount ?? 0, data.itemCancelledAmount ?? 0,
+  ];
+  // Migrations 136/137 columns first; fall back to the older column sets below.
+  try {
+    await client.query('SAVEPOINT counter_close_insert_ext');
+    const { rows } = await client.query(
+      `INSERT INTO ops.counter_close (
+         company_id, branch_id, station_id, counter_no, staff_id, report_type, close_date,
+         total_cash, total_credit, total_card, total_discount,
+         total_refund, total_round_off, total_tax, gross_amount,
+         cash_in, cash_out,
+         cash_to_be_collected, collected_cash, cash_difference,
+         bill_count, start_bill_no, end_bill_no, close_no,
+         credit_receipt_cash, credit_receipt_card, credit_receipt_count,
+         opening_float, petty_cash_in, petty_cash_out,
+         bill_cancelled_count, bill_cancelled_amount, item_cancelled_count, item_cancelled_amount
+       ) VALUES (
+         $1,$2,$3,$4,$5,$6,NOW(),
+         $7,$8,$9,$10,
+         $11,$12,$13,$14,
+         $15,$16,
+         $17,$18,$19,
+         $20,$21,$22,$23,
+         $24,$25,$26,
+         $27,$28,$29,
+         $30,$31,$32,$33
+       ) RETURNING id, close_no`,
+      [...baseParams, ...receiptParams, ...extraParams],
+    );
+    await client.query('RELEASE SAVEPOINT counter_close_insert_ext');
+    return { id: rows[0].id, closeNo: rows[0].close_no };
+  } catch (e) {
+    if (e.code !== '42703') throw e;
+    await client.query('ROLLBACK TO SAVEPOINT counter_close_insert_ext');
+  }
   try {
     await client.query('SAVEPOINT counter_close_insert');
     const { rows } = await client.query(
@@ -497,7 +661,7 @@ export async function markSalesAsClosed(client, { companyId, stationId, counterN
       AND counter_no           = $4
       ${staffClause}
       AND COALESCE(NULLIF(TRIM(counter_close_status), ''), 'PENDING') = 'PENDING'
-      AND post_status          = 'POSTED'
+      AND post_status          IN ('POSTED', 'CANCELLED')
        AND UPPER(COALESCE(hold_status, '')) NOT IN ('HOLD', 'DELIVERY')`;
   try {
     await client.query('SAVEPOINT sales_close_update');
@@ -536,29 +700,47 @@ export async function markCashInOutAsClosed(client, { companyId, stationId, coun
 }
 
 /** Insert a cash in or cash out entry */
-export async function insertCashInOut(pool, { companyId, branchId, stationId, counterNo, staffId, transactionType, amount, remarks }) {
-  const { rows } = await pool.query(
-    `INSERT INTO ops.cash_in_out (
-       company_id, branch_id, station_id, counter_no, staff_id,
-       transaction_type, amount, remarks
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-     RETURNING id, transaction_type, amount, remarks, created_at`,
-    [companyId, branchId, stationId ?? branchId, counterNo, staffId, transactionType, amount, remarks ?? null],
-  );
-  return rows[0];
+export async function insertCashInOut(pool, { companyId, branchId, stationId, counterNo, staffId, transactionType, amount, remarks, category = 'GENERAL' }) {
+  const base = [companyId, branchId, stationId ?? branchId, counterNo, staffId, transactionType, amount, remarks ?? null];
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO ops.cash_in_out (
+         company_id, branch_id, station_id, counter_no, staff_id,
+         transaction_type, amount, remarks, category
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       RETURNING id, transaction_type, amount, remarks, category, created_at`,
+      [...base, category],
+    );
+    return rows[0];
+  } catch (e) {
+    if (e.code !== '42703') throw e;
+    // Before migration 137 the category only survives in the remarks text.
+    if (category === 'OPENING_FLOAT') {
+      const err = new Error('Opening float needs database migration 137'); err.status = 409; throw err;
+    }
+    const { rows } = await pool.query(
+      `INSERT INTO ops.cash_in_out (
+         company_id, branch_id, station_id, counter_no, staff_id,
+         transaction_type, amount, remarks
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       RETURNING id, transaction_type, amount, remarks, created_at`,
+      base,
+    );
+    return rows[0];
+  }
 }
 
 /** List cash in/out linked to a completed counter close */
 export async function getCashInOutByCloseId(pool, { companyId, closeId }) {
   try {
-    const { rows } = await pool.query(
-      `SELECT id, transaction_type, amount, remarks, created_at
+    return await queryCashInOut(
+      pool,
+      `SELECT id, transaction_type, amount, remarks, created_at, category
        FROM ops.cash_in_out
        WHERE company_id = $1 AND counter_close_id = $2
        ORDER BY created_at`,
       [companyId, closeId],
     );
-    return rows;
   } catch (e) {
     if (e.code === '42P01' || e.code === '42703') return [];
     throw e;
@@ -573,8 +755,9 @@ export async function getCashInOutList(pool, { companyId, stationId, counterNo, 
     params.push(staffId);
     staffClause = `AND staff_id = $${params.length}`;
   }
-  const { rows } = await pool.query(
-    `SELECT id, transaction_type, amount, remarks, created_at
+  return queryCashInOut(
+    pool,
+    `SELECT id, transaction_type, amount, remarks, created_at, category
      FROM ops.cash_in_out
      WHERE company_id  = $1
        AND station_id  = $2
@@ -584,7 +767,6 @@ export async function getCashInOutList(pool, { companyId, stationId, counterNo, 
      ORDER BY created_at`,
     params,
   );
-  return rows;
 }
 
 /**
@@ -634,13 +816,14 @@ export async function listCashInOutReport(pool, {
       ${closeClause}`;
 
   try {
-    const { rows } = await pool.query(
+    const rows = await queryCashInOut(
+      pool,
       `SELECT
          cio.id,
          cio.transaction_type,
          cio.amount,
          cio.remarks,
-         cio.created_at,
+         cio.created_at, cio.category,
          cio.counter_no,
          cio.close_status,
          CASE
@@ -772,6 +955,65 @@ export async function getCloseById(pool, { companyId, closeId }) {
   const { rows } = await pool.query(
     `SELECT * FROM ops.counter_close
      WHERE company_id = $1 AND id = $2`,
+    [companyId, closeId],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * ERP admin: counter closes across stations / counters / cashiers.
+ * billNo: only the close that contains that bill (sales_id = printed bill digits).
+ */
+export async function listClosesAdmin(pool, {
+  companyId, stationId = null, counterNo = null, staffId = null,
+  dateFrom = null, dateTo = null, billNo = null, reportType = null, limit,
+}) {
+  const lim = Math.min(Math.max(Number(limit) || 200, 1), 500);
+  const params = [companyId];
+  const where = ['cc.company_id = $1'];
+  const add = (sql, v) => { params.push(v); where.push(sql.replace('?', `$${params.length}`)); };
+
+  if (stationId != null) add('cc.station_id = ?', stationId);
+  if (counterNo != null) add('cc.counter_no = ?', counterNo);
+  if (staffId != null) add('cc.staff_id = ?', staffId);
+  if (reportType) add('cc.report_type = ?', reportType);
+  if (billNo != null) {
+    add(`cc.id::text = (
+           SELECT TRIM(sm.counter_close_status) FROM ops.sales_master sm
+            WHERE sm.company_id = cc.company_id AND sm.sales_id = ?
+            LIMIT 1)`, billNo);
+  } else {
+    if (dateFrom) add('cc.close_date::date >= ?::date', dateFrom);
+    if (dateTo) add('cc.close_date::date <= ?::date', dateTo);
+  }
+  params.push(lim);
+
+  const { rows } = await pool.query(
+    `SELECT cc.*,
+            st.staff_name,
+            COALESCE(rc.receipt_cash, 0)  AS linked_receipt_cash,
+            COALESCE(rc.receipt_card, 0)  AS linked_receipt_card,
+            COALESCE(rc.receipt_count, 0) AS linked_receipt_count
+       FROM ops.counter_close cc
+       LEFT JOIN core.staff_master st
+         ON st.company_id = cc.company_id AND st.staff_id = cc.staff_id
+       ${RECEIPT_LATERAL_JOIN}
+      WHERE ${where.join(' AND ')}
+      ORDER BY cc.close_date DESC, cc.id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return rows;
+}
+
+/** Single close with cashier name (ERP admin detail). */
+export async function getCloseByIdWithStaff(pool, { companyId, closeId }) {
+  const { rows } = await pool.query(
+    `SELECT cc.*, st.staff_name
+       FROM ops.counter_close cc
+       LEFT JOIN core.staff_master st
+         ON st.company_id = cc.company_id AND st.staff_id = cc.staff_id
+      WHERE cc.company_id = $1 AND cc.id = $2`,
     [companyId, closeId],
   );
   return rows[0] ?? null;

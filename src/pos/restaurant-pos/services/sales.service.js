@@ -1303,3 +1303,80 @@ export async function getSalesViewerBill(pool, salesIdRaw, query, authStaff) {
     }),
   };
 }
+
+/**
+ * GET /api/pos/sales/reports/area-wise — RptAreaWise. One row per dining area
+ * for this station's restaurant bills, by date range or one counter close no.
+ * Returns are excluded, same as the sales viewer.
+ */
+export async function areaWiseReport(pool, query, authStaff) {
+  const companyId = Number(authStaff.company_id);
+  if (!Number.isFinite(companyId) || companyId < 1) {
+    const err = new Error('company_id required');
+    err.status = 400;
+    throw err;
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const stationId = num(authStaff.station_id ?? authStaff.branch_id ?? query.stationId, 0);
+  // Close no is stored as "S<station>-<n>"; the till types just <n>.
+  const rawClose = str(query.closeNo, 30);
+  const closeNo = /^\d+$/.test(rawClose) && stationId > 0 ? `S${stationId}-${Number(rawClose)}` : rawClose;
+  const areaId = num(query.areaId, 0);
+
+  const params = [companyId];
+  const extra = [];
+  if (closeNo) {
+    params.push(closeNo);
+    extra.push(`sm.counter_close_status = $${params.length}`);
+  } else {
+    params.push(isoDate(query.dateFrom, today), isoDate(query.dateTo, today));
+    extra.push(`sm.bill_date::date BETWEEN $${params.length - 1}::date AND $${params.length}::date`);
+  }
+  if (stationId > 0) {
+    params.push(stationId);
+    extra.push(`sm.station_id = $${params.length}`);
+  }
+  if (areaId > 0) {
+    params.push(areaId);
+    extra.push(`sm.area_id = $${params.length}`);
+  }
+
+  const { rows } = await pool.query(
+    `SELECT sm.area_id,
+            COALESCE(NULLIF(TRIM(am.area_name), ''), 'NO AREA') AS area_name,
+            COUNT(*)::int AS bill_count,
+            COALESCE(SUM(sm.no_of_customers), 0)::int AS covers,
+            COALESCE(SUM(sm.subtotal_amount), 0)::float8 AS subtotal,
+            COALESCE(SUM(sm.discount_amount), 0)::float8 AS discount,
+            COALESCE(SUM(COALESCE(sm.tax_1_amount, 0) + COALESCE(sm.tax_2_amount, 0) + COALESCE(sm.tax_3_amount, 0)), 0)::float8 AS tax,
+            COALESCE(SUM(sm.amount), 0)::float8 AS net
+       FROM ops.sales_master sm
+       LEFT JOIN LATERAL (
+         SELECT a.area_name FROM core.area_master a
+          WHERE a.company_id = sm.company_id AND a.area_id = sm.area_id
+          ORDER BY (a.branch_id = sm.station_id) DESC
+          LIMIT 1
+       ) am ON TRUE
+      WHERE sm.company_id = $1
+        AND sm.entry_source = 'RESTAURANT-POS'
+        AND COALESCE(UPPER(TRIM(sm.transaction_type)), '') NOT IN ('RETURN', 'R', 'SALES RETURN')
+        AND ${extra.join(' AND ')}
+      GROUP BY sm.area_id, am.area_name
+      ORDER BY net DESC, area_name`,
+    params,
+  );
+  const r3 = (n) => Math.round(Number(n || 0) * 1000) / 1000;
+  return {
+    ok: true,
+    rows: rows.map((r) => ({
+      areaId: r.area_id != null ? Number(r.area_id) : null,
+      areaName: r.area_name,
+      billCount: r.bill_count,
+      covers: r.covers,
+      subtotal: r3(r.subtotal),
+      discount: r3(r.discount),
+      tax: r3(r.tax),
+      net: r3(r.net),
+    })),
+  };
+}

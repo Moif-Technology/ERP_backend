@@ -4,6 +4,8 @@ import { ensureBranchIntegrationDefaults } from '../../accounts/repositories/acc
 import { seedDefaultDesignations } from '../repositories/designation.repository.js';
 
 const VALID_TYPES = new Set(['GENERAL', 'COUNTER_POS', 'RESTAURANT_POS', 'GARAGE', 'WAREHOUSE', 'HEAD_OFFICE']);
+// Stock location kind (migration 134): one back STORE feeding SHOPs.
+const VALID_LOCATION_TYPES = new Set(['STORE', 'SHOP']);
 
 export async function listBranches(req, res) {
   try {
@@ -18,7 +20,7 @@ export async function listBranches(req, res) {
 export async function createBranch(req, res) {
   try {
     const companyId = req.authStaff.company_id;
-    const { branchName, branchCode, branchType, address, phone } = req.body;
+    const { branchName, branchCode, branchType, locationType, address, phone } = req.body;
 
     if (!branchName || !String(branchName).trim()) {
       return res.status(400).json({ message: 'branchName is required' });
@@ -30,6 +32,10 @@ export async function createBranch(req, res) {
     if (!VALID_TYPES.has(type)) {
       return res.status(400).json({ message: `Invalid branchType. Valid: ${[...VALID_TYPES].join(', ')}` });
     }
+    const locType = String(locationType || 'SHOP').toUpperCase();
+    if (!VALID_LOCATION_TYPES.has(locType)) {
+      return res.status(400).json({ message: 'Invalid locationType. Valid: STORE, SHOP' });
+    }
 
     const branchId = await branchRepo.nextBranchId(pool, companyId);
     const branch = await branchRepo.insertBranch(pool, {
@@ -38,6 +44,7 @@ export async function createBranch(req, res) {
       branchCode: String(branchCode).trim().toUpperCase(),
       branchName: String(branchName).trim(),
       branchType: type,
+      locationType: locType,
       address: address ? String(address).trim() : null,
       phone: phone ? String(phone).trim() : null,
       actor: req.authStaff.staff_id,
@@ -62,7 +69,7 @@ export async function updateBranch(req, res) {
       return res.status(400).json({ message: 'Invalid branchId' });
     }
 
-    const { branchName, branchCode, branchType, address, phone } = req.body;
+    const { branchName, branchCode, branchType, locationType, address, phone } = req.body;
     if (!branchName || !String(branchName).trim()) {
       return res.status(400).json({ message: 'branchName is required' });
     }
@@ -73,6 +80,10 @@ export async function updateBranch(req, res) {
     if (!VALID_TYPES.has(type)) {
       return res.status(400).json({ message: `Invalid branchType` });
     }
+    const locType = String(locationType || 'SHOP').toUpperCase();
+    if (!VALID_LOCATION_TYPES.has(locType)) {
+      return res.status(400).json({ message: 'Invalid locationType. Valid: STORE, SHOP' });
+    }
 
     const branch = await branchRepo.updateBranch(pool, {
       companyId,
@@ -80,6 +91,7 @@ export async function updateBranch(req, res) {
       branchCode: String(branchCode).trim().toUpperCase(),
       branchName: String(branchName).trim(),
       branchType: type,
+      locationType: locType,
       address: address ? String(address).trim() : null,
       phone: phone ? String(phone).trim() : null,
     });

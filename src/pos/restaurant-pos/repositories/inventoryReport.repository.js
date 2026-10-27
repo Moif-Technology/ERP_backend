@@ -66,6 +66,7 @@ function filterSql(filters, params) {
       COALESCE(m.product_name, '') ILIKE $${params.length}
       OR COALESCE(m.short_name, '') ILIKE $${params.length}
       OR COALESCE(m.barcode, '') ILIKE $${params.length}
+      OR COALESCE(m.product_code, '') ILIKE $${params.length}
     )`);
   }
 
@@ -84,6 +85,7 @@ function stockSelect(uniqueExpr) {
   return `SELECT m.product_id,
             ${uniqueExpr} AS unique_multi_product_id,
             COALESCE(m.barcode, '') AS barcode,
+            COALESCE(m.product_code, '') AS product_code,
             COALESCE(m.product_name, '') AS product_name,
             COALESCE(m.short_name, '') AS short_name,
             m.brand_id,
@@ -269,6 +271,7 @@ function nameFilterSql(filters, params) {
       COALESCE(m.product_name, '') ILIKE $${params.length}
       OR COALESCE(m.short_name, '') ILIKE $${params.length}
       OR COALESCE(m.barcode, '') ILIKE $${params.length}
+      OR COALESCE(m.product_code, '') ILIKE $${params.length}
     )`;
 }
 
@@ -321,6 +324,7 @@ export async function listStockMovementSummary(
       )
       SELECT m.product_id,
              COALESCE(m.barcode, '') AS barcode,
+             COALESCE(m.product_code, '') AS product_code,
              COALESCE(m.product_name, COALESCE(m.short_name, '')) AS product_name,
              COALESCE(g.group_description, '') AS group_name,
              COALESCE(i.qty_on_hand, 0) AS qty_on_hand,
@@ -384,6 +388,7 @@ export async function listStockMovementLines(
     `SELECT ple.product_log_id,
             ple.product_id,
             COALESCE(m.barcode, '') AS barcode,
+            COALESCE(m.product_code, '') AS product_code,
             COALESCE(m.product_name, COALESCE(m.short_name, '')) AS product_name,
             COALESCE(g.group_description, '') AS group_name,
             ple.transaction_date,

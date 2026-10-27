@@ -1,6 +1,10 @@
 import { withTransaction } from '../../config/db.js';
 import { nextDocNo, SEQUENCE_DEFS } from '../../shared/services/docSequence.service.js';
 import * as repo from '../repositories/tools.repository.js';
+import * as groupRepo from '../../backoffice/repositories/group.repository.js';
+import * as subGroupRepo from '../../backoffice/repositories/subGroup.repository.js';
+import { findBarcodeConflict, setMasterBarcode } from '../../backoffice/repositories/product.repository.js';
+import { assertBarcodesUnique } from '../../backoffice/services/product.service.js';
 
 function context(authStaff) {
   const companyId = Number(authStaff?.company_id);
@@ -19,17 +23,114 @@ const pick = (r, ...keys) => {
   return '';
 };
 
+// Match group / sub-group by name in the import branch; create missing ones like Group Entry does.
+// Not cached across rows: a failed row rolls back its savepoint, which would leave a cached id dangling.
+async function resolveGroups(client, ctx, groupName, subGroupName) {
+  if (!groupName) {
+    if (subGroupName) throw new Error('group_name is required when sub_group_name is given');
+    return { groupId: null, subGroupId: null };
+  }
+  const { companyId, branchId } = ctx;
+  let groupId = await repo.findGroupByName(client, companyId, branchId, groupName);
+  if (groupId == null) {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [`biz.group_master:${companyId}:${branchId}`]);
+    groupId = await groupRepo.nextGroupId(client, companyId, branchId);
+    await groupRepo.insertGroup(client, {
+      groupId, companyId, branchId,
+      groupCode: await nextDocNo(client, { companyId, branchId, sequenceCode: 'GROUP' }),
+      groupDescription: groupName.slice(0, 300), groupDescriptionArabic: '',
+      keyCode: 0, keyShift: 0,
+      sortOrder: await groupRepo.nextSortOrder(client, companyId, branchId),
+    });
+  }
+  if (!subGroupName) return { groupId, subGroupId: null };
+  let subGroupId = await repo.findSubGroupByName(client, companyId, branchId, groupId, subGroupName);
+  if (subGroupId == null) {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [`biz.sub_group_master:${companyId}`]);
+    subGroupId = await subGroupRepo.nextSubGroupId(client, companyId);
+    await subGroupRepo.insertSubGroup(client, {
+      subGroupId, companyId, branchId, groupId,
+      subGroupCode: await nextDocNo(client, { companyId, branchId, sequenceCode: 'SUB_GROUP' }),
+      subGroupDescription: subGroupName.slice(0, 300), subGroupDescriptionArabic: null,
+    });
+  }
+  return { groupId, subGroupId };
+}
+
+const round2 = (n) => Math.round(n * 100) / 100;
+// Blank cell = leave unchanged (null); anything else must be a non-negative number.
+const optNum = (r, ...keys) => {
+  const v = pick(r, ...keys);
+  if (v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`${keys[0]} must be a non-negative number`);
+  return n;
+};
+
+// "Update existing" product import: match by product_code (fallback barcode) and update
+// barcode, costs and branch selling price. unit_price is stored excl. VAT; output_tax_1_rate is VAT %.
+async function updateExistingProduct(client, ctx, row) {
+  const productCode = text(pick(row, 'product_code', 'productCode', 'code'));
+  const barcode = text(pick(row, 'barcode')).slice(0, 50);
+  if (!productCode && !barcode) throw new Error('product_code or barcode is required');
+  let product = productCode ? await repo.findProductForUpdate(client, ctx.companyId, ctx.branchId, { productCode }) : null;
+  let matchedByBarcode = false;
+  if (!product && barcode) {
+    product = await repo.findProductForUpdate(client, ctx.companyId, ctx.branchId, { barcode });
+    matchedByBarcode = true;
+  }
+  if (!product) throw new Error(productCode ? `Product code ${productCode} not found` : `Barcode ${barcode} not found`);
+  if (product.ambiguous) throw new Error(`Barcode ${barcode} matches more than one product`);
+  if (product.product_inventory_id == null) throw new Error('Product has no inventory in this branch');
+
+  const averageCost = optNum(row, 'average_cost', 'averageCost');
+  const purchaseCost = optNum(row, 'purchase_cost', 'last_purchase_cost', 'purchaseCost');
+  const priceExcl = optNum(row, 'price_excl_vat', 'unit_price', 'priceExclVat');
+  const vatPct = optNum(row, 'vat_percent', 'vat_pct', 'vatPercent');
+  const priceIncl = optNum(row, 'price_incl_vat', 'selling_price', 'priceInclVat');
+  if (vatPct != null && vatPct > 100) throw new Error('vat_percent must be between 0 and 100');
+
+  const rate = vatPct ?? num(product.output_tax_1_rate);
+  const currentExcl = num(product.unit_price);
+  let unitPrice = priceExcl;
+  if (priceIncl != null) {
+    const fromIncl = round2(priceIncl / (1 + rate / 100));
+    const consistent = priceExcl != null && Math.abs(round2(priceExcl * (1 + rate / 100)) - priceIncl) <= 0.01;
+    if (priceExcl == null || (!consistent && Math.abs(priceExcl - currentExcl) < 0.005)) unitPrice = fromIncl;
+    else if (!consistent) throw new Error(`price_excl_vat ${priceExcl} and price_incl_vat ${priceIncl} disagree at VAT ${rate}%`);
+  }
+  const vatAmount = unitPrice != null || vatPct != null ? round2((unitPrice ?? currentExcl) * rate / 100) : null;
+
+  const barcodeChanged = Boolean(barcode) && !matchedByBarcode
+    && barcode.toLowerCase() !== text(product.barcode).toLowerCase();
+  if (barcodeChanged) {
+    await assertBarcodesUnique(client, ctx.companyId, [barcode], Number(product.product_id));
+    await setMasterBarcode(client, ctx.companyId, Number(product.product_id), barcode, ctx.actor.slice(0, 50));
+  }
+  if (!barcodeChanged && [averageCost, purchaseCost, unitPrice, vatPct].every((v) => v == null)) {
+    throw new Error('Nothing to update (all value columns blank)');
+  }
+  await repo.updateInventoryPricing(client, {
+    ...ctx, productId: Number(product.product_id),
+    averageCost, purchaseCost, unitPrice, vatPct, vatAmount,
+  });
+}
+
 export async function importRows(_pool, authStaff, body) {
   const ctx = context(authStaff);
   const entityType = text(body.entityType).toLowerCase();
   const rows = Array.isArray(body.rows) ? body.rows.slice(0, 5000) : [];
-  if (!['products', 'customers', 'suppliers', 'opening-stock'].includes(entityType)) {
+  if (!['products', 'products-update', 'customers', 'suppliers', 'opening-stock'].includes(entityType)) {
     throw Object.assign(new Error('Unsupported import entity'), { status: 400 });
   }
   if (!rows.length) throw Object.assign(new Error('No rows supplied'), { status: 400 });
 
   const result = await withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`tools-import:${ctx.companyId}:${entityType}`]);
+    if (entityType === 'products-update') {
+      // Same company-wide lock product entry takes, so barcode claims can't race.
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', [`core.product_master:${ctx.companyId}`]);
+    }
     const errors = [];
     let success = 0;
     let nextProductId = await repo.nextScopedId(client, 'core.product_master', 'product_id', ctx.companyId);
@@ -43,13 +144,20 @@ export async function importRows(_pool, authStaff, body) {
       try {
         if (entityType === 'products') {
           const productName = text(pick(row, 'product_name', 'productName', 'name'));
-          let productCode = text(pick(row, 'product_code', 'productCode', 'code'));
+          const productCode = text(pick(row, 'product_code', 'productCode', 'code'));
           const barcode = text(pick(row, 'barcode'));
           if (!productName) throw new Error('Product name is required');
-          if (!productCode) productCode = await nextDocNo(client, { ...ctx, sequenceCode: 'PRODUCT' });
+          if (!productCode) throw new Error('Product code is required');
           if (await repo.findProduct(client, ctx.companyId, productCode, barcode)) throw new Error('Product code or barcode already exists');
+          if (barcode && await findBarcodeConflict(client, ctx.companyId, [barcode])) throw new Error('Product code or barcode already exists');
+          const { groupId, subGroupId } = await resolveGroups(
+            client, ctx,
+            text(pick(row, 'group_name', 'groupName', 'group', 'category')),
+            text(pick(row, 'sub_group_name', 'subGroupName', 'sub_group', 'subgroup', 'sub_category')),
+          );
           await repo.insertProduct(client, {
             ...ctx, productId: nextProductId++, inventoryId: nextInventoryId++, productCode, barcode, productName,
+            groupId, subGroupId,
             shortName: text(pick(row, 'short_name', 'shortName')),
             brandName: text(pick(row, 'brand_name', 'brandName')),
             unitName: text(pick(row, 'unit_name', 'unitName')),
@@ -62,6 +170,8 @@ export async function importRows(_pool, authStaff, body) {
             reorderQty: num(pick(row, 'reorder_qty', 'reorderQty')),
             locationCode: text(pick(row, 'location_code', 'locationCode')),
           });
+        } else if (entityType === 'products-update') {
+          await updateExistingProduct(client, ctx, row);
         } else if (entityType === 'customers') {
           const customerName = text(pick(row, 'customer_name', 'customerName', 'name'));
           let customerCode = text(pick(row, 'customer_code', 'customerCode', 'code'));
@@ -174,9 +284,12 @@ export async function bulkUpdate(pool, authStaff, body) {
 
 export async function labels(pool, authStaff, query) {
   const ctx = context(authStaff);
-  const products = await repo.exportRows(pool, ctx.companyId, ctx.branchId, 'products');
-  const search = text(query.search).toLowerCase();
-  return products.filter((p) => !search || [p.product_name, p.product_code, p.barcode].some((v) => text(v).toLowerCase().includes(search))).slice(0, 500);
+  const id = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null);
+  return repo.labelProducts(pool, ctx.companyId, ctx.branchId, {
+    search: text(query.search),
+    groupId: id(query.groupId),
+    subGroupId: id(query.subGroupId),
+  });
 }
 
 export async function sequences(pool, authStaff) {

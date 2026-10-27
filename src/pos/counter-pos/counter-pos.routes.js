@@ -7,7 +7,7 @@ import * as groupController    from './controllers/group.controller.js';
 import * as counterController     from './controllers/counter.controller.js';
 import * as settlementController  from './controllers/settlement.controller.js';
 import { authMiddleware }         from '../../middleware/authMiddleware.js';
-import { requireFeature, requirePermission } from '../../middleware/entitlementMiddleware.js';
+import { requireFeature, requirePermission, requireAnyPermission } from '../../middleware/entitlementMiddleware.js';
 
 export const counterPosRouter = Router();
 
@@ -16,10 +16,13 @@ counterPosRouter.post('/device/enroll',    authController.enrollDevice);
 counterPosRouter.post('/device/stations',  authController.listStationsForEnroll);
 counterPosRouter.post('/staff-list',       authController.listStaff);
 counterPosRouter.post('/pin-login',        authController.pinLogin);
+// Connectivity probe for the offline sync indicator (no DB, no auth).
+counterPosRouter.get('/ping',              (_req, res) => res.json({ ok: true }));
 
 // Protected — require valid POS access token
 counterPosRouter.get('/groups',             authMiddleware, requireFeature('pos.product_search'), requirePermission('pos.product_search.view'), groupController.listGroups);
 counterPosRouter.get('/products/search',    authMiddleware, requireFeature('pos.product_search'), requirePermission('pos.product_search.view'), productController.searchByBarcode);
+counterPosRouter.get('/products/snapshot',  authMiddleware, requireFeature('pos.product_search'), requirePermission('pos.product_search.view'), productController.productSnapshot);
 counterPosRouter.get('/products/lookup',    authMiddleware, requireFeature('pos.product_search'), requirePermission('pos.product_search.view'), productController.lookupProducts);
 counterPosRouter.get('/customers/search',   authMiddleware, requireFeature('pos.customer_selection'), requirePermission('pos.customer_selection.view'), customerController.searchCustomers);
 counterPosRouter.get('/settlement/credit-customers',              authMiddleware, requireFeature('pos.settlement'), requirePermission('pos.settlement.view'), settlementController.listCreditCustomers);
@@ -30,7 +33,11 @@ counterPosRouter.get('/settlement/receipts/:transactionId',       authMiddleware
 counterPosRouter.get('/sales/staff-wise',         authMiddleware, requireFeature('pos.counter_reports'), requirePermission('pos.counter_reports.view'), salesController.staffWiseReport);
 counterPosRouter.get('/sales/viewer',             authMiddleware, requireFeature('pos.counter_reports'), requirePermission('pos.counter_reports.view'), salesController.salesViewerList);
 counterPosRouter.get('/sales/viewer/:salesId',    authMiddleware, requireFeature('pos.counter_reports'), requirePermission('pos.counter_reports.view'), salesController.salesViewerBill);
-counterPosRouter.get('/sales/next-bill-no',      authMiddleware, requireFeature('pos.billing'), requirePermission('pos.billing.create'), salesController.nextBillNo);
+counterPosRouter.get('/sales/by-bill/:billNo',   authMiddleware, requireFeature('pos.billing'), requirePermission('pos.billing.create'), salesController.billForReturn);
+// Bill cancellation: cashier may request; supervisor permission (pos.billing.delete) or supervisor code+PIN checked in the service.
+counterPosRouter.post('/sales/:salesId/void',                     authMiddleware, requireFeature('pos.billing'), requireAnyPermission(['pos.billing.create', 'pos.billing.delete']), salesController.voidBill);
+counterPosRouter.post('/sales/:salesId/items/:salesChildId/void', authMiddleware, requireFeature('pos.billing'), requireAnyPermission(['pos.billing.create', 'pos.billing.delete']), salesController.voidBillItem);
+counterPosRouter.get('/sales/next-bill-no',     authMiddleware, requireFeature('pos.billing'), requirePermission('pos.billing.create'), salesController.nextBillNo);
 counterPosRouter.post('/sales/save',             authMiddleware, requireFeature('pos.billing'), requirePermission('pos.billing.create'), salesController.saveBill);
 counterPosRouter.post('/sales/hold',             authMiddleware, requireFeature('pos.order_list'), requirePermission('pos.order_list.create'), salesController.holdBill);
 counterPosRouter.get('/sales/held',              authMiddleware, requireFeature('pos.order_list'), requirePermission('pos.order_list.view'), salesController.getHeldBills);

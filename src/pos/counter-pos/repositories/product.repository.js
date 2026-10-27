@@ -13,6 +13,7 @@ function mapProduct(row) {
     unitName:    row.unit_name  ?? null,
     groupId:     row.group_id   != null ? Number(row.group_id)   : null,
     subgroupId:  row.subgroup_id != null ? Number(row.subgroup_id) : null,
+    stockType:   row.stock_type ?? null,
     inventory: {
       unitPrice:           row.unit_price           != null ? Number(row.unit_price)           : 0,
       minimumRetailPrice:  row.minimum_retail_price  != null ? Number(row.minimum_retail_price)  : 0,
@@ -37,7 +38,7 @@ export async function searchProduct(pool, companyId, branchId, { barcode = null,
 
   const { rows } = await pool.query(
     `SELECT m.product_id, m.product_code, m.barcode, m.product_name, m.short_name,
-            m.description_arabic, m.unit_name, m.group_id, m.subgroup_id,
+            m.description_arabic, m.unit_name, m.group_id, m.subgroup_id, m.stock_type,
             i.unit_price, i.minimum_retail_price, i.maximum_retail_price,
             i.qty_on_hand, i.output_tax_1_rate
      FROM core.product_master m
@@ -62,12 +63,11 @@ export async function lookupProducts(pool, companyId, branchId, { q = '', maxPri
 
   if (term) {
     params.push(`%${term.toLowerCase()}%`);
-    params.push(term);
     conditions.push(
-      `(LOWER(m.product_name) LIKE $${params.length - 1}
-        OR LOWER(m.short_name)  LIKE $${params.length - 1}
-        OR LOWER(m.product_code) LIKE $${params.length - 1}
-        OR m.barcode = $${params.length})`,
+      `(LOWER(m.product_name) LIKE $${params.length}
+        OR LOWER(m.short_name)  LIKE $${params.length}
+        OR LOWER(m.product_code) LIKE $${params.length}
+        OR LOWER(m.barcode) LIKE $${params.length})`,
     );
   }
 
@@ -85,7 +85,7 @@ export async function lookupProducts(pool, companyId, branchId, { q = '', maxPri
 
   const { rows } = await pool.query(
     `SELECT m.product_id, m.product_code, m.barcode, m.product_name, m.short_name,
-            m.description_arabic, m.unit_name, m.group_id, m.subgroup_id,
+            m.description_arabic, m.unit_name, m.group_id, m.subgroup_id, m.stock_type,
             i.unit_price, i.minimum_retail_price, i.maximum_retail_price,
             i.qty_on_hand, i.output_tax_1_rate
      FROM core.product_master m
@@ -101,5 +101,25 @@ export async function lookupProducts(pool, companyId, branchId, { q = '', maxPri
     params,
   );
 
+  return rows.map(mapProduct);
+}
+
+/** Every active product of the branch — Counter-POS offline cache snapshot. */
+export async function listAllProducts(pool, companyId, branchId) {
+  const { rows } = await pool.query(
+    `SELECT m.product_id, m.product_code, m.barcode, m.product_name, m.short_name,
+            m.description_arabic, m.unit_name, m.group_id, m.subgroup_id, m.stock_type,
+            i.unit_price, i.minimum_retail_price, i.maximum_retail_price,
+            i.qty_on_hand, i.output_tax_1_rate
+     FROM core.product_master m
+     INNER JOIN core.product_inventory i
+       ON m.company_id = i.company_id AND m.product_id = i.product_id
+     WHERE m.company_id = $1
+       AND i.branch_id  = $2
+       AND m.record_status = 'ACTIVE'
+       AND i.record_status = 'ACTIVE'
+     ORDER BY m.product_name`,
+    [companyId, branchId],
+  );
   return rows.map(mapProduct);
 }

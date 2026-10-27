@@ -10,3 +10,4 @@ grnRouter.use(requireFeature('backoffice.grn'));
 grnRouter.get('/', grnController.listGrns);
 grnRouter.post('/', grnController.createGrn);
 grnRouter.get('/:grnId', grnController.getGrn);
+grnRouter.post('/:grnId/cancel', grnController.cancelGrn);

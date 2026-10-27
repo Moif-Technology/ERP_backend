@@ -69,7 +69,7 @@ export async function authMiddleware(req, res, next) {
       '/api/products',
       '/api/customers',
     ];
-    const POS_ALLOWED_EXACT = ['/api/app-parameters/gvtax', '/api/parameters/POS'];
+    const POS_ALLOWED_EXACT = ['/api/app-parameters/gvtax', '/api/parameters/POS', '/api/auth/logout'];
     // Compare against the PATH only. req.originalUrl carries the query string,
     // so matching a catalogue route needs the '?' stripped first
     // (e.g. '/api/products?groupId=1').
@@ -82,12 +82,13 @@ export async function authMiddleware(req, res, next) {
       return res.status(403).json({ message: 'POS token cannot access ERP routes' });
     }
     const sessionType = jwtScope === 'pos' ? 'pos' : 'erp';
+    req.authSessionType = sessionType;
 
     // Fast path: cached session (no DB round-trip). No-op miss when Redis off.
     const cached = await cacheGet(sessionKey(staffPk));
     if (cached) {
       const staffRow = JSON.parse(cached);
-      if (!(await hasActiveSession(pool, staffPk, sessionType))) {
+      if (!(await hasActiveSession(pool, staffPk, sessionType, payload.jti ?? null))) {
         await invalidateStaffSession(staffPk);
         return res.status(401).json({ message: 'Session expired' });
       }
@@ -117,7 +118,7 @@ export async function authMiddleware(req, res, next) {
     if (!rows.length) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
-    if (!(await hasActiveSession(pool, staffPk, sessionType))) {
+    if (!(await hasActiveSession(pool, staffPk, sessionType, payload.jti ?? null))) {
       return res.status(401).json({ message: 'Session expired' });
     }
     const staffRow = rows[0];

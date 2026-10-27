@@ -32,7 +32,7 @@ export async function login(req, res) {
 
     if (companyId) {
       const limits = await getSessionLimits(pool, companyId);
-      const current = await countActiveSessions(pool, companyId, 'erp');
+      const current = await countActiveSessions(pool, companyId, 'erp', staffPk);
       if (current >= Number(limits?.max_erp_sessions ?? 3)) {
         await logAuthEvent(pool, {
           companyId,

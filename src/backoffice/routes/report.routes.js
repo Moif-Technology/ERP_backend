@@ -8,7 +8,13 @@ export const reportRouter = Router();
 reportRouter.use(authMiddleware);
 reportRouter.use(requireAnyFeature(['backoffice.reports', 'hr.reports', 'crm.reports', 'garage.reports']));
 
+// Filter dropdowns (branches, stations, groups, sub-groups, suppliers)
+reportRouter.get('/lookups', reportController.lookups);
+
 // Sales
+reportRouter.get('/sales-summary', reportController.salesSummary);
+reportRouter.get('/sales-by-pos', reportController.salesByPos);
+reportRouter.get('/sales-analysis', reportController.salesAnalysis);
 reportRouter.get('/daily-sales', reportController.dailySales);
 reportRouter.get('/customer-wise-sales', reportController.customerWiseSales);
 reportRouter.get('/product-wise-sales', reportController.productWiseSales);
@@ -26,11 +32,14 @@ reportRouter.get('/outstanding-lpo', reportController.outstandingLPO);
 reportRouter.get('/stock-summary', reportController.stockSummary);
 reportRouter.get('/stock-ledger', reportController.stockLedger);
 reportRouter.get('/reorder', reportController.reorder);
+reportRouter.get('/inventory-reconciliation', reportController.inventoryReconciliation);
+reportRouter.get('/live-store-status', reportController.liveStoreStatus);
 
 // Accounts
 reportRouter.get('/customer-balance', reportController.customerBalance);
 reportRouter.get('/supplier-balance', reportController.supplierBalance);
 reportRouter.get('/cash-bank-movement', reportController.cashBankMovement);
+reportRouter.get('/accounts-reconciliation', reportController.accountsReconciliation);
 
 // HR
 reportRouter.get('/attendance-report', reportController.attendanceReport);

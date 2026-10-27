@@ -138,3 +138,12 @@ export async function salesViewerBill(req, res) {
     return viewerError(res, err, 'Could not load bill');
   }
 }
+
+/** GET /api/pos/sales/reports/area-wise — RptAreaWise. */
+export async function areaWiseReport(req, res) {
+  try {
+    return res.status(200).json(await salesService.areaWiseReport(pool, req.query ?? {}, req.authStaff));
+  } catch (err) {
+    return viewerError(res, err, 'Could not load area-wise report');
+  }
+}

@@ -1,6 +1,7 @@
 import { withTransaction } from '../../config/db.js';
 import * as branchRepo from '../../shared/repositories/branch.repository.js';
 import * as grnRepo from '../repositories/grn.repository.js';
+import * as purchaseReversalRepo from '../repositories/purchaseReversal.repository.js';
 import * as supplierRepo from '../repositories/supplier.repository.js';
 import { actorStaffPk } from '../../utils/actorStaff.js';
 import { nextDocNo } from '../../shared/services/docSequence.service.js';
@@ -333,6 +334,59 @@ export async function createGrn(pool, body, authStaff) {
     return {
       grn: mapMasterToApi(full.master),
       lines: (full.children || []).map(mapChildToApi),
+    };
+  });
+}
+
+/**
+ * POST /api/grns/:grnId/cancel — GRN is a receipt document only; stock moves on
+ * the purchase entry (purchaseEntry.service applyPurchaseStockIn), so cancelling
+ * a GRN reverses no stock. Blocked while a non-cancelled purchase uses it —
+ * cancel that purchase first (POST /api/purchases/:id/cancel).
+ */
+export async function cancelGrn(pool, authStaff, grnId, body = {}) {
+  const companyId = Number(authStaff.company_id);
+  const gid = Number(grnId);
+  if (!Number.isFinite(gid) || gid < 1) {
+    const err = new Error('Invalid GRN id');
+    err.status = 400;
+    throw err;
+  }
+  const reason = str(body?.reason, 150);
+  if (!reason) {
+    const err = new Error('A reason is required to cancel a GRN');
+    err.status = 400;
+    throw err;
+  }
+
+  return withTransaction(async (client) => {
+    const full = await grnRepo.getGrnWithLines(client, companyId, gid);
+    if (!full) {
+      const err = new Error('GRN not found');
+      err.status = 404;
+      throw err;
+    }
+    if (String(full.master.post_status || '').toUpperCase() === 'CANCELLED') {
+      const err = new Error('GRN is already cancelled');
+      err.status = 409;
+      throw err;
+    }
+    const purchases = await purchaseReversalRepo.listActivePurchasesForGrn(client, companyId, gid);
+    if (purchases.length) {
+      const nos = purchases.map((p) => p.purchase_no).join(', ');
+      const err = new Error(`Cannot cancel — GRN is used by purchase ${nos}. Cancel the purchase first.`);
+      err.status = 409;
+      throw err;
+    }
+    await purchaseReversalRepo.markGrnCancelled(client, companyId, gid, {
+      reason,
+      actor: str(authStaff.staff_name || authStaff.login_name || 'staff', 50) || 'staff',
+    });
+    const after = await grnRepo.getGrnWithLines(client, companyId, gid);
+    return {
+      grn: mapMasterToApi(after.master),
+      lines: (after.children || []).map(mapChildToApi),
+      cancelled: true,
     };
   });
 }

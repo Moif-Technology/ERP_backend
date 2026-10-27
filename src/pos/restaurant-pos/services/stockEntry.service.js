@@ -201,6 +201,7 @@ export async function searchProducts(pool, query, authStaff) {
         AND UPPER(REPLACE(TRIM(COALESCE(m.stock_type, '')), '-', ' ')) <> 'NON INVENTORY'
         AND (
           COALESCE(m.barcode, '') ILIKE $3
+          OR COALESCE(m.product_code, '') ILIKE $3
           OR COALESCE(m.product_name, '') ILIKE $3
           OR COALESCE(m.short_name, '') ILIKE $3
         )

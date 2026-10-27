@@ -1,4 +1,5 @@
 import * as productService from '../services/product.service.js';
+import * as groupService from '../services/group.service.js';
 
 function handleError(res, err, fallback) {
   if (err.status) return res.status(err.status).json({ message: err.message });
@@ -26,5 +27,18 @@ export async function lookupProducts(req, res) {
     return res.json({ products });
   } catch (err) {
     return handleError(res, err, 'Product lookup failed');
+  }
+}
+
+/** GET /api/counter-pos/products/snapshot — products + groups for the offline cache. */
+export async function productSnapshot(req, res) {
+  try {
+    const [products, groups] = await Promise.all([
+      productService.productSnapshot(req.authStaff),
+      groupService.listGroups(req.authStaff),
+    ]);
+    return res.json({ products, groups, generatedAt: new Date().toISOString() });
+  } catch (err) {
+    return handleError(res, err, 'Product snapshot failed');
   }
 }
