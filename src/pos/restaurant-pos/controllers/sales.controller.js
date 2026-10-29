@@ -22,6 +22,46 @@ export async function nextBillNo(req, res) {
   }
 }
 
+function staffPk(auth) {
+  const n = Number(auth?.staff_id ?? auth?.id);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+}
+
+/** GET /api/pos/sales/credit-card-types — settlement list, or all rows when ?all=1. */
+export async function listCreditCardTypes(req, res) {
+  try {
+    const companyId = Number(req.authStaff.company_id);
+    const includeInactive = req.query.all === '1' || req.query.includeInactive === '1';
+    const types = await salesRepo.listCreditCardTypes(pool, companyId, { includeInactive });
+    return res.json({ types });
+  } catch (err) {
+    console.error('[sales] credit-card-types failed', err);
+    return res.status(500).json({ message: 'Could not load card types' });
+  }
+}
+
+/** POST /api/pos/sales/credit-card-types — create. Body may include id to update. */
+export async function saveCreditCardType(req, res) {
+  try {
+    const companyId = Number(req.authStaff.company_id);
+    const id = Number(req.params.id ?? req.body?.id ?? 0);
+    const row = await salesRepo.saveCreditCardType(pool, {
+      companyId,
+      id,
+      name: req.body?.name ?? req.body?.creditCardName,
+      status: req.body?.status,
+      staffId: staffPk(req.authStaff),
+    });
+    if (!row) return res.status(404).json({ message: 'Card type not found' });
+    return res.status(id > 0 ? 200 : 201).json(row);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    if (err.code === '23505') return res.status(409).json({ message: 'This card type already exists' });
+    console.error('[sales] save credit-card-type failed', err);
+    return res.status(500).json({ message: 'Could not save card type' });
+  }
+}
+
 /** GET /api/pos/sales/by-bill/:billNo — LoadSalesData for Return. */
 export async function getSaleByBill(req, res) {
   try {
@@ -112,6 +152,26 @@ function viewerError(res, err, fallback) {
   }
   console.error('[sales viewer]', err);
   return res.status(500).json({ ok: false, message: err.message || fallback });
+}
+
+/** GET /api/pos/sales/reports/:kind — area-wise, payment-mode-wise, customer-wise. */
+export async function groupedSalesReport(req, res) {
+  const map = {
+    'area-wise': 'area',
+    'payment-mode-wise': 'payment',
+    'customer-wise': 'customer',
+  };
+  try {
+    const out = await salesService.groupedSalesReport(
+      pool,
+      map[req.params.kind],
+      req.query ?? {},
+      req.authStaff,
+    );
+    return res.status(200).json(out);
+  } catch (err) {
+    return viewerError(res, err, 'Could not load report');
+  }
 }
 
 /** GET /api/pos/sales/viewer — SalesViewerFrm grid. */

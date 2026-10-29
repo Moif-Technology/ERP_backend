@@ -3,20 +3,47 @@
  */
 
 export async function upsertEnrollment(pool, { deviceToken, companyId, branchId, stationId, counterNo, label }) {
-  await pool.query(
-    `INSERT INTO core.pos_device_enrollment
-       (device_token, company_id, branch_id, station_id, counter_no, label, enrolled_at, last_seen_at, record_status)
-     VALUES ($1, $2, $3, $4, $6, $5, NOW(), NOW(), 'ACTIVE')
-     ON CONFLICT (device_token) DO UPDATE
-       SET company_id    = EXCLUDED.company_id,
-           branch_id     = EXCLUDED.branch_id,
-           station_id    = EXCLUDED.station_id,
-           counter_no    = EXCLUDED.counter_no,
-           label         = EXCLUDED.label,
-           last_seen_at  = NOW(),
-           record_status = 'ACTIVE'`,
-    [deviceToken, companyId, branchId, stationId ?? null, label ?? null, counterNo ?? 1]
-  );
+  // One ACTIVE row per company + station (uq_pos_device_enrollment_active_station).
+  // Restaurant and salon enroll take the station over. Counter-POS checks
+  // findOtherOnStation first and only calls this after an explicit move.
+  const isPool = pool?.totalCount !== undefined && typeof pool.connect === 'function';
+  const client = isPool ? await pool.connect() : pool;
+  const ownClient = isPool;
+  try {
+    if (ownClient) await client.query('BEGIN');
+    if (stationId != null) {
+      await client.query(
+        `UPDATE core.pos_device_enrollment
+            SET record_status = 'INACTIVE',
+                last_seen_at  = NOW()
+          WHERE company_id = $1
+            AND station_id = $2
+            AND device_token <> $3
+            AND record_status = 'ACTIVE'`,
+        [companyId, stationId, deviceToken],
+      );
+    }
+    await client.query(
+      `INSERT INTO core.pos_device_enrollment
+         (device_token, company_id, branch_id, station_id, counter_no, label, enrolled_at, last_seen_at, record_status)
+       VALUES ($1, $2, $3, $4, $6, $5, NOW(), NOW(), 'ACTIVE')
+      ON CONFLICT (device_token) DO UPDATE
+         SET company_id    = EXCLUDED.company_id,
+             branch_id     = EXCLUDED.branch_id,
+             station_id    = EXCLUDED.station_id,
+             counter_no    = EXCLUDED.counter_no,
+             label         = EXCLUDED.label,
+             last_seen_at  = NOW(),
+             record_status = 'ACTIVE'`,
+      [deviceToken, companyId, branchId, stationId ?? null, label ?? null, counterNo ?? 1],
+    );
+    if (ownClient) await client.query('COMMIT');
+  } catch (err) {
+    if (ownClient) await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    if (ownClient) client.release();
+  }
 }
 
 /** Active terminal (other than this one) already holding the station, if any. */

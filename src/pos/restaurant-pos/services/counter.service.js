@@ -13,6 +13,22 @@ function num(v, d = 0) {
   return Number.isFinite(n) ? n : d;
 }
 
+/** IsExtraPaymentModePrint — not a built-in tender, so it prints on its own line. */
+const CORE_PAY_MODES = new Set([
+  'CASH', 'CREDIT', 'CREDITCARD', 'CARD', 'COMPLIMENT', 'COMPLIMENTARY',
+  'ONLINE', 'MULTIPAYMENT', 'MULTI', 'SPLITPAY', 'SPLIT', 'VOUCHER', 'MPAY', '',
+]);
+
+function extraPaymentRows(rows) {
+  return (rows ?? [])
+    .map((r) => ({
+      payMode: String(r.pay_mode ?? '').trim().toUpperCase(),
+      billCount: num(r.bill_count),
+      amount: num(r.total_amt),
+    }))
+    .filter((r) => r.payMode && !CORE_PAY_MODES.has(r.payMode.replace(/[\s_-]+/g, '')) && (r.amount !== 0 || r.billCount > 0));
+}
+
 function wantsAllStaff(src) {
   const v = src.allStaff ?? src.AllStaff ?? src.admin;
   // Preserve Quick's cashier-only default; station-wide readings opt in.
@@ -68,7 +84,7 @@ function mapWaiters(rows) {
 }
 
 async function buildSummary(pool, ctx) {
-  const [sales, cashFlow, receipts, staffRows, pendingKots, waiterRows, cashEntries] = await Promise.all([
+  const [sales, cashFlow, receipts, staffRows, pendingKots, waiterRows, cashEntries, payModes, cardTypes] = await Promise.all([
     repo.getPendingSummary(pool, ctx),
     repo.getCashInOutTotals(pool, ctx),
     repo.getCreditReceiptTotals(pool, ctx),
@@ -76,7 +92,11 @@ async function buildSummary(pool, ctx) {
     repo.listPendingKots(pool, ctx),
     repo.getPendingWaiterBreakdown(pool, ctx),
     sharedRepo.getCashInOutList(pool, ctx),
+    repo.getPaymentModeSummary(pool, ctx),
+    repo.getCardTypeSummary(pool, ctx),
   ]);
+  const otherPayments = extraPaymentRows(payModes);
+  const totalOther = otherPayments.reduce((n, r) => n + r.amount, 0);
   const pendingKotCount = Array.isArray(pendingKots) ? pendingKots.length : 0;
 
   const totalCash = num(sales.total_cash);
@@ -102,7 +122,7 @@ async function buildSummary(pool, ctx) {
 
   // VB lblTotalAmount: cash + credit + card + voucher + online + other - refund
   const totalSales =
-    totalCash + totalCredit + totalCard + totalVoucher + totalOnline + totalCompliment - totalRefund;
+    totalCash + totalCredit + totalCard + totalVoucher + totalOnline + totalOther + totalCompliment - totalRefund;
 
   return {
     cashInOutList: cashEntries.map((r) => ({
@@ -113,6 +133,13 @@ async function buildSummary(pool, ctx) {
     totalCredit,
     totalCard,
     totalOnline,
+    totalOther,
+    otherPayments,
+    cardSales: (cardTypes ?? []).map((r) => ({
+      cardName: String(r.card_name ?? 'OTHERS'),
+      billCount: num(r.bill_count),
+      amount: num(r.amount),
+    })).filter((r) => r.billCount > 0 || r.amount !== 0),
     totalVoucher,
     totalCompliment,
     totalDiscount,

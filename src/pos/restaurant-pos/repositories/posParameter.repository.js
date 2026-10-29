@@ -225,12 +225,12 @@ export async function upsertCounterReceiptSettings(
   branchId,
   stationId,
   patch,
-  updatedBy = 'pos_api',
+  updatedBy = null,
 ) {
   if (!companyId || !branchId || !stationId || !patch || typeof patch !== 'object') return;
   // created_by / modified_by are bigint staff ids — a label like 'pos_api' throws 22P02.
   const byId = Number(updatedBy);
-  const by = Number.isFinite(byId) && byId > 0 ? byId : null;
+  const by = Number.isFinite(byId) && byId > 0 ? Math.trunc(byId) : null;
 
   for (const key of RECEIPT_SETTING_KEYS) {
     if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;

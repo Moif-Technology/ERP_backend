@@ -93,6 +93,8 @@ function mapToFlutterPayload(merged) {
     SaveKOTonSettlement: num('save_kot_on_settlement'),
     IsTablePopup: num('is_table_popup') ?? 0,
     is_table_popup: num('is_table_popup') ?? 0,
+    IsCreditCardPopup: num('is_credit_card_popup') ?? 0,
+    is_credit_card_popup: num('is_credit_card_popup') ?? 0,
     IsTablesBasedOnWaiter: num('is_tables_based_on_waiter') ?? 0,
     DefaultAreaName: num('default_area_name') ?? 1,
     autoRoundOff: num('auto_round_off'),

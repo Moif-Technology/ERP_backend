@@ -372,16 +372,19 @@ function round2(v) {
   return Math.round(num(v, 0) * 100) / 100;
 }
 
-/** SettlementScreen.vb PaymentMode. CARD is the till name for CREDITCARD. */
+/** SettlementScreen.vb PaymentMode. CARD is the till name for CREDITCARD.
+ *  Anything else is an Other Payment (btnOtherPayments_Click) and keeps its name. */
 function normalizePayMode(raw) {
   const m = String(raw || 'CASH').trim().toUpperCase().replace(/[\s_-]+/g, '');
+  if (!m || m === 'CASH') return 'CASH';
   if (m === 'CARD' || m === 'CREDITCARD') return 'CREDITCARD';
   if (m === 'CREDIT') return 'CREDIT';
   if (m === 'ONLINE') return 'ONLINE';
   if (m === 'SPLIT' || m === 'SPLITPAY') return 'SPLITPAY';
   if (m === 'MULTI' || m === 'MULTIPAYMENT' || m === 'MPAY') return 'MULTIPAYMENT';
   if (m === 'COMPLIMENT' || m === 'COMPLIMENTARY') return 'COMPLIMENT';
-  return 'CASH';
+  if (m === 'VOUCHER') return 'VOUCHER';
+  return String(raw).trim().toUpperCase().slice(0, 30);
 }
 
 /** Cash() in SettlementScreen.vb — one bucket per mode, or the split rows. */
@@ -395,7 +398,14 @@ function tendersFromBody(body, paymentMode, net, paid) {
         s.refNo ?? s.RefNo ?? (payMode === 'ONLINE' ? body.paymentRefNo ?? body.onlineSource : null),
         100,
       );
-      return { payMode, amount, ref, tip: 0 };
+      const typeId = num(s.creditCardTypeId ?? s.CreditCardTypeID ?? body.creditCardTypeId ?? body.CreditCardTypeID, 0);
+      return {
+        payMode,
+        amount,
+        ref,
+        tip: 0,
+        creditCardTypeId: payMode === 'CREDITCARD' && typeId > 0 ? typeId : null,
+      };
     })
     .filter((s) => s.amount > 0.0001);
 
@@ -412,7 +422,14 @@ function tendersFromBody(body, paymentMode, net, paid) {
     : paymentMode === 'CREDITCARD'
       ? str(body.creditCardNo, 100)
       : null;
-  return [{ payMode: paymentMode, amount: round2(single), ref, tip }];
+  const typeId = num(body.creditCardTypeId ?? body.CreditCardTypeID, 0);
+  return [{
+    payMode: paymentMode,
+    amount: round2(single),
+    ref,
+    tip,
+    creditCardTypeId: paymentMode === 'CREDITCARD' && typeId > 0 ? typeId : null,
+  }];
 }
 
 function tenderBuckets(paymentMode, tenders, net, paid) {
@@ -521,6 +538,7 @@ async function persistRestaurantBill(client, ctx) {
     auditBy,
     remarks,
     creditCardNo,
+    creditCardTypeId,
     paymentRefNo,
     tenders,
     cashAmount,
@@ -532,7 +550,7 @@ async function persistRestaurantBill(client, ctx) {
   } = ctx;
 
   const salesId = await salesRepo.nextSalesId(client, companyId);
-  const billNo = await salesRepo.nextBillNo(client, companyId, stationId);
+  const billNo = await salesRepo.nextBillNo(client, companyId, branchId);
   const net = absN(header.net);
   const paid = absN(header.paid, net);
   const payRows = Array.isArray(tenders) && tenders.length
@@ -555,6 +573,7 @@ async function persistRestaurantBill(client, ctx) {
     customerId,
     paymentMode,
     creditCardNo,
+    creditCardTypeId,
     amount: net,
     cashAmount,
     creditAmount: creditAmount ?? 0,
@@ -679,6 +698,7 @@ async function persistRestaurantBill(client, ctx) {
       counterId: counterNo,
       staffId: staffPk,
       refNo: t.ref || null,
+      creditCardTypeId: t.creditCardTypeId ?? null,
     });
   }
 
@@ -805,6 +825,8 @@ export async function settleSale(pool, body, authStaff) {
     const noOfCustomers = Math.max(0, Math.trunc(num(body.noOfCustomer ?? body.noOfCustomers, 0)));
     const remarks = str(body.comments ?? body.remarks, 200);
     const creditCardNo = paymentMode === 'CREDITCARD' ? str(body.creditCardNo, 50) : null;
+    const cardTender = tenders.find((t) => t.payMode === 'CREDITCARD' && t.creditCardTypeId);
+    const creditCardTypeId = cardTender?.creditCardTypeId ?? null;
     const paymentRefNo = str(body.paymentRefNo, 100);
     const shared = {
       companyId,
@@ -823,6 +845,7 @@ export async function settleSale(pool, body, authStaff) {
       auditBy,
       remarks,
       creditCardNo,
+      creditCardTypeId,
       paymentRefNo,
       tenders,
       cashAmount: buckets.cashAmount,
@@ -1116,6 +1139,103 @@ export async function getSaleByBillNo(pool, billNoRaw, query, authStaff) {
 function isoDate(raw, fallback) {
   const s = String(raw ?? '').trim().slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : fallback;
+}
+
+/** GET /api/pos/sales/reports/:kind — area, payment mode, or customer. */
+export async function groupedSalesReport(pool, kind, query, authStaff) {
+  const companyId = Number(authStaff.company_id);
+  if (!Number.isFinite(companyId) || companyId < 1) {
+    const err = new Error('company_id required');
+    err.status = 400;
+    throw err;
+  }
+  if (!['area', 'payment', 'customer'].includes(kind)) {
+    const err = new Error('Unknown report');
+    err.status = 400;
+    throw err;
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const dateFrom = isoDate(query.dateFrom ?? query.fromDate, today);
+  const dateTo = isoDate(query.dateTo ?? query.toDate, today);
+  const stationId = num(query.stationId ?? authStaff.station_id, 0);
+  const areaId = num(query.areaId, 0);
+  const closeNo = str(query.closeNo, 40);
+
+  const nameExpr =
+    kind === 'area'
+      ? `COALESCE(NULLIF(TRIM(ar.area_name), ''), 'NO AREA')`
+      : kind === 'payment'
+        ? `COALESCE(NULLIF(UPPER(TRIM(sm.payment_mode)), ''), 'CASH')`
+        : `COALESCE(NULLIF(TRIM(cu.customer_name), ''), 'CASH CUSTOMER')`;
+
+  const params = [companyId];
+  const where = ['sm.company_id = $1'];
+  if (closeNo) {
+    params.push(closeNo);
+    where.push(`(
+      TRIM(COALESCE(sm.counter_close_status, '')) = $${params.length}
+      OR SPLIT_PART(TRIM(COALESCE(sm.counter_close_status, '')), '-', 2) = $${params.length}
+    )`);
+  } else {
+    params.push(dateFrom, dateTo);
+    where.push(`sm.bill_date::date BETWEEN $${params.length - 1}::date AND $${params.length}::date`);
+  }
+  if (stationId > 0) {
+    params.push(stationId);
+    where.push(`sm.station_id = $${params.length}`);
+  }
+  if (kind === 'area' && areaId > 0) {
+    params.push(areaId);
+    where.push(`sm.area_id = $${params.length}`);
+  }
+
+  const sign = `CASE WHEN UPPER(COALESCE(TRIM(sm.transaction_type), '')) IN ('RETURN', 'SALES RETURN', 'R') THEN -1 ELSE 1 END`;
+  const sql = `
+    SELECT ${nameExpr} AS name,
+           COUNT(*)::int AS bill_count,
+           COALESCE(SUM(COALESCE(sm.no_of_customers, 0) * (${sign})), 0) AS covers,
+           COALESCE(SUM(COALESCE(sm.subtotal_amount, 0) * (${sign})), 0) AS subtotal,
+           COALESCE(SUM(COALESCE(sm.discount_amount, 0) * (${sign})), 0) AS discount,
+           COALESCE(SUM(COALESCE(sm.tax_1_amount, 0) * (${sign})), 0) AS tax,
+           COALESCE(SUM(COALESCE(sm.amount, 0) * (${sign})), 0) AS net
+      FROM ops.sales_master sm
+      LEFT JOIN LATERAL (
+        SELECT a.area_name
+          FROM core.area_master a
+         WHERE a.company_id = sm.company_id
+           AND a.area_id = sm.area_id
+         ORDER BY CASE WHEN a.branch_id = sm.branch_id THEN 0 ELSE 1 END
+         LIMIT 1
+      ) ar ON TRUE
+      LEFT JOIN biz.customer_master cu
+        ON cu.company_id = sm.company_id AND cu.customer_id = sm.customer_id
+     WHERE ${where.join('\n       AND ')}
+     GROUP BY 1
+     ORDER BY net DESC, 1`;
+
+  let rows;
+  try {
+    ({ rows } = await pool.query(sql, params));
+  } catch (e) {
+    if (e.code !== '42703') throw e;
+    ({ rows } = await pool.query(sql.split(sign).join('1'), params));
+  }
+
+  return {
+    rows: rows.map((r) => {
+      const name = String(r.name ?? '');
+      return {
+        name,
+        areaName: name,
+        billCount: Number(r.bill_count) || 0,
+        covers: Number(r.covers) || 0,
+        subtotal: Number(r.subtotal) || 0,
+        discount: Number(r.discount) || 0,
+        tax: Number(r.tax) || 0,
+        net: Number(r.net) || 0,
+      };
+    }),
+  };
 }
 
 /** GET /api/pos/sales/viewer */

@@ -2,7 +2,8 @@
  * Back-office reports — read-only aggregate queries.
  * Tables: ops.sales_master / sales_child, ops.purchase_master / purchase_child,
  *         biz.customer_master / supplier_master, core.product_master / product_inventory,
- *         ops.product_log_entry, accounts.voucher_master / voucher_detail / account_head_master.
+ *         ops.product_log_entry, ops.recipe_transaction,
+ *         accounts.voucher_master / voucher_detail / account_head_master.
  * All queries are company + branch scoped.
  */
 
@@ -43,9 +44,16 @@ const VALID_SALE_BILL = `UPPER(COALESCE(sm.record_status, 'ACTIVE')) <> 'CANCELL
 const BILL_MODE = `CASE
          WHEN UPPER(REPLACE(COALESCE(sm.payment_mode, ''), ' ', '')) IN ('CARD', 'CREDITCARD', 'CC') THEN 'CARD'
          WHEN UPPER(REPLACE(COALESCE(sm.payment_mode, ''), ' ', '')) = 'CREDIT' THEN 'CREDIT'
-         WHEN UPPER(REPLACE(COALESCE(sm.payment_mode, ''), ' ', '')) IN ('MULTI', 'MULTIPAY', 'MULTIPAYMENT') THEN 'MULTI'
+         WHEN UPPER(REPLACE(COALESCE(sm.payment_mode, ''), ' ', '')) IN ('MULTI', 'MULTIPAY', 'MULTIPAYMENT', 'SPLIT', 'SPLITPAY') THEN 'MULTI'
          WHEN UPPER(REPLACE(COALESCE(sm.payment_mode, ''), ' ', '')) IN ('', 'CASH') THEN 'CASH'
          ELSE 'OTHER' END`;
+
+// Same names the till shows: CREDITCARD, CASH, ZOMATO, TALABAT, KEETA, SPLITPAY.
+const payLabelSql = (expr) => `CASE
+         WHEN UPPER(REPLACE(COALESCE(${expr}, ''), ' ', '')) IN ('CARD', 'CREDITCARD', 'CC') THEN 'CREDITCARD'
+         WHEN UPPER(REPLACE(COALESCE(${expr}, ''), ' ', '')) IN ('', 'CASH') THEN 'CASH'
+         WHEN UPPER(REPLACE(COALESCE(${expr}, ''), ' ', '')) IN ('MULTI', 'MULTIPAY', 'MULTIPAYMENT', 'SPLIT', 'SPLITPAY') THEN 'SPLITPAY'
+         ELSE UPPER(TRIM(${expr})) END`;
 
 const SPLIT_MODE = `UPPER(REPLACE(COALESCE(s.pay_mode, ''), ' ', ''))`;
 
@@ -67,6 +75,7 @@ function salesBillsCte(f, params) {
             sm.counter_close_status,
             CASE WHEN ${SALE_RETURN_TX} THEN 'RETURN' ELSE 'SALE' END AS tx,
             ${BILL_MODE} AS mode,
+            ${payLabelSql('sm.payment_mode')} AS pay_label,
             ABS(COALESCE(sm.amount, 0)) AS amount,
             ABS(COALESCE(sm.subtotal_amount, 0)) AS subtotal_amount,
             ABS(COALESCE(sm.discount_amount, 0)) AS discount_amount,
@@ -96,22 +105,29 @@ function salesBillsCte(f, params) {
         AND ${VALID_SALE_BILL}
         ${parts.length ? `AND ${parts.join(' AND ')}` : ''}
    ),
-   paid AS (
+   tender AS (
      SELECT b.*,
-            CASE WHEN b.split_rows > 0 THEN b.sp_cash
+            CASE WHEN b.split_rows > 0 THEN COALESCE(b.sp_cash, 0)
                  WHEN b.mode = 'CASH' THEN b.amount
                  WHEN b.mode = 'MULTI' THEN b.m_cash ELSE 0 END AS cash_amt,
-            CASE WHEN b.split_rows > 0 THEN b.sp_card
+            CASE WHEN b.split_rows > 0 THEN COALESCE(b.sp_card, 0)
                  WHEN b.mode = 'CARD' THEN b.amount
                  WHEN b.mode = 'MULTI' THEN b.m_card ELSE 0 END AS card_amt,
-            CASE WHEN b.split_rows > 0 THEN b.sp_credit
+            CASE WHEN b.split_rows > 0 THEN COALESCE(b.sp_credit, 0)
                  WHEN b.mode = 'CREDIT' THEN b.amount
                  WHEN b.mode = 'MULTI' THEN b.m_credit ELSE 0 END AS credit_amt,
-            CASE WHEN b.split_rows > 0 THEN b.sp_other
+            CASE WHEN b.split_rows > 0 THEN COALESCE(b.sp_other, 0)
                  WHEN b.mode = 'OTHER' THEN b.amount
                  WHEN b.mode = 'MULTI' THEN GREATEST(b.amount - b.m_cash - b.m_card - b.m_credit, 0)
-                 ELSE 0 END AS other_amt
+                 ELSE 0 END AS raw_other
        FROM bills b
+   ),
+   paid AS (
+     -- Cash + card + credit + other always equals the bill. Any gap or overlap
+     -- (a split that does not add up) sits on other so report totals stay exact.
+     SELECT t.*,
+            t.raw_other + (t.amount - (t.cash_amt + t.card_amt + t.credit_amt + t.raw_other)) AS other_amt
+       FROM tender t
    )`;
 }
 
@@ -322,7 +338,7 @@ export async function salesSummary(pool, companyId, dateFrom, dateTo, f = {}) {
   const { rows } = await pool.query(
     `WITH ${cte}
      SELECT p.sales_id, p.bill_no, p.invoice_no, p.bill_date, p.branch_id, p.station_id, p.counter_no,
-            p.tx, p.mode, p.amount, p.subtotal_amount, p.discount_amount, p.tax_amount,
+            p.tx, p.mode, p.pay_label, p.amount, p.subtotal_amount, p.discount_amount, p.tax_amount,
             p.cash_amt, p.card_amt, p.credit_amt, p.other_amt,
             COALESCE(cm.customer_name, 'CASH CUSTOMER') AS customer,
             COALESCE(bm.branch_name, '') AS branch_name,
@@ -334,6 +350,60 @@ export async function salesSummary(pool, companyId, dateFrom, dateTo, f = {}) {
          ON bm.company_id = p.company_id AND bm.branch_id = p.branch_id
        ${STATION_NAME_JOIN('p')}
       ORDER BY p.bill_date ASC, p.sales_id ASC
+      LIMIT 50000`,
+    params,
+  );
+  return rows;
+}
+
+// Payment Mode Wise — one line per tender. Split bills that add up to the bill
+// are broken out by pay mode; every other bill is one line for its full net.
+// The signed amounts add up to the same net as Sales Summary.
+export async function paymentModeLines(pool, companyId, dateFrom, dateTo, f = {}) {
+  const params = [companyId, dateFrom, dateTo];
+  const cte = salesBillsCte({ ...f, paymentMode: null }, params);
+  const { rows } = await pool.query(
+    `WITH ${cte},
+     splits AS (
+       SELECT b.sales_id,
+              ${payLabelSql('s.pay_mode')} AS pay_name,
+              ABS(COALESCE(s.bill_amount, 0)) AS amt
+         FROM bills b
+         JOIN ops.sales_payment_split s
+           ON s.company_id = b.company_id AND s.sales_id = b.sales_id
+          AND COALESCE(s.is_cancelled, FALSE) = FALSE
+        WHERE ABS(COALESCE(s.bill_amount, 0)) > 0.0001
+     ),
+     split_tot AS (
+       SELECT sales_id, SUM(amt) AS amt FROM splits GROUP BY sales_id
+     ),
+     lines AS (
+       SELECT b.company_id, b.sales_id, b.bill_no, b.invoice_no, b.bill_date,
+              b.branch_id, b.station_id, b.customer_id, b.tx, s.pay_name,
+              CASE WHEN b.tx = 'RETURN' THEN -s.amt ELSE s.amt END AS amount
+         FROM bills b
+         JOIN splits s ON s.sales_id = b.sales_id
+         JOIN split_tot t ON t.sales_id = b.sales_id
+        WHERE b.split_rows > 0 AND ABS(t.amt - b.amount) <= 0.02
+       UNION ALL
+       SELECT b.company_id, b.sales_id, b.bill_no, b.invoice_no, b.bill_date,
+              b.branch_id, b.station_id, b.customer_id, b.tx, b.pay_label,
+              CASE WHEN b.tx = 'RETURN' THEN -b.amount ELSE b.amount END AS amount
+         FROM bills b
+         LEFT JOIN split_tot t ON t.sales_id = b.sales_id
+        WHERE NOT (b.split_rows > 0 AND t.amt IS NOT NULL AND ABS(t.amt - b.amount) <= 0.02)
+     )
+     SELECT l.sales_id, l.bill_no, l.invoice_no, l.bill_date, l.tx, l.pay_name, l.amount,
+            COALESCE(cm.customer_name, 'CASH CUSTOMER') AS customer,
+            COALESCE(bm.branch_name, '') AS branch_name,
+            COALESCE(stn.station_name, '') AS station_name
+       FROM lines l
+       LEFT JOIN biz.customer_master cm
+         ON cm.company_id = l.company_id AND cm.customer_id = l.customer_id
+       LEFT JOIN core.branch_master bm
+         ON bm.company_id = l.company_id AND bm.branch_id = l.branch_id
+       ${STATION_NAME_JOIN('l')}
+      ORDER BY l.bill_date ASC, l.sales_id ASC, l.pay_name ASC
       LIMIT 50000`,
     params,
   );
@@ -748,6 +818,41 @@ export async function stockLedger(pool, companyId, branchId, productId, dateFrom
       ORDER BY ple.branch_id ASC, ple.product_log_id ASC
       LIMIT 50000`,
     params,
+  );
+  return rows;
+}
+
+// Recipe transactions — one row per raw material consumed (or returned) on a settled bill.
+export async function recipeTransactions(pool, companyId, branchId, dateFrom, dateTo) {
+  const { rows } = await pool.query(
+    `SELECT rt.recipe_transaction_id,
+            COALESCE(sm.bill_date, rt.created_at) AS txn_date,
+            COALESCE(sm.invoice_no, sm.bill_no::text, rt.sales_id::text) AS bill_no,
+            COALESCE(sm.transaction_type, 'SALE') AS bill_type,
+            COALESCE(fp.product_name, fp.short_name, '') AS finished_name,
+            COALESCE(fp.barcode, '') AS finished_barcode,
+            COALESCE(rm.product_name, rm.short_name, '') AS raw_name,
+            COALESCE(rm.barcode, '') AS raw_barcode,
+            COALESCE(rm.unit_name, '') AS unit_name,
+            COALESCE(rt.recipe_qty, 0) AS recipe_qty
+       FROM ops.recipe_transaction rt
+       LEFT JOIN ops.sales_master sm
+         ON sm.company_id = rt.company_id
+        AND sm.sales_id = rt.sales_id
+       LEFT JOIN core.product_master fp
+         ON fp.company_id = rt.company_id
+        AND fp.product_id = rt.finished_product_id
+       LEFT JOIN core.product_master rm
+         ON rm.company_id = rt.company_id
+        AND rm.product_id = rt.recipe_product_id
+      WHERE rt.company_id = $1
+        AND rt.branch_id = $2
+        AND COALESCE(rt.is_deleted, FALSE) = FALSE
+        AND COALESCE(sm.bill_date, rt.created_at) >= $3::date
+        AND COALESCE(sm.bill_date, rt.created_at) < ($4::date + interval '1 day')
+      ORDER BY COALESCE(sm.bill_date, rt.created_at) DESC, rt.recipe_transaction_id DESC
+      LIMIT 8000`,
+    [companyId, branchId, dateFrom, dateTo],
   );
   return rows;
 }

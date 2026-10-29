@@ -13,6 +13,7 @@ reportRouter.get('/lookups', reportController.lookups);
 
 // Sales
 reportRouter.get('/sales-summary', reportController.salesSummary);
+reportRouter.get('/payment-mode-wise', reportController.paymentModeWise);
 reportRouter.get('/sales-by-pos', reportController.salesByPos);
 reportRouter.get('/sales-analysis', reportController.salesAnalysis);
 reportRouter.get('/daily-sales', reportController.dailySales);
@@ -31,6 +32,7 @@ reportRouter.get('/outstanding-lpo', reportController.outstandingLPO);
 // Stock
 reportRouter.get('/stock-summary', reportController.stockSummary);
 reportRouter.get('/stock-ledger', reportController.stockLedger);
+reportRouter.get('/recipe-transactions', reportController.recipeTransactions);
 reportRouter.get('/reorder', reportController.reorder);
 reportRouter.get('/inventory-reconciliation', reportController.inventoryReconciliation);
 reportRouter.get('/live-store-status', reportController.liveStoreStatus);

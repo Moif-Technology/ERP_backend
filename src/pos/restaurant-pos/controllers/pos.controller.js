@@ -188,11 +188,13 @@ export async function putParameters(req, res) {
 export async function putCompanyDetails(req, res) {
   try {
     const { company_id: companyId, branch_id: branchId, station_id: stationId } = req.authStaff;
+    const staffId = req.authStaff.staff_id ?? req.authStaff.id ?? null;
     await posParameterService.updateCompanyDetails(
       companyId,
       req.body ?? {},
       branchId,
       stationId,
+      staffId,
     );
     return res.json({ success: true });
   } catch (err) {

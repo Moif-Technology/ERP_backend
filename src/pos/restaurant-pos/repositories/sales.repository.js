@@ -18,12 +18,14 @@ export async function nextSalesChildId(client, companyId) {
   return Number(rows[0].n);
 }
 
-export async function nextBillNo(client, companyId, stationId) {
+/** Unique on (company_id, branch_id, bill_no) — uq_sales_master_company_branch_bill_no.
+ *  Allocate per branch, not per station, or another station's bill number collides. */
+export async function nextBillNo(client, companyId, branchId) {
   const { rows } = await client.query(
     `SELECT COALESCE(MAX(bill_no), 0) + 1 AS n
      FROM ops.sales_master
-     WHERE company_id = $1 AND station_id = $2`,
-    [companyId, stationId]
+     WHERE company_id = $1 AND branch_id = $2`,
+    [companyId, branchId]
   );
   return Number(rows[0].n);
 }
@@ -64,11 +66,12 @@ export async function insertSalesMaster(client, row) {
     remarks,
     createdBy,
     modifiedBy,
+    creditCardTypeId,
   } = row;
   await client.query(
     `INSERT INTO ops.sales_master (
         company_id, sales_id, branch_id, kot_master_id, counter_no, bill_no,
-        bill_date, bill_time, customer_id, payment_mode, credit_card_no,
+        bill_date, bill_time, customer_id, payment_mode, credit_card_no, credit_card_type_id,
         amount, cash_amount, credit_amount, credit_card_amount, paid_amount, balance_paid, discount_amount,
         subtotal_amount, taxable_amount,
         tax_1_amount, tax_2_amount, tax_3_amount,
@@ -77,7 +80,7 @@ export async function insertSalesMaster(client, row) {
         waiter_id, table_id, area_id, no_of_customers, staff_id, remarks,
         entry_source, created_by, modified_by, station_id
       ) VALUES (
-        $1,$2,$3,$4,$5,$6, NOW(), NOW(), $7,$8,$9,
+        $1,$2,$3,$4,$5,$6, NOW(), NOW(), $7,$8,$9,$35,
         $10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,
         'RESTAURANT-POS',$32,$33,$34
       )`,
@@ -116,6 +119,9 @@ export async function insertSalesMaster(client, row) {
       createdBy,
       modifiedBy,
       stationId ?? branchId,
+      creditCardTypeId != null && Number.isFinite(Number(creditCardTypeId)) && Number(creditCardTypeId) > 0
+        ? Number(creditCardTypeId)
+        : null,
     ]
   );
 }
@@ -196,6 +202,101 @@ export async function insertSalesChild(client, row) {
   );
 }
 
+function mapCreditCardType(r) {
+  return {
+    id: Number(r.credit_card_id),
+    name: String(r.credit_card_name ?? '').trim(),
+    status: String(r.status ?? 'ACTIVE').trim().toUpperCase() === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+  };
+}
+
+export async function listCreditCardTypes(pool, companyId, { includeInactive = false } = {}) {
+  const { rows } = await pool.query(
+    `SELECT credit_card_id, credit_card_name, status
+       FROM accounts.credit_card_type_master
+      WHERE company_id = $1
+        AND COALESCE(is_deleted, FALSE) = FALSE
+        AND ($2::boolean OR UPPER(COALESCE(NULLIF(TRIM(status), ''), 'ACTIVE')) = 'ACTIVE')
+      ORDER BY credit_card_name`,
+    [companyId, includeInactive],
+  );
+  return rows.map(mapCreditCardType).filter((r) => r.id > 0 && r.name);
+}
+
+/** Credit card type master — name + ACTIVE/INACTIVE. credit_card_id is per company. */
+export async function saveCreditCardType(pool, { companyId, id = 0, name, status, staffId = null }) {
+  const clean = String(name ?? '').trim().slice(0, 50);
+  if (!clean) {
+    const err = new Error('Enter a card type name');
+    err.status = 400;
+    throw err;
+  }
+  const st = String(status ?? 'ACTIVE').trim().toUpperCase() === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE';
+  const cardId = Number(id) > 0 ? Number(id) : null;
+  const { rows: dup } = await pool.query(
+    `SELECT credit_card_id, is_deleted
+       FROM accounts.credit_card_type_master
+      WHERE company_id = $1
+        AND LOWER(credit_card_name) = LOWER($2)
+        AND ($3::bigint IS NULL OR credit_card_id <> $3)
+      LIMIT 1`,
+    [companyId, clean, cardId],
+  );
+  if (dup[0] && !dup[0].is_deleted) {
+    const err = new Error('This card type already exists');
+    err.status = 409;
+    throw err;
+  }
+  if (dup[0]?.is_deleted && cardId == null) {
+    const { rows } = await pool.query(
+      `UPDATE accounts.credit_card_type_master
+          SET credit_card_name = $3,
+              status = $4,
+              is_deleted = FALSE,
+              deleted_at = NULL,
+              deleted_by = NULL,
+              modified_at = NOW(),
+              updated_at = NOW(),
+              modified_by = $5
+        WHERE company_id = $1 AND credit_card_id = $2
+        RETURNING credit_card_id, credit_card_name, status`,
+      [companyId, dup[0].credit_card_id, clean, st, staffId],
+    );
+    return mapCreditCardType(rows[0]);
+  }
+  if (cardId != null) {
+    const { rows } = await pool.query(
+      `UPDATE accounts.credit_card_type_master
+          SET credit_card_name = $3,
+              status = $4,
+              modified_at = NOW(),
+              updated_at = NOW(),
+              modified_by = $5
+        WHERE company_id = $1
+          AND credit_card_id = $2
+          AND COALESCE(is_deleted, FALSE) = FALSE
+        RETURNING credit_card_id, credit_card_name, status`,
+      [companyId, cardId, clean, st, staffId],
+    );
+    return rows[0] ? mapCreditCardType(rows[0]) : null;
+  }
+  const { rows } = await pool.query(
+    `INSERT INTO accounts.credit_card_type_master (
+        company_id, credit_card_id, credit_card_name, status, created_by, modified_by, modified_at
+      )
+      VALUES (
+        $1,
+        (SELECT COALESCE(MAX(credit_card_id), 0) + 1
+           FROM accounts.credit_card_type_master
+          WHERE company_id = $1),
+        $2, $3, $4, $4, NOW()
+      )
+      RETURNING credit_card_id, credit_card_name, status`,
+    [companyId, clean, st, staffId],
+  );
+  return mapCreditCardType(rows[0]);
+}
+
 export async function insertSalesPaymentSplit(client, row) {
   const {
     companyId,
@@ -208,25 +309,43 @@ export async function insertSalesPaymentSplit(client, row) {
     staffId,
     refNo,
     tipAmount,
+    creditCardTypeId,
   } = row;
   const counter = counterId != null && Number.isFinite(Number(counterId)) ? Math.trunc(Number(counterId)) : 0;
-  await client.query(
-    `INSERT INTO ops.sales_payment_split (
-        company_id, sales_id, payer_no, pay_mode, bill_amount, tip_amount, branch_id,
-        counter_id, staff_id, ref_no,
-        pay_date, is_cancelled
-      ) VALUES ($1,$2,$3,$4,$5,$10,$6,$7,$8,$9, NOW(), false)`,
-    [
-      companyId,
-      salesId,
-      payerNo,
-      payMode,
-      Math.abs(Number(billAmount) || 0),
-      branchId,
-      counter,
-      staffId,
-      refNo,
-      Math.abs(Number(tipAmount) || 0),
-    ]
-  );
+  const cardTypeId = creditCardTypeId != null && Number.isFinite(Number(creditCardTypeId)) && Number(creditCardTypeId) > 0
+    ? Number(creditCardTypeId)
+    : null;
+  const params = [
+    companyId,
+    salesId,
+    payerNo,
+    payMode,
+    Math.abs(Number(billAmount) || 0),
+    branchId,
+    counter,
+    staffId,
+    refNo,
+    Math.abs(Number(tipAmount) || 0),
+    cardTypeId,
+  ];
+  try {
+    await client.query(
+      `INSERT INTO ops.sales_payment_split (
+          company_id, sales_id, payer_no, pay_mode, bill_amount, tip_amount, branch_id,
+          counter_id, staff_id, ref_no, credit_card_type_id,
+          pay_date, is_cancelled
+        ) VALUES ($1,$2,$3,$4,$5,$10,$6,$7,$8,$9,$11, NOW(), false)`,
+      params,
+    );
+  } catch (err) {
+    if (err.code !== '42703') throw err;
+    await client.query(
+      `INSERT INTO ops.sales_payment_split (
+          company_id, sales_id, payer_no, pay_mode, bill_amount, tip_amount, branch_id,
+          counter_id, staff_id, ref_no,
+          pay_date, is_cancelled
+        ) VALUES ($1,$2,$3,$4,$5,$10,$6,$7,$8,$9, NOW(), false)`,
+      params.slice(0, 10),
+    );
+  }
 }

@@ -211,7 +211,7 @@ export async function salesSummary(pool, authStaff, query) {
       branch: r.branch_name || '',
       station: r.station_name || (r.station_id == null ? 'Back Office' : `Station ${r.station_id}`),
       customer: r.customer,
-      payment: r.mode,
+      payment: r.pay_label || r.mode,
       sub: sign * num(r.subtotal_amount),
       tax: sign * num(r.tax_amount),
       disc: sign * num(r.discount_amount),
@@ -222,6 +222,26 @@ export async function salesSummary(pool, authStaff, query) {
       other: sign * num(r.other_amt),
     };
   });
+}
+
+export async function paymentModeWise(pool, authStaff, query) {
+  const companyId = Number(authStaff.company_id);
+  const { dateFrom, dateTo } = resolveDates(query);
+  const rows = await reportRepo.paymentModeLines(pool, companyId, dateFrom, dateTo, {
+    branchId: resolveBranchOrAll(authStaff, query),
+    stationId: optId(query.stationId),
+  });
+  return rows.map((r) => ({
+    salesId: Number(r.sales_id),
+    invoiceNo: r.invoice_no || String(r.bill_no || r.sales_id),
+    date: fmtDate(r.bill_date),
+    type: r.tx === 'RETURN' ? 'Return' : 'Sale',
+    branch: r.branch_name || '',
+    station: r.station_name || (r.station_id == null ? 'Back Office' : `Station ${r.station_id}`),
+    customer: r.customer,
+    payment: r.pay_name || 'CASH',
+    amount: round2(num(r.amount)),
+  }));
 }
 
 export async function salesByPos(pool, authStaff, query) {
@@ -443,6 +463,30 @@ export async function stockLedger(pool, authStaff, query) {
   }));
 }
 
+function billKind(raw) {
+  const t = String(raw || '').trim().toUpperCase();
+  if (t === 'RETURN' || t === 'SALES RETURN') return 'Return';
+  return 'Sale';
+}
+
+export async function recipeTransactions(pool, authStaff, query) {
+  const { companyId, branchId } = resolveScope(authStaff, query);
+  const { dateFrom, dateTo } = resolveDates(query);
+  const rows = await reportRepo.recipeTransactions(pool, companyId, branchId, dateFrom, dateTo);
+  return rows.map((r) => ({
+    id: num(r.recipe_transaction_id),
+    date: fmtDate(r.txn_date),
+    billNo: r.bill_no || '',
+    billType: billKind(r.bill_type),
+    finished: r.finished_name || '',
+    finishedBarcode: r.finished_barcode || '',
+    raw: r.raw_name || '',
+    rawBarcode: r.raw_barcode || '',
+    unit: r.unit_name || '',
+    qty: num(r.recipe_qty),
+  }));
+}
+
 export async function reorder(pool, authStaff, query) {
   const { companyId, branchId } = resolveScope(authStaff, query);
   const rows = await reportRepo.reorder(pool, companyId, branchId);
@@ -556,7 +600,7 @@ export async function accountsReconciliation(pool, authStaff, query) {
         billNo: r.invoice_no || String(r.bill_no || r.sales_id),
         type: r.tx === 'RETURN' ? 'Return' : 'Sale',
         source: r.entry_source || 'BACKOFFICE',
-        payment: r.mode,
+        payment: r.pay_label || r.mode,
         amount: num(r.amount),
         expectedVoucher: expected,
         postedVoucher: posted,

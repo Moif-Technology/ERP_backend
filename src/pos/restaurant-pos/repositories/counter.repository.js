@@ -175,6 +175,55 @@ export async function getPendingSummary(pool, { companyId, stationId, staffIds =
   return rows[0] ?? {};
 }
 
+/** CARD SALES DETAILS — one row per credit card type (Visa, Mastercard, …). */
+export async function getCardTypeSummary(pool, { companyId, stationId, staffIds = null }) {
+  const { rows } = await pool.query(
+    `SELECT
+       COALESCE(NULLIF(TRIM(ct.credit_card_name), ''), 'OTHERS') AS card_name,
+       COUNT(*)::INT AS bill_count,
+       COALESCE(SUM(sm.credit_card_amount), 0) AS amount
+     FROM ops.sales_master sm
+     LEFT JOIN accounts.credit_card_type_master ct
+       ON ct.company_id = sm.company_id
+      AND ct.credit_card_id = sm.credit_card_type_id
+      AND COALESCE(ct.is_deleted, FALSE) = FALSE
+     WHERE sm.company_id = $1
+       AND sm.station_id = $2
+       AND sm.entry_source = '${ENTRY}'
+       AND COALESCE(NULLIF(TRIM(sm.counter_close_status), ''), 'PENDING') = 'PENDING'
+       AND ($3::bigint[] IS NULL OR sm.staff_id = ANY($3::bigint[]))
+       AND UPPER(COALESCE(sm.transaction_type, '')) NOT IN ('RETURN', 'R')
+       AND COALESCE(sm.credit_card_amount, 0) > 0
+     GROUP BY 1
+     ORDER BY 1`,
+    [companyId, stationId, staffIds],
+  );
+  return rows;
+}
+
+/** GeneralModuleForm.GetCounterClosePaymentModeSummary — one row per PaymentMode. */
+export async function getPaymentModeSummary(pool, { companyId, stationId, staffIds = null }) {
+  const { rows } = await pool.query(
+    `SELECT
+       UPPER(TRIM(COALESCE(payment_mode, ''))) AS pay_mode,
+       COUNT(*)::INT AS bill_count,
+       COALESCE(SUM(amount), 0) AS total_amt
+     FROM ops.sales_master
+     WHERE company_id = $1
+       AND station_id = $2
+       AND entry_source = '${ENTRY}'
+       AND COALESCE(NULLIF(TRIM(counter_close_status), ''), 'PENDING') = 'PENDING'
+       AND ($3::bigint[] IS NULL OR staff_id = ANY($3::bigint[]))
+       AND UPPER(COALESCE(transaction_type, '')) NOT IN ('RETURN', 'R')
+       AND amount > 0
+       AND TRIM(COALESCE(payment_mode, '')) <> ''
+     GROUP BY UPPER(TRIM(COALESCE(payment_mode, '')))
+     ORDER BY 1`,
+    [companyId, stationId, staffIds],
+  );
+  return rows;
+}
+
 export async function getPendingStaffBreakdown(pool, { companyId, stationId, staffIds = null }) {
   const { rows } = await pool.query(
     `SELECT

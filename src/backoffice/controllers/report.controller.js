@@ -43,6 +43,7 @@ function objectHandler(serviceFn, label) {
 
 export const lookups = objectHandler(reportService.lookups, 'Report Lookups');
 export const salesSummary = handler(reportService.salesSummary, 'Sales Summary');
+export const paymentModeWise = handler(reportService.paymentModeWise, 'Payment Mode Wise');
 export const salesByPos = handler(reportService.salesByPos, 'Sales By POS');
 export const salesAnalysis = handler(reportService.salesAnalysis, 'Sales Analysis');
 export const inventoryReconciliation = objectHandler(reportService.inventoryReconciliation, 'Inventory Reconciliation');
@@ -60,6 +61,7 @@ export const purchaseReturn = handler(reportService.purchaseReturn, 'Purchase Re
 export const outstandingLPO = handler(reportService.outstandingLPO, 'Outstanding LPO');
 export const stockSummary = handler(reportService.stockSummary, 'Stock Summary');
 export const stockLedger = handler(reportService.stockLedger, 'Stock Ledger');
+export const recipeTransactions = handler(reportService.recipeTransactions, 'Recipe Transactions');
 export const reorder = handler(reportService.reorder, 'Reorder');
 export const customerBalance = handler(reportService.customerBalance, 'Customer Balance');
 export const supplierBalance = handler(reportService.supplierBalance, 'Supplier Balance');
